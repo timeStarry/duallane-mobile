@@ -32,3 +32,17 @@ test('login accepts a Workspace invitation only for its own HTTPS origin',()=>{
   expect(loginTarget('https://example.test')).toEqual({origin:'https://example.test'});
   for(const url of ['http://example.test/workspace?invite=test','https://secret@example.test/workspace?invite=test','https://example.test/workspace?invite=test#k=private','https://example.test/p2p?invite=test','https://example.test/workspace?invite=test&redirect=https://evil.test'])expect(()=>loginTarget(url)).toThrow();
 });
+
+test.each(['', '  '])('a configured release uses its HTTPS origin when the optional invitation is empty',value=>{
+  expect(loginTarget(value,'https://duallane.tsio.top')).toEqual({origin:'https://duallane.tsio.top'});
+});
+
+test('a configured release forwards an invitation only to its fixed service',()=>{
+  expect(loginTarget('https://duallane.tsio.top/workspace?invite=test-code','https://duallane.tsio.top')).toEqual({origin:'https://duallane.tsio.top',inviteCode:'test-code'});
+  expect(()=>loginTarget('https://other.test/workspace?invite=test-code','https://duallane.tsio.top')).toThrow('邀请链接不属于当前服务');
+  expect(()=>loginTarget('https://other.test','https://duallane.tsio.top')).toThrow('邀请链接不属于当前服务');
+});
+
+test('fixed service configuration still requires a valid HTTPS origin',()=>{
+  for(const origin of ['http://duallane.tsio.top','https://duallane.tsio.top/workspace','https://secret@duallane.tsio.top'])expect(()=>loginTarget('',origin)).toThrow();
+});

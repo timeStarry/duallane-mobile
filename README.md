@@ -22,9 +22,11 @@ package smoke workflow with a disposable test signing key. These test artifacts
 are not signed with the internal release identity. See the
 [testing and release guide](docs/development/TESTING_AND_RELEASE.md).
 
-The login screen accepts an HTTPS service origin or a complete Workspace
-invitation link (`https://your-service/workspace?invite=...`). Invitation context
-is passed only to that service during the explicit GitHub login flow.
+Release and test packages receive their default service from the repository
+variable `DUALLANE_API_ORIGIN`, injected as `EXPO_PUBLIC_API_ORIGIN` at build time.
+Users can sign in directly without choosing a server. The optional invitation
+field accepts only Workspace invitations for that configured service. Development
+builds without a configured origin retain the service/invitation input.
 
 The design is recorded in
 [`docs/WORKSPACE_MOBILE_CLIENT_DESIGN.md`](docs/WORKSPACE_MOBILE_CLIENT_DESIGN.md).

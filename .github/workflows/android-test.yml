@@ -20,8 +20,15 @@ jobs:
     env:
       APP_ENV: test
       CI: '1'
+      EXPO_PUBLIC_API_ORIGIN: ${{ vars.DUALLANE_API_ORIGIN }}
     steps:
       - uses: actions/checkout@v4
+      - name: Require the configured service origin
+        run: |
+          if [[ -z "$EXPO_PUBLIC_API_ORIGIN" ]]; then
+            echo '::error::Set repository variable DUALLANE_API_ORIGIN before building an installable Android test package.'
+            exit 1
+          fi
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -122,7 +129,10 @@ jobs:
           grep -F 'jar verified.' artifacts/android-test/aab-signature.txt
           "$DUALLANE_ANDROID_TOOLS/apkanalyzer" manifest print artifacts/android-test/duallane-test-signed.apk > artifacts/android-test/manifest.xml
           python - <<'PY'
+          import json
+          import os
           import xml.etree.ElementTree as ET
+          import zipfile
           root = ET.parse('artifacts/android-test/manifest.xml').getroot()
           android = '{http://schemas.android.com/apk/res/android}'
           app = root.find('application')
@@ -132,6 +142,11 @@ jobs:
           assert app.attrib.get(android + 'usesCleartextTraffic', 'false') == 'false'
           assert root.find('uses-sdk').attrib[android + 'minSdkVersion'] == '26'
           assert root.find('uses-sdk').attrib[android + 'targetSdkVersion'] == '36'
+          with zipfile.ZipFile('artifacts/android-test/duallane-test-signed.apk') as apk:
+              app_config = json.loads(apk.read('assets/app.config'))
+          assert app_config['extra']['apiOrigin'] == os.environ['EXPO_PUBLIC_API_ORIGIN']
+          with open('artifacts/android-test/app-config.json', 'w', encoding='utf-8') as output:
+              json.dump(app_config, output, ensure_ascii=False, indent=2)
           PY
           sha256sum artifacts/android-test/duallane-test-signed.* > artifacts/android-test/SHA256SUMS
 
@@ -142,7 +157,11 @@ jobs:
           bash "$RUNNER_TEMP/start-test-emulator.sh"
           adb install artifacts/android-test/duallane-test-signed.apk
           adb logcat -c
-          for launch in cold restart; do
+          adb shell cmd uimode night no
+          for launch in cold restart dark; do
+            if [[ "$launch" == dark ]]; then
+              adb shell cmd uimode night yes
+            fi
             adb shell am force-stop com.timestarry.duallane
             adb shell am start -W -n com.timestarry.duallane/.MainActivity
             sleep 10
@@ -156,13 +175,16 @@ jobs:
           root = ET.parse(f'artifacts/android-test/{sys.argv[1]}-ui.xml').getroot()
           labels = {node.attrib.get(key, '') for node in root.iter() for key in ('text', 'content-desc')}
           assert 'DualLane' in labels, labels
-          assert '服务地址或邀请链接' in labels, labels
+          assert '空间邀请链接（可选）' in labels, labels
+          assert '服务地址或邀请链接' not in labels, labels
           assert '使用 GitHub 登录' in labels, labels
+          login_buttons = [node for node in root.iter() if node.attrib.get('class') == 'android.widget.Button' and node.attrib.get('content-desc') == '使用 GitHub 登录']
+          assert len(login_buttons) == 1 and login_buttons[0].attrib.get('enabled') == 'true'
           PY
           done
           adb logcat -d -s AndroidRuntime:E ReactNativeJS:E > artifacts/android-test/runtime-errors.txt
           test ! -s artifacts/android-test/runtime-errors.txt || ! grep -E 'FATAL EXCEPTION|ReactNativeJS:.*(Error|Exception)' artifacts/android-test/runtime-errors.txt
-          echo 'Test-signed APK/AAB built. Android 15 emulator installation, cold login-screen launch and process restart passed. No account login, background notifications or OTA acceptance was performed.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Test-signed APK/AAB built. Android 15 emulator installation, light-mode cold login-screen launch and process restart, and dark-mode cold launch passed. UI hierarchies and screenshots were captured for all three launches. No account login, background notifications or OTA acceptance was performed.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve package smoke evidence
         if: always()

@@ -5,6 +5,7 @@
 - 复用主仓“清晰双轨”的语义 token：`bg/surface/soft/elevated`、`text/muted/line/focus`、
   `shared/shared-soft/on-shared`、`success/warning/danger`。
 - 首期一个默认主题，支持系统浅色/深色；不复制主仓 Web CSS，不引入大面积玻璃或渐变。
+- 状态栏图标随应用实际主题切换：浅色背景使用深色图标，深色背景使用浅色图标；系统跟随和手动主题都保持可读。
 - 系统字体和中文 fallback；正文 15–16sp，标题 20–24sp，辅助文字不低于 12sp。
 - 间距使用 4/8/12/16/24/32；常规控件 10–12dp 圆角，输入区 16dp，Dialog 20dp。
 - 主要控件和列表行触控区至少 44×44dp；安全区、键盘和 Android 返回键必须真实验收。

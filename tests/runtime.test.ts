@@ -5,6 +5,7 @@ import { useWorkspace } from '../src/domain/store';
 import { parseMessage } from '../src/domain/contracts';
 import { cache, credentials } from '../src/platform/storage';
 import { releaseSchema } from '../src/domain/updates';
+import { config } from '../src/platform/config';
 
 jest.mock('expo/fetch',()=>({fetch:jest.fn()}));
 jest.mock('expo-web-browser',()=>({openAuthSessionAsync:jest.fn(async()=>({type:'cancel'}))}));
@@ -24,13 +25,22 @@ function deferred<T>(){let resolve!:(v:T)=>void;const promise=new Promise<T>(r=>
 function response(body:unknown,status=200){return {ok:status<400,status,json:async()=>body} as Awaited<ReturnType<typeof fetch>>;}
 function serve(){fetchMock.mockImplementation(async url=>response(url.endsWith('/release-policy')?policy:url.endsWith('/refresh')?session:url.endsWith('/bootstrap')?bootstrap:url.includes('/messages?')?{messages:[{...message,plainText:'edited'}]}:{authorizationUrl:`${new URL(url).origin}/api/auth/mobile/github/authorize?flow=test`}));}
 let runtime:Runtime;
-beforeEach(()=>{jest.spyOn(AppState,'addEventListener').mockReturnValue({remove:jest.fn()});useWorkspace.getState().reset();jest.mocked(cache.get).mockReturnValue(null);read.mockResolvedValue(saved);serve();runtime=new Runtime();jest.spyOn(runtime,'connect').mockImplementation(()=>undefined);});
+beforeEach(()=>{config.apiOrigin='';jest.spyOn(AppState,'addEventListener').mockReturnValue({remove:jest.fn()});useWorkspace.getState().reset();jest.mocked(cache.get).mockReturnValue(null);read.mockResolvedValue(saved);serve();runtime=new Runtime();jest.spyOn(runtime,'connect').mockImplementation(()=>undefined);});
 afterEach(()=>{runtime.dispose();jest.restoreAllMocks();jest.useRealTimers();});
 
 test('a pending credential read cannot restore content after logout',async()=>{
   const pending=deferred<typeof saved>();read.mockImplementationOnce(()=>pending.promise);
   const start=runtime.start();await runtime.logout(false);pending.resolve(saved);await start;
   expect(runtime.api).toBeNull();expect(useWorkspace.getState().ready).toBe(false);expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test('a slow version check does not block login for a preconfigured service',async()=>{
+  config.apiOrigin='https://workspace.example';read.mockResolvedValue(null);
+  const policyCheck=deferred<void>();jest.spyOn(runtime,'checkPolicy').mockReturnValue(policyCheck.promise);
+  const starting=runtime.start();await Promise.resolve();
+  const loginWasBlocked=useWorkspace.getState().busy;
+  policyCheck.resolve();await starting;
+  expect(loginWasBlocked).toBe(false);expect(runtime.api?.origin).toBe(config.apiOrigin);
 });
 
 test('Strict Mode cleanup and setup share one refresh and restore the AppState listener',async()=>{
