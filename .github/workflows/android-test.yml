@@ -113,7 +113,7 @@ jobs:
           root = ET.parse(f'artifacts/android-test/{sys.argv[1]}-ui.xml').getroot()
           labels = {node.attrib.get(key, '') for node in root.iter() for key in ('text', 'content-desc')}
           assert 'DualLane' in labels, labels
-          assert '服务地址' in labels, labels
+          assert '服务地址或邀请链接' in labels, labels
           assert '使用 GitHub 登录' in labels, labels
           PY
           done
