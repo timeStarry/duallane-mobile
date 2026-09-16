@@ -82,6 +82,40 @@ test('retry reloads reservation persisted after a network failure instead of res
   expect(raw.mock.calls[1]?.[1]).toMatchObject({ method:'PUT', headers:{ 'X-DualLane-Part-SHA256':hash } });
 });
 
+test('a lost completion response recovers the authorized completed attachment without reserving or uploading again', async () => {
+  saveTask({ ...task, uploadId:'up1', attachmentId:'a1' });
+  const transfers = new Transfers();
+  const { api, json, raw } = apiWith([{ ...status, status:'completed', attachment }]);
+  json.mockResolvedValueOnce(status).mockRejectedValueOnce(new Error('response lost'));
+  await expect(transfers.run(api, key, task, jest.fn())).rejects.toThrow('response lost');
+  expect(mockDisk.has(task.uri)).toBe(true);
+  expect(await transfers.run(api, key, task, jest.fn())).toEqual(attachment);
+  expect(raw).toHaveBeenCalledTimes(1);
+  expect(json.mock.calls.filter(([path]) => path.endsWith('/reserve'))).toHaveLength(0);
+  expect(transfers.tasks(key)[0]?.complete).toBe(true);
+  expect(mockDisk.has(task.uri)).toBe(false);
+});
+
+test('completed status can recover even when Android removed the local upload copy', async () => {
+  saveTask({ ...task, uploadId:'up1', attachmentId:'a1' });
+  mockDisk.delete(task.uri);
+  const { api, raw } = apiWith([{ ...status, status:'completed', attachment }]);
+  expect(await new Transfers().run(api, key, task, jest.fn())).toEqual(attachment);
+  expect(raw).not.toHaveBeenCalled();
+});
+
+test.each([
+  { id:'another-attachment' }, { byteSize:4 }, { fileName:'different.bin' }, { mimeType:'text/plain' }, { status:'removed' },
+])('completed status must match the exact attachment reserved by this task', async difference => {
+  saveTask({ ...task, uploadId:'up1', attachmentId:'a1' });
+  const transfers = new Transfers();
+  const { api, raw } = apiWith([{ ...status, status:'completed', attachment:{ ...attachment, ...difference } }]);
+  await expect(transfers.run(api, key, task, jest.fn())).rejects.toThrow('Invalid completed upload');
+  expect(transfers.tasks(key)[0]?.complete).toBe(false);
+  expect(raw).not.toHaveBeenCalled();
+  expect(mockDisk.has(task.uri)).toBe(true);
+});
+
 test('empty files use the single binary endpoint, not impossible chunked completion', async () => {
   saveTask({ ...task, byteSize:0, uploadId:'up1' });
   const { api, raw, json } = apiWith([{ ...status, partCount:0 }]);

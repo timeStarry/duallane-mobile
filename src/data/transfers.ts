@@ -20,7 +20,11 @@ const partSchema = z.union([
   z.object({ partNumber:z.number().int().positive(), byteSize:bytesSchema, sha256:hashSchema }),
   z.object({ PartNumber:z.number().int().positive(), ByteSize:bytesSchema, SHA256:hashSchema }).transform(p => ({ partNumber:p.PartNumber, byteSize:p.ByteSize, sha256:p.SHA256 })),
 ]);
-export const uploadStatusSchema = z.object({ uploadId:z.string().min(1), partSize:partSizeSchema, partCount:partCountSchema, parts:z.array(partSchema).max(10000) });
+const uploadStatusBase = z.object({ uploadId:z.string().min(1), partSize:partSizeSchema, partCount:partCountSchema, parts:z.array(partSchema).max(10000) });
+export const uploadStatusSchema = z.discriminatedUnion('status', [
+  uploadStatusBase.extend({ status:z.literal('reserved').optional() }),
+  uploadStatusBase.extend({ status:z.literal('completed'), attachment:attachmentSchema }),
+]);
 const completedSchema = z.object({ attachment:attachmentSchema });
 const accountEpochs = new Map<string,number>();
 const transientFiles = new Map<string,Set<File>>();
@@ -112,17 +116,26 @@ export class Transfers {
     this.paused.delete(task.id);
     const cancelled = () => { assertAccount(); return this.paused.has(input.id); };
     try {
-      if (!file.exists || file.size !== task.byteSize) throw new Error('File unavailable');
       if (!task.uploadId) {
+        if (!file.exists || file.size !== task.byteSize) throw new Error('File unavailable');
         const r = await api.json('/api/workspace/files/uploads/reserve', reservation, { fileName:task.fileName, mimeType:task.mimeType, byteSize:task.byteSize, visibility:task.conversationId ? 'conversation' : 'space', conversationId:task.conversationId });
         assertAccount();
-        task = { ...task, uploadId:r.id, attachmentId:r.attachment.id };
+        task = { ...task, uploadId:r.id, attachmentId:r.attachment.id, fileName:r.attachment.fileName, mimeType:r.attachment.mimeType };
         this.save(key, task);
       }
       const prefix = `/api/workspace/files/uploads/${encodeURIComponent(task.uploadId!)}`;
       const status = await api.json(prefix, uploadStatusSchema);
       if (cancelled()) return null;
       if (status.uploadId !== task.uploadId || status.partCount !== Math.ceil(task.byteSize / status.partSize)) throw new Error('Invalid upload plan');
+      if (status.status === 'completed') {
+        const completed = status.attachment;
+        // A lost completion response must recover the original reservation, never create another.
+        if (completed.id !== task.attachmentId || completed.status !== 'available' || completed.byteSize !== task.byteSize || completed.fileName !== task.fileName || completed.mimeType !== task.mimeType) throw new Error('Invalid completed upload');
+        this.save(key, { ...task, complete:true });
+        removeFile(file);
+        return completed;
+      }
+      if (!file.exists || file.size !== task.byteSize) throw new Error('File unavailable');
       const receivedParts = new Map(status.parts.map(part => [part.partNumber, part]));
       if (receivedParts.size !== status.parts.length || status.parts.some(part => part.partNumber > status.partCount)) throw new Error('Invalid upload parts');
       let attachment:Attachment;
