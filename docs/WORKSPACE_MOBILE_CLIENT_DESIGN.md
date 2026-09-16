@@ -184,7 +184,7 @@ Workspace features
 | Network | fetch wrapper + 原生 WebSocket | 统一 token 刷新、超时、错误 code、重连和客户端版本 headers |
 | Local data | SQLite/受保护 KV + Android Keystore | 缓存、草稿和游标可恢复；凭证与普通缓存分离 |
 | Upload | 应用运行期间的任务封装主仓分片 API | 支持暂停/恢复、网络变化和 token 过期；不改变服务端配额语义 |
-| OTA | EAS Update 或自托管签名 manifest | 只更新同 `runtimeVersion` 的 JS/资源，原生变化走商店包 |
+| OTA | EAS Update 或自托管签名 manifest | 只更新同 `runtimeVersion` 的 JS/资源，原生变化走新的 APK/AAB 包 |
 | Notifications | Android 本地通知 + WebSocket | 原生通知替代 ntfy；按会话偏好投递，不携带消息正文、文件链接或 secret |
 | Observability | 仅记录匿名诊断事件 | 不记录消息正文、文件名、token、邀请 secret、URL query 或实时序号 |
 
@@ -568,7 +568,7 @@ ntfy 本轮不删除、不迁移，待实际使用验证后另行决定。
 
 1. 移动端是 Workspace 专用客户端，冷启动只在 Login 与 ConversationList 之间分流；空间管理留在 Web/服务端管理面。
 2. 兼容性以“安全纯文本 fallback + 低版本样式”为底线；未知消息不能阻断实时连接，也不能执行未知内容。
-3. 热更只覆盖同一 `runtimeVersion` 的 JS/资源；原生、协议 major 和最低安全版本变化必须走商店/企业包更新。
+3. 热更只覆盖同一 `runtimeVersion` 的 JS/资源；原生、协议 major 和最低安全版本变化必须走APK/AAB 企业包更新。
 4. 弱更新允许继续使用，强更新允许有限延迟，最低版本以下必须用不可关闭 Dialog 阻断 Workspace。
 5. 原生 OAuth token、WebSocket 认证、release policy、签名 manifest、移动端续传和推送是后端必须协作的能力；空间管理 API 不属于移动端依赖。
 6. 客户端隐藏能力只改善体验，后端仍是权限、配额、保留、审计和可见性的唯一权威。
