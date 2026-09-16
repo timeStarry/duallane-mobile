@@ -19,7 +19,7 @@ test('prebuild preserves debug signing and uses a private release configuration'
   assert.match(result, /debug \{ signingConfig signingConfigs.debug \}/);
   assert.match(result, /release \{ signingConfig signingConfigs.release \}/);
   assert.match(result, /System.getenv\('DUALLANE_ANDROID_KEYSTORE'\)/);
-  assert.match(result, /storeFile file\(System.getProperty\('user.home'\) \+ '\/.android\/debug.keystore'\)/);
+  assert.doesNotMatch(result, /storeFile file\('debug.keystore'\)|storePassword 'android'|keyAlias 'androiddebugkey'/);
   assert.equal(configureSigning(result), result);
 });
 

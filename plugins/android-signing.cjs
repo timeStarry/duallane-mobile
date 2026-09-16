@@ -1,8 +1,12 @@
 const { withAppBuildGradle } = require('expo/config-plugins');
 
 function configureSigning(contents) {
-  // AGP creates the default local debug key; fresh checkouts contain no keystore.
-  contents = contents.replace("storeFile file('debug.keystore')", "storeFile file(System.getProperty('user.home') + '/.android/debug.keystore')");
+  // Keep AGP's entire default identity so it creates a local key on a fresh checkout.
+  // Expo's lowercase key alias prevents AGP from recognizing its default keystore.
+  contents = contents.replace(/debug\s*\{\s*storeFile file\((?:'debug\.keystore'|System\.getProperty\('user\.home'\) \+ '\/.android\/debug\.keystore')\)[^}]*\}/,
+    `debug {
+            // Use Android Gradle's automatically generated local debug identity.
+        }`);
   const releaseBuild = /(buildTypes\s*\{[\s\S]*?release\s*\{[\s\S]*?)signingConfig signingConfigs\.(?:debug|release)/;
   if (!releaseBuild.test(contents)) throw new Error('Cannot find Android release signing configuration');
   contents = contents.replace(releaseBuild, '$1signingConfig signingConfigs.release');

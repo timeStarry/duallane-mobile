@@ -54,7 +54,8 @@ jobs:
         run: |
           ./gradlew --no-daemon --max-workers=2 \
             -PreactNativeArchitectures=arm64-v8a,x86_64 \
-            assembleDebug assembleRelease bundleRelease
+            :app:validateSigningDebug :app:validateSigningRelease \
+            :app:assembleDebug :app:assembleRelease :app:bundleRelease
 
       - name: Verify and collect test packages
         run: |
