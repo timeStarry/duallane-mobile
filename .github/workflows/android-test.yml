@@ -27,6 +27,15 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
+      - name: Locate Android command-line tools
+        run: |
+          tools_dir="$(find "$ANDROID_HOME/cmdline-tools" -type f -name apkanalyzer -printf '%h\n' | sort -V | tail -n 1)"
+          for tool in apkanalyzer sdkmanager avdmanager; do
+            test -x "$tools_dir/$tool"
+          done
+          test -x "$ANDROID_HOME/platform-tools/adb"
+          echo "DUALLANE_ANDROID_TOOLS=$tools_dir" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
       - uses: pnpm/action-setup@v4
         with:
           version: 10.30.3
@@ -66,7 +75,7 @@ jobs:
           "$apksigner" verify --verbose --print-certs artifacts/android-test/duallane-test-signed.apk > artifacts/android-test/apk-signature.txt
           jarsigner -J-Duser.language=en -verify -certs artifacts/android-test/duallane-test-signed.aab > artifacts/android-test/aab-signature.txt
           grep -F 'jar verified.' artifacts/android-test/aab-signature.txt
-          apkanalyzer manifest print artifacts/android-test/duallane-test-signed.apk > artifacts/android-test/manifest.xml
+          "$DUALLANE_ANDROID_TOOLS/apkanalyzer" manifest print artifacts/android-test/duallane-test-signed.apk > artifacts/android-test/manifest.xml
           python - <<'PY'
           import xml.etree.ElementTree as ET
           root = ET.parse('artifacts/android-test/manifest.xml').getroot()
@@ -84,8 +93,8 @@ jobs:
       - name: Install Android 15 emulator
         run: |
           sudo chmod 666 /dev/kvm
-          sdkmanager 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
-          echo no | avdmanager create avd --force --name duallane-test \
+          "$DUALLANE_ANDROID_TOOLS/sdkmanager" 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
+          echo no | "$DUALLANE_ANDROID_TOOLS/avdmanager" create avd --force --name duallane-test \
             --package 'system-images;android-35;google_apis;x86_64' --device pixel_6
 
       - name: Install and cold-launch the self-contained APK
