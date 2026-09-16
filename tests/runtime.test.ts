@@ -45,6 +45,7 @@ test('reconnect refetches loaded messages before advancing to a fresh snapshot',
   await runtime.start();useWorkspace.getState().upsertMessage(parseMessage(message)!);
   await runtime.resume();expect(useWorkspace.getState().messages.c1?.[0]?.plainText).toBe('edited');
   expect(fetchMock.mock.calls.some(([url])=>url.includes('/c1/messages?'))).toBe(true);
+  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/refresh'))).toHaveLength(1);
 });
 
 test('a transient reconnect failure schedules another attempt without user intervention',async()=>{
