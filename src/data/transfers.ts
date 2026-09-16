@@ -36,6 +36,14 @@ function managedFile(task:UploadTask):File {
   return file;
 }
 function removeFile(file:File) { if (file.exists) file.delete(); }
+async function readDownloadChunk(reader:ReadableStreamDefaultReader<Uint8Array>) {
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const inactivity = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Download timed out')), 30000);
+  });
+  try { return await Promise.race([reader.read(), inactivity]); }
+  finally { clearTimeout(timer); }
+}
 
 export function clearAccountFiles(key:string):void {
   accountEpochs.set(key, (accountEpochs.get(key) ?? 0) + 1);
@@ -190,7 +198,7 @@ export class Transfers {
       let size = 0;
       try {
         while (true) {
-          const chunk = await reader.read();
+          const chunk = await readDownloadChunk(reader);
           assertAccount();
           if (chunk.done) break;
           size += chunk.value.byteLength;

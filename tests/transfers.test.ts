@@ -134,6 +134,39 @@ test.each([[new Uint8Array([1])], [new Uint8Array([1, 2, 3, 4])]])('truncated an
   expect(mockDisk.size).toBe(0);
 });
 
+test('a stalled download times out, cancels its stream and deletes partial content', async () => {
+  jest.useFakeTimers();
+  try {
+    const { api, reader } = downloadApi([new Uint8Array([1])]);
+    reader.read.mockImplementationOnce(async () => ({ done:false, value:new Uint8Array([1]) }));
+    reader.read.mockImplementationOnce(() => new Promise(() => undefined));
+    const downloaded = new Transfers().download(api, key, attachment);
+    const rejected = expect(downloaded).rejects.toThrow('Download timed out');
+    await jest.advanceTimersByTimeAsync(30001);
+    await rejected;
+    expect(reader.cancel).toHaveBeenCalled();
+    expect(Sharing.shareAsync).not.toHaveBeenCalled();
+    expect(mockDisk.size).toBe(0);
+  } finally { jest.useRealTimers(); }
+});
+
+test('receiving chunks renews the download timeout instead of imposing a total duration limit', async () => {
+  jest.useFakeTimers();
+  try {
+    const { api, reader } = downloadApi([]);
+    const values = [new Uint8Array([1]), new Uint8Array([2, 3])];
+    reader.read.mockImplementation(() => new Promise(resolve => setTimeout(() => {
+      const value = values.shift();
+      resolve(value ? { done:false, value } : { done:true });
+    }, 25000)));
+    const downloaded = new Transfers().download(api, key, attachment);
+    await jest.advanceTimersByTimeAsync(75001);
+    await downloaded;
+    expect(Sharing.shareAsync).toHaveBeenCalledTimes(1);
+    expect(mockDisk.size).toBe(0);
+  } finally { jest.useRealTimers(); }
+});
+
 test('account cleanup removes only managed upload files belonging to that account', () => {
   saveTask();
   const otherId = '33333333-3333-4333-8333-333333333333';
