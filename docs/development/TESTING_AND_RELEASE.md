@@ -30,6 +30,11 @@ GitHub 托管的 Java 17 和 Android SDK，执行 `pnpm check`、`assembleReleas
 `DUALLANE_ANDROID_STORE_PASSWORD`、`DUALLANE_ANDROID_KEY_ALIAS`、
 `DUALLANE_ANDROID_KEY_PASSWORD`。keystore 只在 runner 临时目录解码，不提交到仓库。
 
+`DUALLANE_API_ORIGIN` 是发布包及 PR 测试包共同使用的默认服务配置；当前维护者配置为
+`https://duallane.tsio.top`，通过构建环境注入，不写死在客户端源码。已配置的包不显示服务器
+输入，已有账号可直接使用 GitHub 登录；可选邀请链接必须属于同一服务。无登录会话时，
+版本检查在后台进行，不阻塞登录入口。
+
 ## PR 测试包
 
 `.github/workflows/android-test.yml` 在 PR 上独立构建 debug APK 和测试签名 release

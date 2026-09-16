@@ -58,7 +58,7 @@ export class Runtime {
         this.scheduleRetry();
         throw error;
       }
-    }else if(config.apiOrigin){this.createApi(validateOrigin(config.apiOrigin));await this.checkPolicy();}
+    }else if(config.apiOrigin){this.createApi(validateOrigin(config.apiOrigin));void this.checkPolicy();}
     }catch(error){if(this.current(epoch))useWorkspace.setState({error:errorText(error)});}finally{if(this.current(epoch))useWorkspace.setState({busy:false});}
   }
   async login(originInput:string,inviteCode?:string){
