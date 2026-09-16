@@ -1,0 +1,23 @@
+import type { ExpoConfig } from 'expo/config';
+const environment = process.env.APP_ENV ?? 'development';
+if (!['development', 'test', 'production'].includes(environment)) throw new Error('Invalid APP_ENV');
+const origin = process.env.EXPO_PUBLIC_API_ORIGIN ?? '';
+if (origin && !/^https:\/\/[^/]+$/.test(origin)) throw new Error('API origin must be an HTTPS origin without a path');
+if (environment === 'production' && !origin) throw new Error('Production requires EXPO_PUBLIC_API_ORIGIN');
+const updateUrl = process.env.DUALLANE_UPDATES_URL;
+const certificate = process.env.DUALLANE_UPDATE_CERTIFICATE;
+const keyId = process.env.DUALLANE_UPDATE_KEY_ID;
+if (updateUrl && (!certificate || !keyId || !updateUrl.startsWith('https://'))) throw new Error('Signed OTA configuration is incomplete');
+const config: ExpoConfig = {
+  name: 'DualLane', slug: 'duallane-mobile', version: '0.1.0', platforms: ['android'],
+  scheme: 'com.timestarry.duallane', userInterfaceStyle: 'automatic',
+  runtimeVersion: 'android-1',
+  android: { package: 'com.timestarry.duallane', versionCode: 1, allowBackup: false,
+    permissions: ['POST_NOTIFICATIONS'], blockedPermissions: ['android.permission.RECORD_AUDIO', 'android.permission.SCHEDULE_EXACT_ALARM', 'android.permission.USE_EXACT_ALARM', 'android.permission.FOREGROUND_SERVICE'] },
+  plugins: [['expo-build-properties', { android: { minSdkVersion: 26, compileSdkVersion: 36, targetSdkVersion: 36 } }],
+    'expo-secure-store', 'expo-document-picker', ['expo-notifications', { defaultChannel: 'messages' }], './plugins/android-signing.cjs'],
+  updates: updateUrl ? { url: updateUrl, enabled: true, checkAutomatically: 'NEVER',
+    codeSigningCertificate: certificate, codeSigningMetadata: { keyid: keyId!, alg: 'rsa-v1_5-sha256' } } : { enabled: false },
+  extra: { environment, apiOrigin: origin, channel: 'internal', protocolMajor: 1 },
+};
+export default config;
