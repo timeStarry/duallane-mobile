@@ -29,3 +29,15 @@ GitHub 托管的 Java 17 和 Android SDK，执行 `pnpm check`、`assembleReleas
 `DUALLANE_API_ORIGIN`，以及 secrets `DUALLANE_ANDROID_KEYSTORE_BASE64`、
 `DUALLANE_ANDROID_STORE_PASSWORD`、`DUALLANE_ANDROID_KEY_ALIAS`、
 `DUALLANE_ANDROID_KEY_PASSWORD`。keystore 只在 runner 临时目录解码，不提交到仓库。
+
+## PR 测试包
+
+`.github/workflows/android-test.yml` 在 PR 上独立构建 debug APK 和测试签名 release
+APK/AAB，校验包名、签名和 manifest，再在 Android 15 模拟器中安装自带 JS bundle 的
+release APK，检查登录页冷启动、停止后重新启动与崩溃日志。测试 key 由 runner 临时生成，
+不读取正式 secrets，也不创建 GitHub Release；不同运行的测试包需要先卸载再安装。
+
+该 smoke 只证明原生打包、安装与启动。真实账号 OAuth、真机后台通知、通知拒绝、
+完整聊天/文件联调及签名 OTA 升级/回滚需要另行记录。未配置 OTA 服务时 OTA 默认禁用。
+`node --test plugins/*.test.cjs` 检查重复 prebuild 的签名幂等、debug/release 隔离、
+服务地址校验及 Linux 上的 release tag 解析。
