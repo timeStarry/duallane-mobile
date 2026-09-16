@@ -63,6 +63,8 @@ jobs:
           cp android/app/build/outputs/bundle/release/app-release.aab artifacts/android-test/duallane-test-signed.aab
           apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)"
           "$apksigner" verify --verbose --print-certs artifacts/android-test/duallane-test-signed.apk > artifacts/android-test/apk-signature.txt
+          jarsigner -J-Duser.language=en -verify -certs artifacts/android-test/duallane-test-signed.aab > artifacts/android-test/aab-signature.txt
+          grep -F 'jar verified.' artifacts/android-test/aab-signature.txt
           apkanalyzer manifest print artifacts/android-test/duallane-test-signed.apk > artifacts/android-test/manifest.xml
           python - <<'PY'
           import xml.etree.ElementTree as ET
@@ -88,6 +90,7 @@ jobs:
       - name: Install and cold-launch the self-contained APK
         timeout-minutes: 10
         run: |
+          trap 'timeout 10 adb logcat -d -s AndroidRuntime:E ReactNativeJS:E > artifacts/android-test/runtime-errors.txt || true; cp "$RUNNER_TEMP/emulator.log" artifacts/android-test/emulator.log || true' EXIT
           "$ANDROID_HOME/emulator/emulator" -avd duallane-test -no-window -no-audio \
             -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
           timeout 240 adb wait-for-device
