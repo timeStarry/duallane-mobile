@@ -2,7 +2,13 @@ import type { ExpoConfig } from 'expo/config';
 const environment = process.env.APP_ENV ?? 'development';
 if (!['development', 'test', 'production'].includes(environment)) throw new Error('Invalid APP_ENV');
 const origin = process.env.EXPO_PUBLIC_API_ORIGIN ?? '';
-if (origin && !/^https:\/\/[^/]+$/.test(origin)) throw new Error('API origin must be an HTTPS origin without a path');
+if (origin) {
+  let parsed: URL;
+  try { parsed = new URL(origin); } catch { throw new Error('API origin must be an HTTPS origin without a path'); }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    throw new Error('API origin must be an HTTPS origin without credentials, a path, query or fragment');
+  }
+}
 if (environment === 'production' && !origin) throw new Error('Production requires EXPO_PUBLIC_API_ORIGIN');
 const appVersion = process.env.DUALLANE_APP_VERSION ?? '0.1.0';
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(appVersion)) throw new Error('DUALLANE_APP_VERSION must be SemVer');
