@@ -10,7 +10,7 @@ export class ReplayTracker {
   private seen = new Set<string>();
   constructor(cursor: number) { this.cursor = cursor; }
   accept(raw: unknown): { event?: WorkspaceEvent; replay?: boolean; sync?: boolean; hello?: boolean } {
-    const frame = z.object({type:z.string(),event:z.unknown().optional(),currentSeq:z.number().optional()}).safeParse(raw);
+    const frame = z.object({type:z.string(),version:z.literal(1).optional(),event:z.unknown().optional(),currentSeq:z.number().optional()}).safeParse(raw);
     if (!frame.success) return {sync:true};
     if(frame.data.type==='sync.required') { this.ready=false; return {sync:true}; }
     if(frame.data.type==='ready') {
