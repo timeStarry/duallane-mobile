@@ -1,0 +1,1 @@
+{"extends":"expo/tsconfig.base","compilerOptions":{"strict":true,"noUncheckedIndexedAccess":true,"types":["jest","node"]},"include":["src/**/*.ts","src/**/*.tsx","App.tsx","app.config.ts","tests/**/*.ts","tests/**/*.tsx"]}

@@ -6,7 +6,7 @@
 - React Navigation Native Stack + Bottom Tabs；不使用 WebView 套壳或 Web 路由兼容层。
 - Zustand + domain reducer/selectors；服务端对象 normalized，transport event 不直接进 UI。
 - Zod（或等价运行时校验）解析 HTTP、WebSocket、消息内容和 release policy。
-- `fetch` 封装 HTTP，原生 WebSocket 处理 Workspace realtime；FCM 负责 Android 通知。
+- `fetch` 封装 HTTP，原生 WebSocket 处理 Workspace realtime；本地通知 负责 Android 通知。
 - SQLite/受保护 KV 保存可丢失缓存、草稿和游标；Android Keystore 保存 refresh token。
 - Android APK/AAB 是唯一交付产物；iOS 不在当前架构范围。
 
@@ -20,7 +20,7 @@ data/realtime/       hello/ready/event/replay、游标和重连
 data/cache/          SQLite/KV、草稿、最近消息
 features/chat/       会话列表、聊天、消息和附件
 features/account/    个人资料、通知偏好、设备会话、只读空间信息
-platform/android/    OAuth callback、Keystore、FCM、后台上传、Deep Link
+platform/android/    OAuth callback、Keystore、本地通知、前台可恢复上传、Deep Link
 ui/                  token、primitive、fallback、update dialog
 ```
 
@@ -31,7 +31,7 @@ feature 层用于隐藏会话级动作；不得据此生成邀请、角色、容
 
 启动顺序为 release policy、凭证恢复、bootstrap、会话列表、WebSocket。HTTP 响应先校验
 再写入 domain store；事件按 event ID 去重、按 seq 检查缺口，缺口触发受控 refetch。
-平台模块通过接口注入 domain，不让业务组件直接调用 Keystore、FCM 或原生文件 API。
+平台模块通过接口注入 domain，不让业务组件直接调用 Keystore、本地通知或原生文件 API。
 
 新增依赖必须说明维护、包体、安全、许可证和 Android 兼容成本。不得引入第二套 UI Kit、
 第二个全局状态库或通用离线同步框架来掩盖领域边界。

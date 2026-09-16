@@ -1,0 +1,14 @@
+node_modules/
+.expo/
+dist/
+coverage/
+ios/
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.pem
+credentials.json
+artifacts/
+*.log
