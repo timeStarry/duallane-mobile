@@ -20,3 +20,12 @@ release notes 与 APK/AAB 一致。原生模块、权限、协议 major 或 runt
 首发只做 internal APK/AAB；未来若增加 beta/production，再按 channel、版本和 rollout 百分比控制。本地通知可关闭；
 OTA 有发布回退。回滚优先恢复上一版签名 APK/AAB 或同 runtime 的上一 bundle；消息数据、
 Workspace 权限和服务端 schema 不随客户端回滚。未运行真机、本地通知、Play Console 或 OTA 的检查不得标记为通过。
+
+## GitHub Actions Android 发布
+
+`.github/workflows/android-release.yml` 支持 `vMAJOR.MINOR.PATCH` tag 或手动触发。流程使用
+GitHub 托管的 Java 17 和 Android SDK，执行 `pnpm check`、`assembleRelease`、`bundleRelease`，
+并上传签名 APK/AAB artifact；tag 构建还会创建 GitHub Release。正式构建必须配置仓库变量
+`DUALLANE_API_ORIGIN`，以及 secrets `DUALLANE_ANDROID_KEYSTORE_BASE64`、
+`DUALLANE_ANDROID_STORE_PASSWORD`、`DUALLANE_ANDROID_KEY_ALIAS`、
+`DUALLANE_ANDROID_KEY_PASSWORD`。keystore 只在 runner 临时目录解码，不提交到仓库。
