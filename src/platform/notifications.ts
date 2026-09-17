@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { AppState } from 'react-native';
 import { z } from 'zod';
-export const notificationTarget=z.object({userId:z.string(),origin:z.string(),conversationId:z.string(),messageId:z.string()});
+export const notificationTarget=z.object({userId:z.string(),origin:z.string(),conversationId:z.string(),messageId:z.string(),topicId:z.string().optional()});
 let notificationOperation:Promise<unknown>=Promise.resolve();
 function serialize(operation:()=>Promise<void>){const next=notificationOperation.then(operation,operation);notificationOperation=next;return next;}
 // Local notifications only. No push token registration, Firebase configuration or foreground service.

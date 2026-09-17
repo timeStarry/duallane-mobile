@@ -18,7 +18,7 @@ domain/              Workspace 类型、消息协议、权限投影、状态机
 data/http/           API client、token refresh、错误映射
 data/realtime/       hello/ready/event/replay、游标和重连
 data/cache/          SQLite/KV、草稿、最近消息
-features/chat/       会话列表、聊天、消息和附件
+features/chat/       会话／话题列表、聊天、消息、附件、对象动作
 features/files/      文件库与传输任务
 features/members/    可见联系人
 features/account/    个人目录、资料、外观、聊天偏好、通知、只读空间信息、关于

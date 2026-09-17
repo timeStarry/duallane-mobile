@@ -1,6 +1,6 @@
 import React from 'react';
 import { Text, TextInput, View } from 'react-native';
-import { Paperclip, Send } from 'lucide-react-native';
+import { Paperclip, Send, Smile } from 'lucide-react-native';
 import { AttachmentPreview } from './files';
 import { Button, IconButton } from './primitives';
 import { useTheme } from './theme';
@@ -29,6 +29,7 @@ export function Composer({
   onChangeText,
   onSend,
   onAttach,
+  onEmote,
   sendDisabled = false,
   attachDisabled = false,
   placeholder = '发送消息',
@@ -41,6 +42,7 @@ export function Composer({
   onChangeText: (text: string) => void;
   onSend: () => void;
   onAttach?: () => void;
+  onEmote?: () => void;
   sendDisabled?: boolean;
   attachDisabled?: boolean;
   placeholder?: string;
@@ -59,6 +61,11 @@ export function Composer({
         {onAttach ? (
           <IconButton label="添加文件" onPress={onAttach} disabled={attachDisabled}>
             <Paperclip color={attachDisabled ? t.control : t.shared} size={22} />
+          </IconButton>
+        ) : null}
+        {onEmote ? (
+          <IconButton label="表情" onPress={onEmote}>
+            <Smile color={t.shared} size={22} />
           </IconButton>
         ) : null}
         <TextInput

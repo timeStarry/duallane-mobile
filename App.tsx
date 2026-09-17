@@ -20,7 +20,7 @@ import { cache } from './src/platform/storage';
 import { notificationTarget } from './src/platform/notifications';
 import { errorText } from './src/data/client';
 
-type RootParams = { Workspace: undefined; Chat: { id: string }; Details: { id: string } };
+type RootParams = { Workspace: undefined; Chat: { id: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' } };
 type TabsParams = { 聊天: undefined; 文件: undefined; 成员: undefined; 我的: undefined };
 const Stack = createNativeStackNavigator<RootParams>();
 const Tabs = createBottomTabNavigator<TabsParams>();
@@ -64,8 +64,16 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
       const s = useWorkspace.getState();
       if (!target.success || target.data.userId !== s.bootstrap?.auth.currentUser.id || target.data.origin !== runtime.api?.origin) return;
       try {
-        await runtime.open(target.data.conversationId);
-        if (!cancelled && useWorkspace.getState().bootstrap?.auth.currentUser.id === target.data.userId) navigation.navigate('Chat', { id: target.data.conversationId });
+        if (target.data.topicId) {
+          await runtime.openTopic(target.data.topicId);
+          if (!cancelled && useWorkspace.getState().bootstrap?.auth.currentUser.id === target.data.userId) {
+            const topic = useWorkspace.getState().topics[target.data.topicId];
+            navigation.navigate('Topic', { id: target.data.topicId, conversationId: topic?.conversationId ?? target.data.conversationId });
+          }
+        } else {
+          await runtime.open(target.data.conversationId);
+          if (!cancelled && useWorkspace.getState().bootstrap?.auth.currentUser.id === target.data.userId) navigation.navigate('Chat', { id: target.data.conversationId });
+        }
       } catch (e) {
         if (!cancelled) {
           useWorkspace.setState({ error: errorText(e) });
@@ -97,7 +105,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
         },
       })}
     >
-      <Tabs.Screen name="聊天">{() => <ConversationsScreen open={id => nav.navigate('Chat', { id })} />}</Tabs.Screen>
+      <Tabs.Screen name="聊天">{() => <ConversationsScreen runtime={runtime} open={id => nav.navigate('Chat', { id })} openTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })} />}</Tabs.Screen>
       <Tabs.Screen name="文件">{() => <FilesScreen runtime={runtime} transfers={transfers} />}</Tabs.Screen>
       <Tabs.Screen name="成员">{() => <MembersScreen runtime={runtime} open={id => nav.navigate('Chat', { id })} />}</Tabs.Screen>
       <Tabs.Screen name="我的">{() => <AccountNavigator runtime={runtime} mode={mode} setMode={setMode} />}</Tabs.Screen>
@@ -124,11 +132,39 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
           <Stack.Screen name="Workspace" options={{ headerShown: false }}>{tabs}</Stack.Screen>
           <Stack.Screen name="Chat" options={{ title: '会话' }}>
             {({ route, navigation: nav }) => (
-              <ChatScreen id={route.params.id} runtime={runtime} transfers={transfers} details={() => nav.navigate('Details', { id: route.params.id })} />
+              <ChatScreen
+                target={{ kind: 'conversation', id: route.params.id }}
+                runtime={runtime}
+                transfers={transfers}
+                details={() => nav.navigate('Details', { id: route.params.id, kind: 'conversation' })}
+                onOpenTopic={topicId => {
+                  const topic = useWorkspace.getState().topics[topicId];
+                  nav.navigate('Topic', { id: topicId, conversationId: topic?.conversationId ?? route.params.id });
+                }}
+              />
             )}
           </Stack.Screen>
-          <Stack.Screen name="Details" options={{ title: '会话详情' }}>
-            {({ route }) => <DetailsScreen id={route.params.id} runtime={runtime} />}
+          <Stack.Screen name="Topic" options={{ title: '话题' }}>
+            {({ route, navigation: nav }) => (
+              <ChatScreen
+                target={{ kind: 'topic', id: route.params.id, conversationId: route.params.conversationId }}
+                runtime={runtime}
+                transfers={transfers}
+                details={() => nav.navigate('Details', { id: route.params.id, kind: 'topic' })}
+                onOpenTopic={topicId => nav.navigate('Topic', { id: topicId, conversationId: route.params.conversationId })}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Details" options={{ title: '详情' }}>
+            {({ route, navigation: nav }) => (
+              <DetailsScreen
+                id={route.params.id}
+                kind={route.params.kind}
+                runtime={runtime}
+                onCreateTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })}
+                onOpenTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })}
+              />
+            )}
           </Stack.Screen>
         </Stack.Navigator>
       </NavigationContainer>

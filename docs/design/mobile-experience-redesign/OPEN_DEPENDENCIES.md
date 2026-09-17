@@ -9,10 +9,10 @@
 | 原色 token 与 primitives | 不需要服务端变更 | R1 |
 | 导航壳、登录、列表行、设置目录 | 不需要服务端变更 | R1 |
 | 开发工作台 | `__DEV__` 可见，使用正式组件 | R1 |
-| 扩展 `parseMessage` 投影 | 主仓 DTO 已有字段 | R2 |
-| 回复／反应／隐藏／撤回／常驻 HTTP | 路由已在 `core_routes.go` | R2 |
-| 话题 HTTP | 路由已在 `topic_routes.go` | R2 |
-| 表情库与卡片 | 路由已在 emote／card | R2 |
+| 扩展 `parseMessage` 投影 | 主仓 DTO 已有字段 | R2 已接 |
+| 回复／反应／隐藏／撤回／常驻 HTTP | 路由已在 `core_routes.go` | R2 已接 |
+| 话题 HTTP | 路由已在 `topic_routes.go` | R2 已接；不做关闭／归档管理 |
+| 表情库与卡片 | 路由已在 emote／card | R2 选择器／话题卡已接；表情包管理工具未做 |
 | 资料 `PATCH /me/profile` | 路由已在 | R1 已接显示名／查找可见性；头像上传仍待 |
 | 自动折叠偏好 | `GET/PUT /me/emote-settings` 已有 | R1 已接设置保存；消息流折叠属 R2 |
 

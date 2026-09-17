@@ -43,11 +43,13 @@ test('conversation rows expose unread and muted state without pretending to sear
 });
 
 test('the chat home uses a loaded-list filter and an honest topic placeholder', () => {
-  const view = render(wrap(<ConversationsScreen open={jest.fn()} />));
+  const runtime = new Runtime();
+  runtime.listTopics = jest.fn().mockResolvedValue([]);
+  const view = render(wrap(<ConversationsScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} />));
   expect(view.getByLabelText('筛选已加载的会话')).toBeTruthy();
   fireEvent.press(view.getByRole('tab', { name: '话题' }));
-  expect(view.getByText('话题列表稍后接入')).toBeTruthy();
-  expect(view.queryByText('筛选已加载的会话')).toBeNull();
+  expect(view.getByText('还没有话题')).toBeTruthy();
+  expect(view.queryByLabelText('筛选已加载的会话')).toBeNull();
 });
 
 test('account categories do not invent device-session or space-admin entries', () => {

@@ -28,21 +28,21 @@
 
 | 编号 | 能力 | Go | 当前移动端 | 本轮 |
 | --- | --- | --- | --- | --- |
-| MSG-01 | 结构化 blocks（text／mention／link／emoji／attachment） | 消息 DTO `content` | 解析认识 blocks，UI 只渲染 `plainText` | R1 组件位；R2 正式渲染 |
-| MSG-02 | Markdown 安全子集 | Web `WorkspaceMarkdown` | 未接 | R2；不引入 WebView |
-| MSG-03 | 回复 | 创建消息 `replyToMessageId` | 发送固定 `null`；DTO 未投影 | R2，需扩展 `parseMessage` |
-| MSG-04 | @ 成员 | mention block | 解析有、编辑器无 | R2 |
-| MSG-05 | 表情与反应 | emote 路由；`POST/DELETE .../reactions` | DTO 有 `reactions`，客户端丢弃 | R2 |
-| MSG-06 | 复制／撤回／隐藏／常驻 | recall、hidden、pins | 未接动作面板 | R2；R1 交付 `ObjectActionSheet` 壳 |
-| MSG-07 | 历史、已读、未读分界 | messages + read | 有分页和 markRead，缺引用定位与可见已读 | R2 补阅读流程 |
-| MSG-08 | 草稿、失败重试、clientMessageId | 创建消息幂等 | 已接文本草稿 | R1 保留；R2 扩附件／引用草稿 |
-| MSG-09 | 文件选择预览后发送 | 分片上传 | 选择即上传并发消息 | R2 改为选→预览→发送 |
-| MSG-10 | 话题 | `topic_routes.go` 全套 | 未接 | R1 列表分段入口；R2 接线 |
-| MSG-11 | 已注册卡片 | `/cards/{id}`、actions | 未接 | R2 |
-| MSG-12 | 未读／通知一致 | 会话投影 + WS | 基础已接 | R2 补话题目标与点击深链 |
+| MSG-01 | 结构化 blocks（text／mention／link／emoji／attachment） | 消息 DTO `content` | 按 block 渲染；未知仍 fallback | R2 已接 |
+| MSG-02 | Markdown 安全子集 | Web `WorkspaceMarkdown` | 无 WebView；表格／HTML 纯文 | R2 已接 |
+| MSG-03 | 回复 | 创建消息 `replyToMessageId` | 引用预览／取消／定位 | R2 已接 |
+| MSG-04 | @ 成员 | mention block | 候选与结构化 mention | R2 已接 |
+| MSG-05 | 表情与反应 | emote 路由；`POST/DELETE .../reactions` | 选择器与计数 | R2 已接 |
+| MSG-06 | 复制／撤回／隐藏／常驻 | recall、hidden、pins | 长按与更多；三者分开 | R2 已接 |
+| MSG-07 | 历史、已读、未读分界 | messages + read | 分页、未读分界、引用定位 | R2 已接 |
+| MSG-08 | 草稿、失败重试、clientMessageId | 创建消息幂等 | 草稿含引用／附件／提及 | R2 已接 |
+| MSG-09 | 文件选择预览后发送 | 分片上传 | 选择≠发送；确认后上传 | R2 已接 |
+| MSG-10 | 话题 | `topic_routes.go` 全套 | 列表、加入／退出、独立聊天 | R2 已接；不做关闭／归档管理 |
+| MSG-11 | 已注册卡片 | `/cards/{id}`、actions | 话题卡原生；未知不执行 | R2 已接 |
+| MSG-12 | 未读／通知一致 | 会话投影 + WS | 通知可带 topicId | R2 已接 |
 
 `close`／`archive` 话题管理 API 存在，不等于移动端提供管理页。移动端只消费加入、退出、阅读、发送和状态展示。
 
 ## 3. 当前解析缺口
 
-[`parseMessage`](../../../src/domain/contracts.ts) 未纳入主仓 DTO 已有字段：`topicId`、`replyToMessageId`、`reactions`、`pin`、`authorAvatarUrl`、`authorKind`、`authorRemark`。R1 不改协议行为；R2 必须扩展 schema 并保留未知 major／block 的安全 fallback。
+[`parseMessage`](../../../src/domain/contracts.ts) 已纳入 `topicId`、`replyToMessageId`、`reactions`、`pin`、作者扩展字段，以及 `card`／`emote_collection`／`topic_reference` 已知 block。未知 block／kind 仍安全 fallback 到 `plainText`，不执行 payload。

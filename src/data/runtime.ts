@@ -3,7 +3,9 @@ import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import { z } from 'zod';
 import { ApiClient, ApiError, errorText } from './client';
-import { bootstrapSchema, chatSettingsResponseSchema, conversationSchema, profileResponseSchema, sessionSchema, parseMessage, type ChatSettingsPatch, type Message, type WorkspaceEvent } from '../domain/contracts';
+import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteListSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
+import { composeBlocks } from '../domain/compose';
+import { assertAllowedCardAction } from '../domain/actions';
 import { clearAccountFiles } from './transfers';
 import { useWorkspace } from '../domain/store';
 import { releaseSchema, updateDecision } from '../domain/updates';
@@ -88,12 +90,15 @@ export class Runtime {
   forced(){const p=useWorkspace.getState().policy;return p?updateDecision(p,installed)==='forced':false;}
   private restoreLocal(key:string,restoreMessages=false){
     const visible=useWorkspace.getState().conversations;
-    const drafts=z.record(z.string()).safeParse(cache.get(`${key}:drafts`));
-    if(drafts.success){const allowed=Object.fromEntries(Object.entries(drafts.data).filter(([id])=>!!visible[id]));useWorkspace.setState({drafts:allowed});cache.set(`${key}:drafts`,allowed);}
+    const raw=cache.get(`${key}:drafts`);
+    const asDrafts=z.record(draftSchema).safeParse(raw);
+    const asStrings=z.record(z.string()).safeParse(raw);
+    const parsed=asDrafts.success?asDrafts.data:asStrings.success?Object.fromEntries(Object.entries(asStrings.data).map(([id,text])=>[id,{text,mentionIds:[] as string[]}])):null;
+    if(parsed){const allowed=Object.fromEntries(Object.entries(parsed).filter(([id])=>id.startsWith('topic:')||!!visible[id]));useWorkspace.setState({drafts:allowed});cache.set(`${key}:drafts`,allowed);}
     if(restoreMessages)for(const id of Object.keys(visible)){
       const rows=z.array(z.record(z.unknown())).safeParse(cache.get(`${key}:messages:${id}`));
       if(!rows.success)continue;
-      const messages=rows.data.map(row=>parseMessage({...row,content:{format:'duallane.message+json;v=1',blocks:row.blocks}})).filter((message):message is Message=>!!message&&message.conversationId===id);
+      const messages=rows.data.map(row=>parseMessage(row.content?row:{...row,content:{format:'duallane.message+json;v=1',blocks:row.blocks}})).filter((message):message is Message=>!!message&&message.conversationId===id);
       useWorkspace.getState().setMessages(id,messages);
     }
   }
@@ -106,21 +111,48 @@ export class Runtime {
     useWorkspace.getState().applyBootstrap(b,key);cache.set(`${key}:bootstrap`,b);this.restoreLocal(key);
     if(api.session)await credentials.save({origin:api.origin,refreshToken:api.session.refreshToken,userId:b.auth.currentUser.id});
     if(!this.current(epoch))return;
-    if(refreshMessages)await Promise.all(loaded.filter(id=>!!useWorkspace.getState().conversations[id]).map(id=>this.messages(id)));
+    void this.chatSettings().then(result=>{if(this.current(epoch))useWorkspace.getState().setChatSettings(result.settings);}).catch(()=>undefined);
+    void this.listTopics().catch(()=>undefined);
+    if(refreshMessages)await Promise.all(loaded.filter(id=>!!useWorkspace.getState().conversations[id]||id.startsWith('topic:')).map(id=>id.startsWith('topic:')?this.topicMessages(id.slice(6)):this.messages(id)));
   }
-  draft(id:string,text:string){useWorkspace.getState().setDraft(id,text);const s=useWorkspace.getState();cache.set(`${s.accountKey}:drafts`,s.drafts);}
-  async messages(id:string,before?:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/messages?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&m.conversationId===id);if(this.current(epoch)){useWorkspace.getState().setMessages(id,messages,!!before);cache.set(`${useWorkspace.getState().accountKey}:messages:${id}`,useWorkspace.getState().messages[id]);}return messages.length;}
+  draft(id:string,text:string){this.patchDraft(id,{text});}
+  patchDraft(id:string,patch:Partial<Draft>){useWorkspace.getState().setDraft(id,patch);const s=useWorkspace.getState();cache.set(`${s.accountKey}:drafts`,s.drafts);}
+  async messages(id:string,before?:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/messages?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&m.conversationId===id&&!m.topicId);if(this.current(epoch)){useWorkspace.getState().setMessages(id,messages,!!before);cache.set(`${useWorkspace.getState().accountKey}:messages:${id}`,useWorkspace.getState().messages[id]);}return messages.length;}
+  async topicMessages(id:string,before?:string){const epoch=this.epoch;const bucket=`topic:${id}`;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/messages?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&m.topicId===id);if(this.current(epoch)){useWorkspace.getState().setMessages(bucket,messages,!!before);cache.set(`${useWorkspace.getState().accountKey}:messages:${bucket}`,useWorkspace.getState().messages[bucket]);}return messages.length;}
   async open(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}));if(!this.current(epoch))return;useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));await this.messages(id);}
-  async send(id:string,text:string,existing?:Message,attachmentId?:string){
-    const s=useWorkspace.getState();if(!s.bootstrap||!s.conversations[id]?.capabilities.canSendMessage||this.forced())throw new Error('Cannot send');
+  async openTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}`,z.object({topic:topicSchema}));if(!this.current(epoch))return;useWorkspace.getState().upsertTopic(result.topic);if(result.topic.joined)await this.topicMessages(id);}
+  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];upload?:()=>Promise<Attachment|null>;syncToGroup?:boolean;}){
+    const s=useWorkspace.getState();const topicId=options?.topicId??existing?.topicId;const conversationId=existing?.conversationId??id;
+    const topic=topicId?s.topics[topicId]:undefined;
+    const canSend=topicId?!!topic&&topic.joined&&topic.status==='open':!!s.conversations[conversationId]?.capabilities.canSendMessage;
+    if(!s.bootstrap||!canSend||this.forced())throw new Error('Cannot send');
     const clientMessageId=existing?.clientMessageId??Crypto.randomUUID();if(this.inFlight.has(clientMessageId))return;
-    const m:Message=existing??{id:clientMessageId,conversationId:id,authorId:s.bootstrap.auth.currentUser.id,authorName:s.bootstrap.auth.currentUser.displayName,kind:'user',clientMessageId,createdAt:new Date().toISOString(),plainText:text,hiddenByCurrentUser:false,attachments:[],blocks:[...(text.trim()?[{type:'text' as const,text}]:[]),...(attachmentId?[{type:'attachment' as const,attachmentId}]:[])],fallback:false};
-    if(!m.blocks.length)return;this.inFlight.add(clientMessageId);s.upsertMessage({...m,status:'sending'});if(!existing)this.draft(id,'');const epoch=this.epoch;
-    try{const r=await this.requireApi().json('/api/workspace/messages',z.object({message:z.unknown()}),{conversationId:id,clientMessageId,content:{format:'duallane.message+json;v=1',blocks:m.blocks},replyToMessageId:null});const parsed=parseMessage(r.message);if(!parsed)throw new Error('Invalid message');if(this.current(epoch))useWorkspace.getState().upsertMessage(parsed);}
+    const members=s.conversations[conversationId]?.members??s.bootstrap.members;
+    const replyTo=options?.replyToMessageId===undefined?existing?.replyToMessageId??null:options.replyToMessageId;
+    const mentionIds=options?.mentionIds??[];
+    let blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,attachmentId);
+    if(!blocks.length&&!options?.upload)return;
+    const m:Message=existing??{id:clientMessageId,conversationId,topicId,authorId:s.bootstrap.auth.currentUser.id,authorName:s.bootstrap.auth.currentUser.displayName,kind:'user',clientMessageId,createdAt:new Date().toISOString(),plainText:text,replyToMessageId:replyTo,hiddenByCurrentUser:false,attachments:[],reactions:[],blocks,fallback:false};
+    this.inFlight.add(clientMessageId);s.upsertMessage({...m,status:'sending'});if(!existing)this.patchDraft(topicId?`topic:${topicId}`:conversationId,{text:'',mentionIds:[],replyToMessageId:undefined,pendingAttachment:undefined});const epoch=this.epoch;
+    try{
+      if(options?.upload){const file=await options.upload();if(!this.current(epoch))return;if(file){attachmentId=file.id;blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,file.id);}}
+      if(!blocks.length)throw new Error('Cannot send');
+      const body={clientMessageId,content:{format:'duallane.message+json;v=1',blocks},replyToMessageId:replyTo,...(topicId?{syncToGroup:!!options?.syncToGroup}:{conversationId})};
+      const path=topicId?`/api/workspace/topics/${encodeURIComponent(topicId)}/messages`:'/api/workspace/messages';
+      const r=await this.requireApi().json(path,z.object({message:z.unknown()}).passthrough(),body);const parsed=parseMessage('message' in r?r.message:r);if(!parsed)throw new Error('Invalid message');if(this.current(epoch))useWorkspace.getState().upsertMessage(parsed);}
     catch(error){if(this.current(epoch))useWorkspace.getState().upsertMessage({...m,status:'failed',error:errorText(error)});throw error;}finally{this.inFlight.delete(clientMessageId);}
   }
   isForced(){ return this.forced(); }
-  async markRead(id:string,messageId:string){if(!this.foreground)return;const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/read`,z.object({conversation:conversationSchema}),{messageId});if(this.current(epoch))useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));}
+  async markRead(id:string,messageId:string,topic=false){
+    if(!this.foreground)return;const epoch=this.epoch;
+    if(topic){
+      const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/read`,z.object({topicId:z.string(),lastReadMessageId:z.string().nullish(),unreadCount:z.number().optional()}),{messageId});
+      if(this.current(epoch))useWorkspace.setState(s=>{const current=s.topics[id];return current?{topics:{...s.topics,[id]:{...current,lastReadMessageId:result.lastReadMessageId,unreadCount:result.unreadCount??0}}}:s;});
+      return;
+    }
+    const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/read`,z.object({conversation:conversationSchema}),{messageId});
+    if(this.current(epoch))useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));
+  }
   async notification(id:string,level:'all'|'mentions'|'muted'){await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/notification`,z.unknown(),{level},'PATCH');await this.bootstrap();}
   async updateProfile(patch:{nickname?:string|null;searchDiscoverable?:boolean}){
     const epoch=this.epoch;
@@ -141,18 +173,60 @@ export class Runtime {
     const epoch=this.epoch;
     const result=await this.requireApi().json('/api/workspace/me/emote-settings',chatSettingsResponseSchema,patch,'PUT');
     if(!this.current(epoch))throw new Error('Stale session');
+    useWorkspace.getState().setChatSettings(result.settings);
     return result.settings;
   }
+  async listTopics(conversationId?:string){
+    const epoch=this.epoch;
+    const path=conversationId?`/api/workspace/conversations/${encodeURIComponent(conversationId)}/topics`:'/api/workspace/topics/mine';
+    const result=await this.requireApi().json(path,z.object({topics:z.array(topicSchema)}));
+    if(this.current(epoch)){if(conversationId)useWorkspace.setState(s=>({topics:{...s.topics,...Object.fromEntries(result.topics.map(topic=>[topic.id,topic]))}}));else useWorkspace.getState().setTopics(result.topics);}
+    return result.topics;
+  }
+  async createTopic(conversationId:string,title:string,description=''){
+    const epoch=this.epoch;
+    const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(conversationId)}/topics`,z.object({topic:topicSchema}),{title,description,source:'form',idempotencyKey:Crypto.randomUUID()});
+    if(!this.current(epoch))throw new Error('Stale session');
+    useWorkspace.getState().upsertTopic(result.topic);
+    return result.topic;
+  }
+  async joinTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/join`,z.object({topic:topicSchema}),{});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.getState().upsertTopic(result.topic);return result.topic;}
+  async leaveTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/leave`,z.object({topic:topicSchema}),{});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.getState().upsertTopic(result.topic);useWorkspace.setState(s=>{const drafts={...s.drafts};delete drafts[`topic:${id}`];return {drafts};});return result.topic;}
+  async topicNotification(id:string,level:'all'|'mentions'|'muted'){const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/notification`,z.object({topic:topicSchema}),{level},'PATCH');useWorkspace.getState().upsertTopic(result.topic);}
+  async recall(messageId:string){const r=await this.requireApi().json(`/api/workspace/messages/${encodeURIComponent(messageId)}/recall`,z.object({message:z.unknown()}));const parsed=parseMessage(r.message);if(parsed)useWorkspace.getState().upsertMessage(parsed);}
+  async hide(messageId:string,hidden:boolean){const r=await this.requireApi().json(`/api/workspace/messages/${encodeURIComponent(messageId)}/hidden`,z.object({message:z.unknown()}).passthrough(),hidden?{}:undefined,hidden?'PUT':'DELETE');const parsed=parseMessage('message' in r?r.message:r);if(parsed)useWorkspace.getState().upsertMessage(parsed);}
+  async react(messageId:string,emoteKey:string,remove=false){
+    const path=`/api/workspace/messages/${encodeURIComponent(messageId)}/reactions${remove?`/${encodeURIComponent(emoteKey)}`:''}`;
+    const r=await this.requireApi().json(path,z.object({message:z.unknown().optional(),reactions:z.unknown().optional()}).passthrough(),remove?undefined:{emoteKey},remove?'DELETE':'POST');
+    const parsed=parseMessage(r.message);if(parsed)useWorkspace.getState().upsertMessage(parsed);
+  }
+  async pin(conversationId:string,messageId:string,remove=false){
+    if(remove)await this.requireApi().json(`/api/workspace/groups/${encodeURIComponent(conversationId)}/pins/${encodeURIComponent(messageId)}`,z.unknown(),undefined,'DELETE');
+    else await this.requireApi().json(`/api/workspace/groups/${encodeURIComponent(conversationId)}/pins`,z.unknown(),{messageId});
+    await this.open(conversationId);
+  }
+  async emotes(){return this.requireApi().json('/api/workspace/me/emotes',emoteListSchema);}
+  async resolveCard(cardId:string){const result=await this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}`,z.object({card:cardResolutionSchema}));return result.card;}
+  async cardAction(cardId:string,actionId:string,allowed:string[]=[],revision?:number){
+    assertAllowedCardAction(actionId,allowed);
+    return this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}/actions`,z.object({action:z.unknown()}).passthrough(),{actionId,clientActionId:Crypto.randomUUID(),expectedRevision:revision,input:{}});
+  }
+  async remark(userId:string,value:string){await this.requireApi().json(`/api/workspace/members/${encodeURIComponent(userId)}/remark`,z.unknown(),{remark:value},'PUT');await this.bootstrap();}
   async direct(userId:string){const epoch=this.epoch;const r=await this.requireApi().json('/api/workspace/conversations',z.object({conversation:conversationSchema}),{type:'direct',memberIds:[userId]});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.setState(s=>({conversations:{...s.conversations,[r.conversation.id]:r.conversation}}));return r.conversation.id;}
   private async applyEvent(event:WorkspaceEvent,replay:boolean){const s=useWorkspace.getState();if(!s.bootstrap||event.spaceId!==s.bootstrap.space.id)return;
-    if(event.type==='message.created'){const message=parseMessage(event.payload.message);if(!message)return;
-      const conversation=s.conversations[message.conversationId];s.upsertMessage(message);
-      if(conversation)useWorkspace.setState(v=>({conversations:{...v.conversations,[conversation.id]:{...conversation,lastMessagePlainText:message.plainText,lastActivityAt:message.createdAt}}}));
-      if(shouldNotify({background:!this.foreground,replay,message,userId:s.bootstrap.auth.currentUser.id,conversation})&&!this.notified.has(message.id)){
+    const message=parseMessage(event.payload.message);
+    if(message){
+      s.upsertMessage(message);
+      const conversation=s.conversations[message.conversationId];
+      if(conversation&&!message.topicId)useWorkspace.setState(v=>({conversations:{...v.conversations,[conversation.id]:{...conversation,lastMessagePlainText:message.plainText,lastActivityAt:message.createdAt}}}));
+      if(event.type==='message.created'&&shouldNotify({background:!this.foreground,replay,message,userId:s.bootstrap.auth.currentUser.id,conversation,topic:message.topicId?s.topics[message.topicId]:undefined})&&!this.notified.has(message.id)){
         this.notified.add(message.id);if(this.notified.size>2000)this.notified.delete(this.notified.values().next().value??'');
-        await showMessageNotification({origin:this.requireApi().origin,userId:s.bootstrap.auth.currentUser.id,conversationId:message.conversationId,messageId:message.id});
+        await showMessageNotification({origin:this.requireApi().origin,userId:s.bootstrap.auth.currentUser.id,conversationId:message.conversationId,messageId:message.id,topicId:message.topicId});
       }
-    }else{await this.bootstrap(true);}
+      return;
+    }
+    if(event.type.startsWith('topic.'))await this.listTopics().catch(()=>undefined);
+    else await this.bootstrap(true);
   }
   connect(){if(!this.active||this.forced()||!this.api?.session||!useWorkspace.getState().ready)return;this.disconnect();const api=this.api,epoch=this.epoch;
     const tracker=new ReplayTracker(useWorkspace.getState().cursor);
