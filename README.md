@@ -30,6 +30,16 @@ builds without a configured origin retain the service/invitation input.
 
 The design is recorded in
 [`docs/WORKSPACE_MOBILE_CLIENT_DESIGN.md`](docs/WORKSPACE_MOBILE_CLIENT_DESIGN.md).
+The next Android experience revision is specified in
+[`DL Android 体验改造要求`](docs/design/mobile-experience-redesign/README.md), with a
+[cross-client acceptance ledger](docs/design/mobile-experience-redesign/ACCEPTANCE.md)
+and [R0 design confirmation](docs/design/mobile-experience-redesign/R0.md).
+It preserves DL semantics across clients while adapting navigation, controls, and
+system interactions to Android. R0/R1 cover tokens, primitives, navigation shell
+and the personal settings hierarchy. R2 wires chat content, replies, topics and
+object actions. R3 records automated checks and remaining unverified device /
+cross-client / signed-package work. They are not a claim that the acceptance
+ledger has passed.
 The source of truth for server behavior remains the sibling
 [`duallane`](../duallane) repository, especially its Workspace API, message
 protocol, realtime, security, and release documents.

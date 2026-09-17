@@ -81,5 +81,5 @@ test('changing service origin does not inherit the old forced-update policy',asy
 test('offline startup restores only this account and its visible conversation cache',async()=>{
   jest.mocked(cache.get).mockImplementation(key=>key.endsWith(':bootstrap')?bootstrap:key.endsWith(':drafts')?{c1:'allowed',removed:'private'}:key.endsWith(':messages:c1')?[parseMessage(message),{...parseMessage(message),conversationId:'removed'}]:null);
   fetchMock.mockRejectedValue(new Error('offline'));await runtime.start();
-  expect(useWorkspace.getState().drafts).toEqual({c1:'allowed'});expect(useWorkspace.getState().messages.c1).toHaveLength(1);expect(useWorkspace.getState().messages.c1?.[0]?.plainText).toBe('old');
+  expect(useWorkspace.getState().drafts).toEqual({c1:{text:'allowed',mentionIds:[]}});expect(useWorkspace.getState().messages.c1).toHaveLength(1);expect(useWorkspace.getState().messages.c1?.[0]?.plainText).toBe('old');
 });
