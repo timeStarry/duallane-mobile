@@ -18,11 +18,15 @@ domain/              Workspace 类型、消息协议、权限投影、状态机
 data/http/           API client、token refresh、错误映射
 data/realtime/       hello/ready/event/replay、游标和重连
 data/cache/          SQLite/KV、草稿、最近消息
-features/chat/       会话列表、聊天、消息和附件
-features/account/    个人资料、通知偏好、设备会话、只读空间信息
+features/chat/       会话列表、聊天、消息和附件（现仍有部分页面在 features/screens.tsx）
+features/account/    个人目录、外观、通知、只读空间信息、关于
+features/workbench/  仅开发构建：正式组件工作台
+fixtures/            合成夹具，供工作台和测试
 platform/android/    OAuth callback、Keystore、本地通知、前台可恢复上传、Deep Link
-ui/                  token、primitive、fallback、update dialog
+ui/                  token 映射、primitive、chrome、fallback、update dialog
 ```
+
+设备会话在确认服务端列表／撤销契约前不进入 `features/account`。工作台必须 import `ui/` 正式组件，不得另维护一套 Demo 视觉。
 
 空间管理页面、P2P 模块和 ntfy client 不得出现在上述模块中。服务端 capability 只在
 feature 层用于隐藏会话级动作；不得据此生成邀请、角色、容量或保留设置页面。

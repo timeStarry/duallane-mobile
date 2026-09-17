@@ -7,7 +7,7 @@
 [DL Android 体验改造](design/mobile-experience-redesign/README.md) 和
 [验收账本](design/mobile-experience-redesign/ACCEPTANCE.md) 定义。本文保留原生架构与领域边界；
 第 4、5、14 节的最小 UI／阶段划分是首包基线，不得据此延后本轮已要求的回复、表情、话题等能力。
-新文档是待实施要求，不表示当前 APK 已达到目标，也不要求逐像素照搬 Web。
+新文档是目标规格；R0 设计确认与 R1 壳层在本仓开工，不表示当前 APK 已达到目标，也不要求逐像素照搬 Web。
 
 本文基于同级主仓 [`../duallane`](../../duallane) 的现行约束编写。主仓的
 `AGENTS.md`、`DESIGN.md`、Workspace 设计索引、API 契约、消息协议、实时事件、
