@@ -3,6 +3,12 @@
 状态：开发基线。固定 Android 包名 `com.timestarry.duallane`，API 26+，内部 APK/AAB。
 本地通知、普通后台允许延迟，不接远程推送。实现状态和验证命令见 [交付记录](development/DELIVERY.md)。
 
+2026-09-17 体验修订：下一轮的布局、美术、交互与聊天能力要求改由
+[DL Android 体验改造](design/mobile-experience-redesign/README.md) 和
+[验收账本](design/mobile-experience-redesign/ACCEPTANCE.md) 定义。本文保留原生架构与领域边界；
+第 4、5、14 节的最小 UI／阶段划分是首包基线，不得据此延后本轮已要求的回复、表情、话题等能力。
+新文档是待实施要求，不表示当前 APK 已达到目标，也不要求逐像素照搬 Web。
+
 本文基于同级主仓 [`../duallane`](../../duallane) 的现行约束编写。主仓的
 `AGENTS.md`、`DESIGN.md`、Workspace 设计索引、API 契约、消息协议、实时事件、
 客户端视图模型、移动可访问性和发布规范优先于本文；本文只补充移动端边界、
