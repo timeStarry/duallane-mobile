@@ -1,0 +1,72 @@
+name: published-apk-connection
+
+on:
+  push:
+    branches: [codex/verify-published-apk-connection]
+    paths:
+      - .github/workflows/published-apk-connection.yml
+      - scripts/verify-published-apk-connection.py
+
+permissions:
+  contents: read
+
+jobs:
+  published-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch and verify the exact distributed APK
+        run: |
+          mkdir -p "$RUNNER_TEMP/connection" artifacts/published-connection
+          curl --fail --location --retry 2 --max-time 120 \
+            'https://github.com/timeStarry/duallane-mobile/releases/download/internal-0.1.0-20260916/duallane-test-signed.apk' \
+            -o "$RUNNER_TEMP/connection/published.apk"
+          echo 'ae50ee357ea73205080a0fa44304442398911969537b4d4ee307bfe588706dda  '"$RUNNER_TEMP/connection/published.apk" | sha256sum -c -
+          python - <<'PY'
+          import json, os, zipfile
+          with zipfile.ZipFile(os.environ['RUNNER_TEMP'] + '/connection/published.apk') as apk:
+              config = json.loads(apk.read('assets/app.config'))
+          assert config['extra']['apiOrigin'] == 'https://duallane.tsio.top'
+          print('Published APK hash and embedded production origin verified.')
+          PY
+      - name: Prepare disposable Android 15 emulator
+        run: |
+          tools_dir="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -printf '%h\n' | sort -V | tail -n 1)"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "ANDROID_USER_HOME=$RUNNER_TEMP/connection/android-user" >> "$GITHUB_ENV"
+          echo "ANDROID_AVD_HOME=$RUNNER_TEMP/connection/avd" >> "$GITHUB_ENV"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/connection/android-user"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/connection/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          sudo chmod 666 /dev/kvm
+          "$tools_dir/sdkmanager" 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
+          echo no | "$tools_dir/avdmanager" create avd --force --name published-connection \
+            --path "$ANDROID_AVD_HOME/published-connection.avd" \
+            --package 'system-images;android-35;google_apis;x86_64' --device pixel_6
+          "$ANDROID_HOME/emulator/emulator" -avd published-connection -no-window -no-audio \
+            -no-boot-anim -no-snapshot -gpu swiftshader -memory 1536 -cores 2 \
+            > "$RUNNER_TEMP/connection/emulator.log" 2>&1 &
+          deadline=$((SECONDS + 240))
+          while (( SECONDS < deadline )); do
+            if [[ "$(timeout 5 "$ANDROID_HOME/platform-tools/adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)" == 1 ]]; then
+              "$ANDROID_HOME/platform-tools/adb" shell input keyevent 82
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'Emulator boot deadline exceeded.' >&2
+          exit 1
+      - name: Exercise the installed APK through the production login entry
+        run: python scripts/verify-published-apk-connection.py
+      - name: Preserve only content-free verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-apk-connection
+          path: artifacts/published-connection/summary.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Stop disposable emulator
+        if: always()
+        run: timeout 15 "$ANDROID_HOME/platform-tools/adb" emu kill || true
