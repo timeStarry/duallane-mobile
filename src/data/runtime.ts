@@ -2,7 +2,7 @@ import { AppState } from 'react-native';
 import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import { z } from 'zod';
-import { ApiClient, ApiError, errorText } from './client';
+import { ApiClient, ApiError, errorDiagnostic, errorText } from './client';
 import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteListSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
 import { composeBlocks } from '../domain/compose';
 import { assertAllowedCardAction } from '../domain/actions';
@@ -84,8 +84,8 @@ export class Runtime {
     const api=this.api,epoch=this.epoch;if(!api)return;
     const key=`policy:${api.origin}`;
     const saved=releaseSchema.safeParse(cache.get(key));if(saved.success)useWorkspace.setState({policy:saved.data});
-    try{const p=await api.json('/api/mobile/release-policy',releaseSchema,undefined,'GET',false);if(!this.current(epoch)||this.api!==api)return;cache.set(key,p);useWorkspace.setState({policy:p});if(this.forced())this.disconnect();}
-    catch{if(this.current(epoch)&&this.api===api)useWorkspace.setState({error:'暂时无法检查更新，请稍后重试'});}
+    try{const p=await api.json('/api/mobile/release-policy',releaseSchema,undefined,'GET',false);if(!this.current(epoch)||this.api!==api)return;cache.set(key,p);useWorkspace.setState({policy:p,error:''});if(this.forced())this.disconnect();}
+    catch(error){if(this.current(epoch)&&this.api===api)useWorkspace.setState({error:`暂时无法检查更新，请稍后重试（${errorDiagnostic(error)}）`});}
   }
   forced(){const p=useWorkspace.getState().policy;return p?updateDecision(p,installed)==='forced':false;}
   private restoreLocal(key:string,restoreMessages=false){
