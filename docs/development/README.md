@@ -6,6 +6,7 @@
 | 文档 | 用途 |
 | --- | --- |
 | [架构规范](ARCHITECTURE.md) | Android-only 技术栈、模块边界、数据流、依赖和 ADR |
+| [Android Cronet](../adr/2026-09-18-android-cronet.md) | 嵌入式 Cronet/QUIC 替换 OkHttp 传输，规避公网 TLS RST |
 | [代码规范](CODE_STANDARDS.md) | TypeScript、React Native、异步、协议解析、错误处理 |
 | [UI/UX 规范](UI_UX_STANDARDS.md) | 视觉 token、导航、组件、触控、无障碍和页面状态 |
 | [DL Android 体验改造](../design/mobile-experience-redesign/README.md) | 当前包的体验缺口、跨端一致与原生适配、布局／视觉／聊天改造目标及验收账本 |
