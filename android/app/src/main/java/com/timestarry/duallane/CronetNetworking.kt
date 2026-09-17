@@ -14,11 +14,13 @@ object CronetNetworking {
   fun install(context: Context) {
     if (client != null) return
     try {
-      val engine = CronetEngine.Builder(context.applicationContext)
+      val builder = CronetEngine.Builder(context.applicationContext)
         .enableQuic(true)
         .enableHttp2(true)
         .enableBrotli(true)
-        .build()
+      val host = BuildConfig.DUALLANE_API_HOST
+      if (host.isNotBlank()) builder.addQuicHint(host, 443, 443)
+      val engine = builder.build()
       val built = OkHttpClientProvider.createClientBuilder(context.applicationContext)
         .addInterceptor(CronetInterceptor.newBuilder(engine).build())
         .build()

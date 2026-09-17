@@ -22,11 +22,13 @@ object CronetNetworking {
   fun install(context: Context) {
     if (client != null) return
     try {
-      val engine = CronetEngine.Builder(context.applicationContext)
+      val builder = CronetEngine.Builder(context.applicationContext)
         .enableQuic(true)
         .enableHttp2(true)
         .enableBrotli(true)
-        .build()
+      val host = BuildConfig.DUALLANE_API_HOST
+      if (host.isNotBlank()) builder.addQuicHint(host, 443, 443)
+      val engine = builder.build()
       val built = OkHttpClientProvider.createClientBuilder(context.applicationContext)
         .addInterceptor(CronetInterceptor.newBuilder(engine).build())
         .build()
@@ -40,7 +42,21 @@ object CronetNetworking {
 }
 `;
 
+const API_HOST_BLOCK = `        def duallaneOrigin = System.getenv("EXPO_PUBLIC_API_ORIGIN") ?: ""
+        def duallaneHost = ""
+        if (duallaneOrigin) {
+            try { duallaneHost = new URI(duallaneOrigin).host ?: "" } catch (Exception ignored) {}
+        }
+        buildConfigField "String", "DUALLANE_API_HOST", "\\"\${duallaneHost}\\""
+`;
+
 function addGradleDependencies(contents) {
+  if (!contents.includes('DUALLANE_API_HOST') && /versionName[^\n]*\n/.test(contents)) {
+    contents = contents.replace(
+      /versionName[^\n]*\n/,
+      match => `${match}${API_HOST_BLOCK}`,
+    );
+  }
   if (contents.includes(CRONET_EMBEDDED)) return contents;
   if (!contents.includes('implementation("com.facebook.react:react-android")')) {
     throw new Error('Cannot find React Android dependency');

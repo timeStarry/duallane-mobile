@@ -95,6 +95,12 @@ android {
         versionCode 1
         versionName "0.1.0"
 
+        def duallaneOrigin = System.getenv("EXPO_PUBLIC_API_ORIGIN") ?: ""
+        def duallaneHost = ""
+        if (duallaneOrigin) {
+            try { duallaneHost = new URI(duallaneOrigin).host ?: "" } catch (Exception ignored) {}
+        }
+        buildConfigField "String", "DUALLANE_API_HOST", "\"${duallaneHost}\""
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
     signingConfigs {
