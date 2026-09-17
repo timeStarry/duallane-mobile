@@ -4,6 +4,7 @@ import { LoginScreen, MessageRow } from '../src/features/screens';
 import { parseMessage } from '../src/domain/contracts';
 import { config } from '../src/platform/config';
 import { Runtime } from '../src/data/runtime';
+import { ApiError } from '../src/data/client';
 
 jest.mock('../src/data/runtime',()=>({Runtime:jest.fn()}));
 jest.mock('expo/fetch',()=>({fetch:jest.fn()}));
@@ -56,6 +57,16 @@ test('a different-service invitation cannot initiate OAuth from the configured l
   fireEvent.press(view.getByRole('button',{name:'使用 GitHub 登录'}));
   await waitFor(()=>expect(view.getByText('请使用当前服务的有效空间邀请链接')).toBeTruthy());
   expect(runtime.login).not.toHaveBeenCalled();
+  expect(view.getByRole('button',{name:'使用 GitHub 登录'})).toBeEnabled();
+});
+
+test('GitHub login shows a classified network failure instead of a generic retry',async()=>{
+  config.apiOrigin='https://duallane.tsio.top';
+  const runtime=new Runtime();runtime.login=jest.fn().mockRejectedValue(new ApiError('request.network',0,'net.failed'));
+  const view=render(<LoginScreen runtime={runtime}/>);
+  fireEvent.press(view.getByRole('button',{name:'使用 GitHub 登录'}));
+  await waitFor(()=>expect(view.getByText('无法连接到服务器，请检查网络后重试（net.failed）')).toBeTruthy());
+  expect(view.queryByText('连接或数据暂时不可用，请重试')).toBeNull();
   expect(view.getByRole('button',{name:'使用 GitHub 登录'})).toBeEnabled();
 });
 

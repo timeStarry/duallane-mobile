@@ -25,7 +25,7 @@ function deferred<T>(){let resolve!:(v:T)=>void;const promise=new Promise<T>(r=>
 function response(body:unknown,status=200){return {ok:status<400,status,json:async()=>body} as Awaited<ReturnType<typeof fetch>>;}
 function serve(){fetchMock.mockImplementation(async url=>response(url.endsWith('/release-policy')?policy:url.endsWith('/refresh')?session:url.endsWith('/bootstrap')?bootstrap:url.includes('/messages?')?{messages:[{...message,plainText:'edited'}]}:{authorizationUrl:`${new URL(url).origin}/api/auth/mobile/github/authorize?flow=test`}));}
 let runtime:Runtime;
-beforeEach(()=>{config.apiOrigin='';jest.spyOn(AppState,'addEventListener').mockReturnValue({remove:jest.fn()});useWorkspace.getState().reset();jest.mocked(cache.get).mockReturnValue(null);read.mockResolvedValue(saved);serve();runtime=new Runtime();jest.spyOn(runtime,'connect').mockImplementation(()=>undefined);});
+beforeEach(()=>{config.apiOrigin='';jest.spyOn(console,'warn').mockImplementation(()=>undefined);jest.spyOn(AppState,'addEventListener').mockReturnValue({remove:jest.fn()});useWorkspace.getState().reset();jest.mocked(cache.get).mockReturnValue(null);read.mockResolvedValue(saved);serve();runtime=new Runtime();jest.spyOn(runtime,'connect').mockImplementation(()=>undefined);});
 afterEach(()=>{runtime.dispose();jest.restoreAllMocks();jest.useRealTimers();});
 
 test('a pending credential read cannot restore content after logout',async()=>{
@@ -76,6 +76,19 @@ test('changing service origin does not inherit the old forced-update policy',asy
   fetchMock.mockRejectedValueOnce(new Error('new policy unavailable'));
   await runtime.login('https://other.example');expect(useWorkspace.getState().policy).toBeNull();
   expect(fetchMock.mock.calls.some(([url])=>url==='https://other.example/api/auth/mobile/github/start')).toBe(true);
+});
+
+test('a failed version check records a diagnostic code without blocking GitHub login',async()=>{
+  config.apiOrigin='https://workspace.example';read.mockResolvedValue(null);
+  fetchMock.mockImplementation(async url=>{
+    if(String(url).endsWith('/release-policy'))throw Object.assign(new Error('Network request failed'),{name:'TypeError'});
+    return response({authorizationUrl:`${new URL(String(url)).origin}/api/auth/mobile/github/authorize?flow=test`});
+  });
+  await runtime.start();
+  await runtime.checkPolicy();
+  expect(useWorkspace.getState().error).toBe('暂时无法检查更新，请稍后重试（net.failed）');
+  await runtime.login('https://workspace.example');
+  expect(fetchMock.mock.calls.some(([url])=>url==='https://workspace.example/api/auth/mobile/github/start')).toBe(true);
 });
 
 test('offline startup restores only this account and its visible conversation cache',async()=>{
