@@ -1,6 +1,10 @@
 import { StyleSheet } from 'react-native';
 export { Label, Button, IconButton, Input, Notice, InlineFeedback, Loading, Empty, EmptyState, SegmentedControl, SettingRow, Dialog, ObjectActionSheet } from './primitives';
 export { AppHeader, Avatar, ConversationRow, TopicRow, conversationIdentity } from './chrome';
+export { SwitchRow, Select, PageState } from './controls';
+export { FileRow, AttachmentPreview, TransferItem } from './files';
+export { Composer, ReplyPreview } from './composer';
+export { MemberRow } from './members';
 
 export const styles = StyleSheet.create({
   page: { flex: 1 },

@@ -13,8 +13,8 @@
 | 回复／反应／隐藏／撤回／常驻 HTTP | 路由已在 `core_routes.go` | R2 |
 | 话题 HTTP | 路由已在 `topic_routes.go` | R2 |
 | 表情库与卡片 | 路由已在 emote／card | R2 |
-| 资料 `PATCH /me/profile` | 路由已在 | 设置接线；R1 只读 |
-| 自动折叠偏好 | `GET/PUT /me/emote-settings` 已有 | R2 |
+| 资料 `PATCH /me/profile` | 路由已在 | R1 已接显示名／查找可见性；头像上传仍待 |
+| 自动折叠偏好 | `GET/PUT /me/emote-settings` 已有 | R1 已接设置保存；消息流折叠属 R2 |
 
 ## 2. 阻塞或需主仓确认后再做
 

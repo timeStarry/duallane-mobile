@@ -36,7 +36,7 @@ The next Android experience revision is specified in
 and [R0 design confirmation](docs/design/mobile-experience-redesign/R0.md).
 It preserves DL semantics across clients while adapting navigation, controls, and
 system interactions to Android. R0/R1 cover tokens, primitives, navigation shell
-and settings hierarchy. They are not a claim that chat capabilities or the
+and the personal settings hierarchy. They are not a claim that chat capabilities or the
 acceptance ledger are complete.
 The source of truth for server behavior remains the sibling
 [`duallane`](../duallane) repository, especially its Workspace API, message

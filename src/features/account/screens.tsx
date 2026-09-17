@@ -1,14 +1,32 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, ScrollView, Text, View } from 'react-native';
 import * as Updates from 'expo-updates';
+import type { NavigationAction } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useWorkspace } from '../../domain/store';
+import type { ChatSettings, ChatSettingsPatch } from '../../domain/contracts';
 import { Runtime } from '../../data/runtime';
+import { errorText } from '../../data/client';
 import { cache } from '../../platform/storage';
 import { enableNotifications } from '../../platform/notifications';
 import { installed } from '../../platform/config';
-import { AppHeader, Button, Dialog, EmptyState, InlineFeedback, Label, SegmentedControl, SettingRow, styles } from '../../ui/components';
+import {
+  AppHeader,
+  Avatar,
+  Button,
+  Dialog,
+  EmptyState,
+  InlineFeedback,
+  Input,
+  Label,
+  PageState,
+  SegmentedControl,
+  SettingRow,
+  SwitchRow,
+  styles,
+} from '../../ui/components';
 import { useTheme, type AppearanceMode } from '../../ui/theme';
 import { WorkbenchScreen } from '../workbench/WorkbenchScreen';
 
@@ -16,6 +34,7 @@ export type AccountParams = {
   Home: undefined;
   Profile: undefined;
   Appearance: undefined;
+  ChatPreferences: undefined;
   Notifications: undefined;
   Space: undefined;
   About: undefined;
@@ -47,10 +66,11 @@ export function AccountNavigator({
       <Stack.Screen name="Home" options={{ headerShown: false }}>
         {({ navigation }: HomeProps) => <AccountHomeScreen runtime={runtime} open={name => navigation.navigate(name)} />}
       </Stack.Screen>
-      <Stack.Screen name="Profile" options={{ title: '个人资料' }}>{() => <ProfileScreen />}</Stack.Screen>
+      <Stack.Screen name="Profile" options={{ title: '个人资料' }}>{() => <ProfileScreen runtime={runtime} />}</Stack.Screen>
       <Stack.Screen name="Appearance" options={{ title: '外观与阅读' }}>
         {() => <AppearanceScreen mode={mode} setMode={setMode} />}
       </Stack.Screen>
+      <Stack.Screen name="ChatPreferences" options={{ title: '聊天偏好' }}>{() => <ChatPreferencesScreen runtime={runtime} />}</Stack.Screen>
       <Stack.Screen name="Notifications" options={{ title: '通知' }}>{() => <NotificationsScreen />}</Stack.Screen>
       <Stack.Screen name="Space" options={{ title: '空间信息' }}>{() => <SpaceInfoScreen />}</Stack.Screen>
       <Stack.Screen name="About" options={{ title: '关于与更新' }}>{() => <AboutScreen runtime={runtime} />}</Stack.Screen>
@@ -67,8 +87,9 @@ function AccountHomeScreen({ runtime, open }: { runtime: Runtime; open: (name: E
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader title="我的" subtitle={bootstrap?.auth.currentUser.displayName} includeTopInset />
       <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
-        <SettingRow title="个人资料" detail="显示名与只读身份" onPress={() => open('Profile')} />
+        <SettingRow title="个人资料" detail="显示名与查找可见性" onPress={() => open('Profile')} />
         <SettingRow title="外观与阅读" detail="浅色、深色或跟随系统，仅本机" onPress={() => open('Appearance')} />
+        <SettingRow title="聊天偏好" detail="自动折叠与发送方式，按账号保存" onPress={() => open('ChatPreferences')} />
         <SettingRow title="通知" detail="系统权限与本地通知说明" onPress={() => open('Notifications')} />
         <SettingRow title="空间信息" detail={bootstrap?.space.name} onPress={() => open('Space')} />
         <SettingRow title="关于与更新" detail={`版本 ${installed.appVersion}`} onPress={() => open('About')} />
@@ -93,14 +114,207 @@ function AccountHomeScreen({ runtime, open }: { runtime: Runtime; open: (name: E
   );
 }
 
-function ProfileScreen() {
+export function ProfileScreen({ runtime }: { runtime: Runtime }) {
   const t = useTheme();
+  const navigation = useNavigation();
   const user = useWorkspace(s => s.bootstrap?.auth.currentUser);
+  const savedNickname = user?.nickname ?? '';
+  const savedDiscoverable = user?.searchDiscoverable ?? true;
+  const [nickname, setNickname] = useState(savedNickname);
+  const [discoverable, setDiscoverable] = useState(savedDiscoverable);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [leave, setLeave] = useState(false);
+  const pendingLeave = useRef<NavigationAction | null>(null);
+  const dirty = nickname !== savedNickname || discoverable !== savedDiscoverable;
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      await runtime.updateProfile({
+        nickname: nickname.trim() ? nickname.trim().slice(0, 32) : null,
+        searchDiscoverable: discoverable,
+      });
+    } catch (e) {
+      setError(errorText(e));
+      throw e;
+    } finally {
+      setSaving(false);
+    }
+  };
+  useEffect(() => {
+    const sub = navigation.addListener('beforeRemove', event => {
+      if (saving) {
+        event.preventDefault();
+        return;
+      }
+      if (!dirty) return;
+      event.preventDefault();
+      pendingLeave.current = event.data.action;
+      setLeave(true);
+    });
+    return sub;
+  }, [dirty, saving, navigation]);
   return (
     <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={styles.content}>
-      <Label>{user?.displayName ?? '当前账号'}</Label>
-      <Label muted>{user?.kind === 'bot' ? 'Bot' : '共享空间成员'}</Label>
-      <EmptyState title="资料编辑稍后接入" detail="服务端已有个人资料接口。本页先展示当前身份，不会假装已经保存成功。" />
+      <AvatarBlock name={user?.displayName ?? '当前账号'} id={user?.id ?? 'self'} uri={user?.avatarUrl} />
+      <Label muted>GitHub 身份 {user?.githubLogin || '只读，由登录提供'}</Label>
+      <Label>显示名</Label>
+      <Input accessibilityLabel="显示名" value={nickname} onChangeText={text => setNickname(text.slice(0, 32))} placeholder={user?.displayName || '显示名'} />
+      <SwitchRow
+        title="允许被成员查找"
+        detail="这是个人可见性，不能改成对方的公共名字。"
+        value={discoverable}
+        onValueChange={setDiscoverable}
+      />
+      <View style={styles.actions}>
+        <Button title={saving ? '保存中…' : '保存'} disabled={!dirty || saving} onPress={() => void save().catch(() => undefined)} />
+        <Button title="取消" secondary disabled={saving || !dirty} onPress={() => { setNickname(savedNickname); setDiscoverable(savedDiscoverable); setError(''); }} />
+      </View>
+      <InlineFeedback text={error} tone="danger" />
+      <EmptyState title="头像稍后接入" detail="更换头像使用独立上传接口。本页不会假装已经保存头像。" />
+      <Dialog
+        visible={leave}
+        title="保存对资料的修改？"
+        onRequestClose={() => { setLeave(false); pendingLeave.current = null; }}
+        actions={[
+          {
+            title: '保存并离开',
+            onPress: () => {
+              void save().then(() => {
+                const action = pendingLeave.current;
+                pendingLeave.current = null;
+                setLeave(false);
+                if (action) navigation.dispatch(action);
+              }).catch(() => setLeave(false));
+            },
+          },
+          {
+            title: '放弃更改',
+            variant: 'danger',
+            onPress: () => {
+              const action = pendingLeave.current;
+              pendingLeave.current = null;
+              setNickname(savedNickname);
+              setDiscoverable(savedDiscoverable);
+              setLeave(false);
+              if (action) navigation.dispatch(action);
+            },
+          },
+          { title: '继续编辑', variant: 'secondary', onPress: () => { setLeave(false); pendingLeave.current = null; } },
+        ]}
+      >
+        <Label>只有未提交的修改才会询问。保存失败会留在本页并保留输入。</Label>
+      </Dialog>
+    </ScrollView>
+  );
+}
+
+function AvatarBlock({ name, id, uri }: { name: string; id: string; uri?: string | null }) {
+  const t = useTheme();
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.md }}>
+      <Avatar name={name} id={id} uri={uri} />
+      <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text, flex: 1 }}>{name}</Text>
+    </View>
+  );
+}
+
+export function ChatPreferencesScreen({ runtime }: { runtime: Runtime }) {
+  const accountKey = useWorkspace(s => s.accountKey);
+  const seq = useRef(0);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [draft, setDraft] = useState<ChatSettings | null>(null);
+  const [feedback, setFeedback] = useState('');
+  const [tone, setTone] = useState<'success' | 'danger' | 'info'>('info');
+  const load = useCallback(() => {
+    const request = ++seq.current;
+    setStatus('loading');
+    setDraft(null);
+    void runtime.chatSettings().then(result => {
+      if (request !== seq.current) return;
+      setDraft(result.settings);
+      setStatus('ready');
+      setFeedback('');
+    }).catch(error => {
+      if (request !== seq.current) return;
+      setStatus('error');
+      setFeedback(errorText(error));
+    });
+  }, [runtime]);
+  useEffect(() => {
+    load();
+    return () => { seq.current += 1; };
+  }, [load, accountKey]);
+  const save = (patch: ChatSettingsPatch, next: ChatSettings) => {
+    const request = ++seq.current;
+    setDraft(next);
+    setFeedback('保存中…');
+    setTone('info');
+    void runtime.saveChatSettings(patch).then(saved => {
+      if (request !== seq.current) return;
+      setDraft(saved);
+      setFeedback('已保存到当前账号');
+      setTone('success');
+    }).catch(error => {
+      if (request !== seq.current) return;
+      setFeedback(errorText(error));
+      setTone('danger');
+    });
+  };
+  const toggleType = (type: 'image' | 'emote' | 'long') => {
+    if (!draft) return;
+    const types = draft.autoHideMessageTypes.includes(type)
+      ? draft.autoHideMessageTypes.filter(item => item !== type)
+      : [...draft.autoHideMessageTypes, type];
+    save({ autoHideMessageTypes: types }, { ...draft, autoHideMessageTypes: types });
+  };
+  return (
+    <ScrollView contentContainerStyle={styles.content}>
+      <Label muted>这些是个人显示和发送偏好，不会撤回消息，也不会改变其他人看见的内容。</Label>
+      <PageState status={status === 'ready' ? 'ready' : status === 'loading' ? 'loading' : 'error'} emptyTitle="" error={feedback} onRetry={load}>
+        {draft ? (
+          <>
+            <SwitchRow
+              title="点击图片表情直接发送"
+              value={draft.clickImageEmoteToSend}
+              onValueChange={value => save({ clickImageEmoteToSend: value }, { ...draft, clickImageEmoteToSend: value })}
+            />
+            <SwitchRow
+              title="回复时自动提及原作者"
+              value={draft.replyAutoMention}
+              onValueChange={value => save({ replyAutoMention: value }, { ...draft, replyAutoMention: value })}
+            />
+            <SwitchRow
+              title="自动折叠消息"
+              detail="只影响自己的显示。不是服务器隐藏或撤回。"
+              value={draft.autoHideMessages}
+              onValueChange={value => save({ autoHideMessages: value }, { ...draft, autoHideMessages: value })}
+            />
+            {draft.autoHideMessages ? (
+              <>
+                <SwitchRow title="折叠图片" value={draft.autoHideMessageTypes.includes('image')} onValueChange={() => toggleType('image')} />
+                <SwitchRow title="折叠表情" value={draft.autoHideMessageTypes.includes('emote')} onValueChange={() => toggleType('emote')} />
+                <SwitchRow title="折叠长消息" value={draft.autoHideMessageTypes.includes('long')} onValueChange={() => toggleType('long')} />
+              </>
+            ) : null}
+            <InlineFeedback text={feedback} tone={tone} />
+            {tone === 'danger' ? (
+              <Button
+                title="重试保存"
+                secondary
+                onPress={() => save({
+                  clickImageEmoteToSend: draft.clickImageEmoteToSend,
+                  replyAutoMention: draft.replyAutoMention,
+                  autoHideMessages: draft.autoHideMessages,
+                  autoHideMessageTypes: draft.autoHideMessageTypes,
+                }, draft)}
+              />
+            ) : null}
+          </>
+        ) : null}
+      </PageState>
     </ScrollView>
   );
 }

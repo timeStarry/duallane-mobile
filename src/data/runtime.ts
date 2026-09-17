@@ -3,7 +3,7 @@ import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import { z } from 'zod';
 import { ApiClient, ApiError, errorText } from './client';
-import { bootstrapSchema, conversationSchema, sessionSchema, parseMessage, type Message, type WorkspaceEvent } from '../domain/contracts';
+import { bootstrapSchema, chatSettingsResponseSchema, conversationSchema, profileResponseSchema, sessionSchema, parseMessage, type ChatSettingsPatch, type Message, type WorkspaceEvent } from '../domain/contracts';
 import { clearAccountFiles } from './transfers';
 import { useWorkspace } from '../domain/store';
 import { releaseSchema, updateDecision } from '../domain/updates';
@@ -122,6 +122,27 @@ export class Runtime {
   isForced(){ return this.forced(); }
   async markRead(id:string,messageId:string){if(!this.foreground)return;const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/read`,z.object({conversation:conversationSchema}),{messageId});if(this.current(epoch))useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));}
   async notification(id:string,level:'all'|'mentions'|'muted'){await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/notification`,z.unknown(),{level},'PATCH');await this.bootstrap();}
+  async updateProfile(patch:{nickname?:string|null;searchDiscoverable?:boolean}){
+    const epoch=this.epoch;
+    const result=await this.requireApi().json('/api/workspace/me/profile',profileResponseSchema,patch,'PATCH');
+    if(!this.current(epoch))throw new Error('Stale session');
+    useWorkspace.setState(s=>{
+      if(!s.bootstrap||s.bootstrap.auth.currentUser.id!==result.user.id)return s;
+      const bootstrap={...s.bootstrap,auth:{...s.bootstrap.auth,currentUser:{...s.bootstrap.auth.currentUser,...result.user}},members:s.bootstrap.members.map(member=>member.id===result.user.id?{...member,...result.user}:member)};
+      cache.set(`${s.accountKey}:bootstrap`,bootstrap);
+      return {bootstrap};
+    });
+    return result.user;
+  }
+  async chatSettings(){
+    return this.requireApi().json('/api/workspace/me/emote-settings',chatSettingsResponseSchema);
+  }
+  async saveChatSettings(patch:ChatSettingsPatch){
+    const epoch=this.epoch;
+    const result=await this.requireApi().json('/api/workspace/me/emote-settings',chatSettingsResponseSchema,patch,'PUT');
+    if(!this.current(epoch))throw new Error('Stale session');
+    return result.settings;
+  }
   async direct(userId:string){const epoch=this.epoch;const r=await this.requireApi().json('/api/workspace/conversations',z.object({conversation:conversationSchema}),{type:'direct',memberIds:[userId]});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.setState(s=>({conversations:{...s.conversations,[r.conversation.id]:r.conversation}}));return r.conversation.id;}
   private async applyEvent(event:WorkspaceEvent,replay:boolean){const s=useWorkspace.getState();if(!s.bootstrap||event.spaceId!==s.bootstrap.space.id)return;
     if(event.type==='message.created'){const message=parseMessage(event.payload.message);if(!message)return;

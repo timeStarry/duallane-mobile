@@ -1,7 +1,33 @@
 import { z } from 'zod';
 const id = z.string().min(1).max(256);
 export const notificationLevel = z.enum(['all', 'mentions', 'muted']);
-export const memberSchema = z.object({ id, displayName: z.string(), kind: z.string().default('human'), avatarUrl: z.string().nullish(), roleLabel: z.string().optional(), capabilities: z.object({ canStartDirectConversation: z.boolean().default(false) }).default({ canStartDirectConversation: false }) });
+export const memberSchema = z.object({
+  id,
+  displayName: z.string(),
+  kind: z.string().default('human'),
+  avatarUrl: z.string().nullish(),
+  githubLogin: z.string().nullish(),
+  nickname: z.string().nullish(),
+  searchDiscoverable: z.boolean().optional(),
+  roleLabel: z.string().optional(),
+  capabilities: z.object({ canStartDirectConversation: z.boolean().default(false) }).default({ canStartDirectConversation: false }),
+});
+export const chatHideTypeSchema = z.enum(['image', 'emote', 'long']);
+export const chatSettingsSchema = z.object({
+  clickImageEmoteToSend: z.boolean(),
+  replyAutoMention: z.boolean(),
+  autoHideMessages: z.boolean(),
+  autoHideMessageTypes: z.array(z.string()).transform(values => values.filter((value): value is z.infer<typeof chatHideTypeSchema> => value === 'image' || value === 'emote' || value === 'long')),
+});
+export const chatSettingsResponseSchema = z.object({ settings: chatSettingsSchema.passthrough() });
+export const profileResponseSchema = z.object({ user: memberSchema });
+export type ChatSettings = z.infer<typeof chatSettingsSchema>;
+export type ChatSettingsPatch = {
+  clickImageEmoteToSend?: boolean;
+  replyAutoMention?: boolean;
+  autoHideMessages?: boolean;
+  autoHideMessageTypes?: z.infer<typeof chatHideTypeSchema>[];
+};
 export const conversationSchema = z.object({ id, displayTitle: z.string(), type: z.enum(['direct','group']), lastMessagePlainText: z.string().default(''), lastActivityAt: z.string(), unreadCount: z.number().nonnegative().default(0), notificationLevel: notificationLevel.catch('muted'), retentionText: z.string().default(''), members: z.array(memberSchema).default([]), capabilities: z.object({ canSendMessage: z.boolean().default(false), canUploadFile: z.boolean().default(false) }).default({ canSendMessage: false, canUploadFile: false }) });
 export const attachmentSchema = z.object({ id, fileName: z.string(), mimeType: z.string(), byteSize: z.number().nonnegative(), status: z.string(), capabilities: z.object({ canDownload: z.boolean().default(false) }).default({ canDownload: false }) });
 export const bootstrapSchema = z.object({ auth: z.object({ currentUser: memberSchema }), space: z.object({ id, name: z.string() }), eventCursor: z.number().int().nonnegative(), permissions: z.object({ canReadConversations: z.boolean().default(false), canCreateDirect: z.boolean().default(false), canCreateGroup: z.boolean().default(false), canUpload: z.boolean().default(false), canDownload: z.boolean().default(false) }).default({ canReadConversations: false, canCreateDirect: false, canCreateGroup: false, canUpload: false, canDownload: false }), policy: z.object({ dailyQuotaBytes: z.number(), remainingQuotaBytes: z.number(), messageRetentionCount: z.number() }), members: z.array(memberSchema), conversations: z.array(conversationSchema), files: z.array(attachmentSchema) });

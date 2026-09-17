@@ -1,8 +1,13 @@
-import { parseMessage } from '../src/domain/contracts';
+import { chatSettingsResponseSchema, parseMessage } from '../src/domain/contracts';
 import { updateDecision, compareVersion, releaseSchema } from '../src/domain/updates';
 import { ReplayTracker } from '../src/domain/replay';
 import { shouldNotify } from '../src/domain/notifications';
 const valid={id:'m1',conversationId:'c1',authorId:'u2',authorName:'A',kind:'user',createdAt:'2026-01-01T00:00:00.000Z',plainText:'hi',content:{format:'duallane.message+json;v=1',blocks:[{type:'text',text:'hi'}]},attachments:[]};
+test('chat settings keep known hide types and ignore unknown ones',()=>{
+  const parsed=chatSettingsResponseSchema.parse({settings:{clickImageEmoteToSend:true,replyAutoMention:false,autoHideMessages:true,autoHideMessageTypes:['image','future', 'long'],availablePacks:[{id:'p'}]}});
+  expect(parsed.settings.autoHideMessageTypes).toEqual(['image','long']);
+  expect(parsed.settings.clickImageEmoteToSend).toBe(true);
+});
 test('unknown block falls back safely',()=>{const message=parseMessage({...valid,content:{format:'duallane.message+json;v=1',blocks:[{type:'future_card',payload:{script:'bad'}}]}});expect(message?.fallback).toBe(true);expect(message?.plainText).toBe('hi');expect(JSON.stringify(message)).not.toContain('script');});
 test('invalid envelope is ignored',()=>expect(parseMessage({id:'m'})).toBeNull());
 test('semantic versions and forced update',()=>{expect(compareVersion('0.1.0','0.2.0')).toBe(-1);const p=releaseSchema.parse({schemaVersion:1,platform:'android',channel:'internal',latest:{appVersion:'0.2.0',versionCode:2,releaseId:'r',releaseNotes:[]},minimum:{appVersion:'0.1.0',versionCode:1},recommendation:'soft',apkUrl:null,protocol:{eventMajor:1,contentFormats:['duallane.message+json;v=1']}});expect(updateDecision(p,{appVersion:'0.0.1',versionCode:1})).toBe('forced');expect(updateDecision(p,{appVersion:'0.1.0',versionCode:1})).toBe('soft');});

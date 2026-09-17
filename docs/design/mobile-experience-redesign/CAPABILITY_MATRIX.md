@@ -13,9 +13,9 @@
 | Bootstrap | `GET /api/workspace/bootstrap` | 已接，字段偏最小 | R2 按需扩展投影 |
 | 更新门禁 | `GET /api/mobile/release-policy` | 已接 | 保留；网络失败不得伪装强更 |
 | 本机外观 | 无服务端契约 | 已接 `system/light/dark` | R1 迁入外观页；不宣称跨端同步 |
-| 个人资料 | `PATCH /api/workspace/me/profile`、头像路由 | 只展示 bootstrap 显示名 | R1 只读资料页；保存留待设置能力接线 |
+| 个人资料 | `PATCH /api/workspace/me/profile`、头像路由 | 显示名保存／取消；查找可见性；头像上传未接 | R1 已接线资料保存；头像仍待独立上传 |
 | 成员备注 | `PUT/DELETE /members/{id}/remark` | 未接 | R2 |
-| 聊天偏好／自动折叠 | `GET/PUT /me/emote-settings` | 未接 | R2；R1 不放假开关 |
+| 聊天偏好／自动折叠 | `GET/PUT /me/emote-settings` | 已接自动保存；表情包管理未接 | R1 设置页；折叠生效属 R2 消息渲染 |
 | Android 通知权限 | 系统权限 + 本地通知 | 已接开启／系统设置 | R1 独立通知页，权限与偏好分开 |
 | 会话提醒 `all/mentions/muted` | `PATCH .../notification` | 已接（详情页） | 保留语义 |
 | 邮件／ntfy 渠道 | `/me/notifications`、email 路由 | 未接；移动端不改 ntfy | 范围外渠道管理；R1 不做邮件设置页 |
