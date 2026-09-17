@@ -37,6 +37,6 @@ go vet ./internal/workspace/auth ./internal/platform/config
 本次不部署生产。主仓 migration035 需要先发布声明兼容该 schema 的 bridge，
 再按主仓部署流程迁移/激活；不能直接越过现有生产升级守卫。
 
-2026-09-17 体验改造：R0／R1／R2 已在
-`codex/mobile-dl-redesign-requirements` 实现。这不是验收账本通过。
-真机、TalkBack、签名发布包和跨端对照仍标记为未验证。
+2026-09-17 体验改造：R0／R1／R2 实现与 R3 证据账本在
+`codex/mobile-dl-redesign-requirements`。验收判定栏仍为未运行。
+真机、TalkBack、签名发布包和跨端对照仍标记为未验证。OTA 不适用。
