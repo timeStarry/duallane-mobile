@@ -59,6 +59,20 @@ report = {
     'chatAndFiles': 'not_performed',
 }
 try:
+    probe = urllib.request.Request(ORIGIN + '/api/health', headers={'X-DualLane-Client': 'android'})
+    with urllib.request.urlopen(probe, timeout=25) as response:
+        raw = response.read(65536)
+        report['networkProbe'] = {'httpStatus': response.status,
+                                  'icpInterception': b'Non-compliance ICP Filing' in raw,
+                                  'jsonContentType': 'application/json' in response.headers.get('Content-Type', '')}
+        try:
+            health = json.loads(raw)
+            report['networkProbe']['productionVersionMatched'] = health.get('appVersion') == '0.20.0'
+        except (ValueError, AttributeError):
+            report['networkProbe']['productionVersionMatched'] = False
+except Exception:
+    report['networkProbe'] = {'requestFailed': True}
+try:
     apk = WORK / 'published.apk'
     require(hashlib.sha256(apk.read_bytes()).hexdigest() == EXPECTED_SHA, 'exact_published_apk')
     with zipfile.ZipFile(apk) as archive:
@@ -84,15 +98,21 @@ try:
     # Only act on currently observed first-run browser buttons. No credentials
     # are entered and no GitHub authorization is submitted.
     dismissible = {'Use without an account', 'Accept & continue', 'No thanks', 'Not now', 'Got it', 'Continue without an account'}
-    known_errors = {'无法连接服务', '网络请求失败', '登录失败', 'Something went wrong', 'This site can’t be reached', 'Your connection is not private'}
+    known_errors = {'无法连接服务', '网络请求失败', '登录失败', 'Something went wrong', 'This site can’t be reached', 'Your connection is not private',
+                    '连接或数据暂时不可用，请重试', '操作未完成，请重试', '服务器尚未开放 Android 登录',
+                    '暂时无法检查更新，请稍后重试', '共享空间暂未开放'}
     deadline = time.monotonic() + 120
     github_page = False
     browser_seen = False
+    report['loginBusyObserved'] = False
+    report['appErrorObserved'] = False
     while time.monotonic() < deadline:
         nodes = ui()
         visible = {label for node in nodes for label in labels(node) if label}
         browser_seen = browser_seen or any(node.attrib.get('package') == 'com.android.chrome' for node in nodes)
         seen_known_labels.update(visible & known_errors)
+        report['loginBusyObserved'] |= '正在登录…' in visible
+        report['appErrorObserved'] |= bool(visible & known_errors)
         github_origin = any(node.attrib.get('package') == 'com.android.chrome'
                             and node.attrib.get('resource-id', '').endswith(('/url_bar', '/origin', '/toolbar_url'))
                             and any(re.match(r'^(?:https://)?github\.com(?:[/:]|$)', label) for label in labels(node))
