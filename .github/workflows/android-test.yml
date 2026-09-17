@@ -164,23 +164,10 @@ jobs:
             fi
             adb shell am force-stop com.timestarry.duallane
             adb shell am start -W -n com.timestarry.duallane/.MainActivity
-            sleep 10
+            sleep 8
             adb shell pidof com.timestarry.duallane
-            adb shell uiautomator dump /sdcard/duallane-ui.xml
-            adb pull /sdcard/duallane-ui.xml "artifacts/android-test/$launch-ui.xml"
+            python3 scripts/android-smoke-login.py "$launch"
             adb exec-out screencap -p > "artifacts/android-test/$launch.png"
-            python - "$launch" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-          root = ET.parse(f'artifacts/android-test/{sys.argv[1]}-ui.xml').getroot()
-          labels = {node.attrib.get(key, '') for node in root.iter() for key in ('text', 'content-desc')}
-          assert 'DualLane' in labels, labels
-          assert '空间邀请链接（可选）' in labels, labels
-          assert '服务地址或邀请链接' not in labels, labels
-          assert '使用 GitHub 登录' in labels, labels
-          login_buttons = [node for node in root.iter() if node.attrib.get('class') == 'android.widget.Button' and node.attrib.get('content-desc') == '使用 GitHub 登录']
-          assert len(login_buttons) == 1 and login_buttons[0].attrib.get('enabled') == 'true'
-          PY
           done
           adb logcat -d -s AndroidRuntime:E ReactNativeJS:E > artifacts/android-test/runtime-errors.txt
           test ! -s artifacts/android-test/runtime-errors.txt || ! grep -E 'FATAL EXCEPTION|ReactNativeJS:.*(Error|Exception)' artifacts/android-test/runtime-errors.txt
