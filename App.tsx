@@ -4,6 +4,7 @@ import { NavigationContainer, createNavigationContainerRef } from '@react-naviga
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { z } from 'zod';
 import * as Notifications from 'expo-notifications';
 import { ThemeProvider, useTheme, type AppearanceMode } from './src/ui/theme';
@@ -30,7 +31,9 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <ThemeProvider mode={mode}>
-        <Application mode={mode} setMode={setMode} />
+        <KeyboardProvider enabled={false} preserveEdgeToEdge statusBarTranslucent navigationBarTranslucent>
+          <Application mode={mode} setMode={setMode} />
+        </KeyboardProvider>
       </ThemeProvider>
     </SafeAreaProvider>
   );

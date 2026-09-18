@@ -9,8 +9,11 @@ import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
 import { rememberEmotes } from '../../data/media';
 import { Transfers } from '../../data/transfers';
-import { RemoteImage } from '../../ui/RemoteImage';
 import { conversationIdentity } from '../../ui/chrome';
+import { catalogPacks } from '../../domain/emote-catalog';
+import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
+import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
+import { useChatIme } from '../../ui/useChatIme';
 import {
   AppHeader,
   Button,
@@ -118,6 +121,8 @@ export function ChatScreen({
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const ime = useChatIme(insets.bottom);
+  const [emotePack, setEmotePack] = useState('custom');
   const key = targetKey(target);
   const conversation = useWorkspace(s => s.conversations[target.kind === 'conversation' ? target.id : target.conversationId]);
   const topic = useWorkspace(s => target.kind === 'topic' ? s.topics[target.id] : undefined);
@@ -131,13 +136,16 @@ export function ChatScreen({
   const [hasOlder, setHasOlder] = useState(true);
   const [progress, setProgress] = useState('');
   const [emotes, setEmotes] = useState<Emote[]>([]);
-  const [emoteOpen, setEmoteOpen] = useState(false);
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList<Message>>(null);
   const nearBottom = useRef(true);
   const [newMessages, setNewMessages] = useState(false);
   const mentionQuery = activeMentionQuery(draft.text);
   const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
+  const setImePanel = ime.setPanel;
+  useEffect(() => {
+    if (suggestions.length > 0) setImePanel('mention');
+  }, [setImePanel, suggestions.length]);
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -250,46 +258,8 @@ export function ChatScreen({
         />
       )}
       {newMessages && <Button title="回到最新" secondary onPress={() => { nearBottom.current = true; setNewMessages(false); list.current?.scrollToEnd(); }} />}
-      {suggestions.length > 0 && (
-        <View style={{ backgroundColor: t.elevated, borderTopWidth: 1, borderTopColor: t.line }}>
-          {suggestions.map(member => (
-            <Pressable
-              key={member.id}
-              accessibilityRole="button"
-              accessibilityLabel={`提及${member.displayName}`}
-              onPress={() => {
-                const prefix = draft.text.replace(/@([^\s@]*)$/, '');
-                runtime.patchDraft(key, { text: `${prefix}@${member.displayName} `, mentionIds: Array.from(new Set([...draft.mentionIds, member.id])) });
-              }}
-              style={{ minHeight: t.hit, paddingHorizontal: 16, justifyContent: 'center' }}
-            >
-              <Text style={{ color: t.text }}>{member.displayName}{member.kind === 'bot' ? ' · Bot' : ''}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-      {emoteOpen && (
-        <ScrollView style={{ maxHeight: 220, backgroundColor: t.elevated }} contentContainerStyle={{ padding: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          {emotes.length ? emotes.map(emote => (
-            <Pressable
-              key={emote.id}
-              accessibilityRole="button"
-              accessibilityLabel={emote.label}
-              onPress={() => {
-                const next = `${useWorkspace.getState().drafts[key]?.text ?? draft.text}${emote.token}`;
-                runtime.patchDraft(key, { text: next, mentionIds: draft.mentionIds });
-                if (useWorkspace.getState().chatSettings?.clickImageEmoteToSend) send();
-                setEmoteOpen(false);
-              }}
-              style={{ width: 56, minHeight: 56, alignItems: 'center', justifyContent: 'center' }}
-            >
-              {emote.src ? <RemoteImage uri={emote.src} style={{ width: 40, height: 40 }} /> : <Text style={{ fontSize: 28 }}>{emote.label}</Text>}
-            </Pressable>
-          )) : <Label muted>正在加载表情…</Label>}
-        </ScrollView>
-      )}
       {canSend ? (
-        <View style={{ paddingBottom: Math.max(insets.bottom, 8) }}>
+        <View style={{ paddingBottom: ime.dock.dockBottom }}>
           {target.kind === 'topic' && topic?.allowSyncToGroup ? (
             <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: 40, justifyContent: 'center' }}>
               <Label muted>{syncToGroup ? '将同步到群聊' : '默认只发到话题，点按改为同步到群'}</Label>
@@ -305,18 +275,62 @@ export function ChatScreen({
             onClearReply={() => runtime.patchDraft(key, { replyToMessageId: undefined })}
             attachmentName={draft.pendingAttachment?.fileName}
             onClearAttachment={() => runtime.patchDraft(key, { pendingAttachment: undefined })}
-            onEmote={() => {
-              setEmoteOpen(open => !open);
-              if (!emotes.length) void runtime.emotes().then(result => setEmotes(result.items)).catch(e => setError(errorText(e)));
-            }}
-            onAttach={() => {
-              const account = useWorkspace.getState().accountKey;
-              void transfers.choose(account, target.kind === 'conversation' ? target.id : undefined).then(task => {
-                if (!task) return;
-                runtime.patchDraft(key, { pendingAttachment: { taskId: task.id, fileName: task.fileName, mimeType: task.mimeType, byteSize: task.byteSize } });
-              }).catch(e => setError(errorText(e)));
-            }}
+            onEmote={() => ime.openPanel('emoji')}
+            onAttach={() => ime.openPanel('attach')}
           />
+          <View style={{ height: ime.dock.panelHeight, overflow: 'hidden', backgroundColor: t.elevated }}>
+            {ime.panel === 'emoji' ? (
+              <CatalogEmoteGrid
+                packs={[{ id: 'custom', label: '自定义', items: emotes.map(emote => ({ kind: emote.kind, id: emote.id, label: emote.label, token: emote.token, src: emote.src })) }, ...catalogPacks()]}
+                selectedPackId={emotePack}
+                onSelectPack={setEmotePack}
+                onPick={(item, packId) => {
+                  const token = item.token ?? item.value ?? `[${packId}:${item.id}]`;
+                  const enabled = useWorkspace.getState().chatSettings?.clickImageEmoteToSend ?? false;
+                  if (shouldDirectSendWorkspaceEmote(item, packId, enabled)) {
+                    runtime.patchDraft(key, { text: token, mentionIds: draft.mentionIds });
+                    send();
+                    ime.closePanel();
+                    return;
+                  }
+                  const next = `${useWorkspace.getState().drafts[key]?.text ?? draft.text}${token}`;
+                  runtime.patchDraft(key, { text: next, mentionIds: draft.mentionIds });
+                }}
+              />
+            ) : null}
+            {ime.panel === 'attach' ? (
+              <View style={{ padding: 16 }}>
+                <Button
+                  title="选择文件"
+                  secondary
+                  disabled={!conversation?.capabilities.canUploadFile || !!progress}
+                  onPress={() => {
+                    const account = useWorkspace.getState().accountKey;
+                    void transfers.choose(account, target.kind === 'conversation' ? target.id : undefined).then(task => {
+                      if (!task) return;
+                      runtime.patchDraft(key, { pendingAttachment: { taskId: task.id, fileName: task.fileName, mimeType: task.mimeType, byteSize: task.byteSize } });
+                      ime.closePanel();
+                    }).catch(e => setError(errorText(e)));
+                  }}
+                />
+              </View>
+            ) : null}
+            {ime.panel === 'mention' ? suggestions.map(member => (
+              <Pressable
+                key={member.id}
+                accessibilityRole="button"
+                accessibilityLabel={`提及${member.displayName}`}
+                onPress={() => {
+                  const prefix = draft.text.replace(/@([^\s@]*)$/, '');
+                  runtime.patchDraft(key, { text: `${prefix}@${member.displayName} `, mentionIds: Array.from(new Set([...draft.mentionIds, member.id])) });
+                  ime.closePanel();
+                }}
+                style={{ minHeight: t.hit, paddingHorizontal: 16, justifyContent: 'center' }}
+              >
+                <Text style={{ color: t.text }}>{member.displayName}{member.kind === 'bot' ? ' · Bot' : ''}</Text>
+              </Pressable>
+            )) : null}
+          </View>
         </View>
       ) : <EmptyState title={target.kind === 'topic' ? '当前话题不可发送' : '当前会话不可发送消息'} />}
     </View>

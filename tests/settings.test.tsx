@@ -111,7 +111,7 @@ test('composer keeps send reachable and does not send on IME confirm', () => {
   fireEvent(view.getByLabelText('消息'), 'submitEditing');
   expect(onSend).not.toHaveBeenCalled();
   expect(view.getByLabelText('发送')).toBeTruthy();
-  expect(view.getByLabelText('添加文件')).toBeTruthy();
+  expect(view.getByLabelText('添加')).toBeTruthy();
   fireEvent.press(view.getByLabelText('发送'));
   expect(onSend).toHaveBeenCalledTimes(1);
 });
