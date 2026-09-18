@@ -1,8 +1,9 @@
-import React from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bot } from 'lucide-react-native';
 import type { Conversation } from '../domain/contracts';
+import { RemoteImage } from './RemoteImage';
 import { formatListTime, stableTone } from './format';
 import { useTheme } from './theme';
 
@@ -55,17 +56,21 @@ export function Avatar({
   id,
   shape = 'person',
   size = 40,
+  emoji,
 }: {
   name: string;
   uri?: string | null;
   id: string;
   shape?: 'person' | 'group' | 'bot';
   size?: number;
+  emoji?: string | null;
 }) {
   const t = useTheme();
+  const [imageFailed, setImageFailed] = useState(false);
   const backgroundColor = stableTone(id) === 0 ? t.avatarA : t.avatarB;
   const radius = shape === 'person' ? size / 2 : t.radius.entity;
   const letter = [...name.trim()].find(char => char.trim()) ?? '?';
+  const showImage = !!uri && !imageFailed && !emoji;
   return (
     <View
       accessibilityIgnoresInvertColors
@@ -79,8 +84,10 @@ export function Avatar({
         overflow: 'hidden',
       }}
     >
-      {uri ? (
-        <Image source={{ uri }} style={{ width: size, height: size }} accessibilityIgnoresInvertColors />
+      {emoji ? (
+        <Text style={{ fontSize: size * 0.52 }}>{emoji}</Text>
+      ) : showImage ? (
+        <RemoteImage uri={uri} style={{ width: size, height: size }} onError={() => setImageFailed(true)} />
       ) : (
         <Text style={{ color: t.text, fontWeight: '600', fontSize: size * 0.38 }}>{letter}</Text>
       )}
@@ -103,13 +110,16 @@ export function Avatar({
 }
 
 export function conversationIdentity(conversation: Conversation, selfId?: string) {
-  if (conversation.type === 'group') return { shape: 'group' as const, name: conversation.displayTitle, id: conversation.id, uri: undefined };
+  if (conversation.type === 'group') {
+    return { shape: 'group' as const, name: conversation.displayTitle, id: conversation.id, uri: undefined as string | undefined, emoji: conversation.avatarEmoji };
+  }
   const other = conversation.members.find(member => member.id !== selfId);
   return {
     shape: other?.kind === 'bot' ? ('bot' as const) : ('person' as const),
     name: other?.displayName ?? conversation.displayTitle,
     id: other?.id ?? conversation.id,
     uri: other?.avatarUrl,
+    emoji: undefined as string | undefined,
   };
 }
 
@@ -146,7 +156,7 @@ export function ConversationRow({
         borderBottomColor: t.line,
       })}
     >
-      <Avatar name={identity.name} uri={identity.uri} id={identity.id} shape={identity.shape} />
+      <Avatar name={identity.name} uri={identity.uri} id={identity.id} shape={identity.shape} emoji={identity.emoji} />
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
           <Text style={{ flex: 1, fontSize: 16, fontWeight: '600', color: t.text }} numberOfLines={1}>

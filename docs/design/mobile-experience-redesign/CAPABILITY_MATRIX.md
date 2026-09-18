@@ -13,7 +13,7 @@
 | Bootstrap | `GET /api/workspace/bootstrap` | 已接，字段偏最小 | R2 按需扩展投影 |
 | 更新门禁 | `GET /api/mobile/release-policy` | 已接 | 保留；网络失败不得伪装强更 |
 | 本机外观 | 无服务端契约 | 已接 `system/light/dark` | R1 迁入外观页；不宣称跨端同步 |
-| 个人资料 | `PATCH /api/workspace/me/profile`、头像路由 | 显示名保存／取消；查找可见性；头像上传未接 | R1 已接线资料保存；头像仍待独立上传 |
+| 个人资料 | `PATCH /api/workspace/me/profile`、头像路由 | 显示名保存／取消；查找可见性；自定义头像按授权地址加载；头像上传未接 | R1 已接线资料保存；头像上传仍待独立接口 |
 | 成员备注 | `PUT/DELETE /members/{id}/remark` | 未接 | R2 |
 | 聊天偏好／自动折叠 | `GET/PUT /me/emote-settings` | 已接自动保存；表情包管理未接 | R1 设置页；折叠生效属 R2 消息渲染 |
 | Android 通知权限 | 系统权限 + 本地通知 | 已接开启／系统设置 | R1 独立通知页，权限与偏好分开 |

@@ -3,6 +3,7 @@ package com.timestarry.duallane
 import android.content.Context
 import android.util.Log
 import com.facebook.react.modules.network.OkHttpClientProvider
+import com.facebook.react.modules.websocket.WebSocketModule
 import com.google.net.cronet.okhttptransport.CronetInterceptor
 import okhttp3.OkHttpClient
 import org.chromium.net.CronetEngine
@@ -26,6 +27,7 @@ object CronetNetworking {
         .build()
       client = built
       OkHttpClientProvider.setOkHttpClientFactory { built }
+      WebSocketModule.setCustomClientBuilder { next -> next.addInterceptor(CronetInterceptor.newBuilder(engine).build()) }
       Log.i("duallane", "cronet_installed")
     } catch (error: Throwable) {
       Log.w("duallane", "cronet_failed")
