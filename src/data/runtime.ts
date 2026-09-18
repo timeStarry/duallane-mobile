@@ -3,6 +3,7 @@ import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import { z } from 'zod';
 import { ApiClient, ApiError, errorDiagnostic, errorText } from './client';
+import { setMediaClient } from './media';
 import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteListSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
 import { composeBlocks } from '../domain/compose';
 import { assertAllowedCardAction } from '../domain/actions';
@@ -37,14 +38,14 @@ export class Runtime {
   private current(epoch:number){return this.active&&epoch===this.epoch;}
   private requireApi(){if(!this.api)throw new ApiError('auth.required',401);return this.api;}
   private createApi(origin:string){
-    this.api?.invalidate();const epoch=this.epoch;
+    this.api?.invalidate();setMediaClient(null);const epoch=this.epoch;
     useWorkspace.setState({policy:null});
     const api:ApiClient=new ApiClient(origin,async session=>{
       const existing=await credentials.read();
       if(this.api!==api||epoch!==this.epoch)throw new Error('Stale session');
       await credentials.save({origin,refreshToken:session.refreshToken,userId:existing?.origin===origin?existing.userId:undefined});
     },()=>{if(this.api===api)void this.logout(false);},()=>this.api===api&&epoch===this.epoch&&!this.forced());
-    this.api=api;return api;
+    this.api=api;setMediaClient(api);return api;
   }
   start(){this.attach();if(this.starting)return this.starting;const task=this.restore();this.starting=task;void task.finally(()=>{if(this.starting===task)this.starting=null;});return task;}
   private async restore(){

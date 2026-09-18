@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Linking, Pressable, Text, View } from 'react-native';
 import type { Attachment, Block, Message } from '../domain/contracts';
 import { hiddenTypes } from '../domain/hide';
@@ -8,6 +8,8 @@ import { FileRow } from './files';
 import { Label } from './primitives';
 import { useTheme } from './theme';
 import { WorkspaceCard } from './cards';
+import { attachmentPreviewUri, emoteSource } from '../data/media';
+import { RemoteImage } from './RemoteImage';
 
 export function MessageContent({
   message,
@@ -71,11 +73,16 @@ function BlockView({
       <Text style={{ color: t.focus, fontSize: t.type.body }} onPress={() => void Linking.openURL(href)}>{block.label || href}</Text>
     ) : <Text style={{ color: t.text }}>{block.label || '链接不可用'}</Text>;
   }
-  if (block.type === 'emoji') return <Text style={{ fontSize: 28 }}>{block.shortcode.startsWith('custom:') ? `[${block.shortcode}]` : `:${block.shortcode}:`}</Text>;
+  if (block.type === 'emoji') return <EmoteView shortcode={block.shortcode} />;
   if (block.type === 'attachment') {
     const file = attachments.find(item => item.id === block.attachmentId);
     if (!file) return <Label muted>附件不可用</Label>;
-    return <FileRow file={file} download={() => download(file)} />;
+    return (
+      <View style={{ gap: 8 }}>
+        {file.mimeType.startsWith('image/') ? <AttachmentImage file={file} download={download} /> : null}
+        <FileRow file={file} download={() => download(file)} />
+      </View>
+    );
   }
   if (block.type === 'card') return <WorkspaceCard block={block} runtime={runtime} onOpenTopic={onOpenTopic} />;
   if (block.type === 'emote_collection') return <Label>{block.share?.revokedAt ? '表情合集已失效' : `表情合集 ${block.share?.name ?? ''}`}</Label>;
@@ -87,6 +94,29 @@ function BlockView({
     );
   }
   return null;
+}
+
+function EmoteView({ shortcode }: { shortcode: string }) {
+  const src = emoteSource(shortcode);
+  if (src) return <RemoteImage uri={src} style={{ width: 32, height: 32 }} />;
+  return <Text style={{ fontSize: 28 }}>{shortcode.startsWith('custom:') ? `[${shortcode}]` : `:${shortcode}:`}</Text>;
+}
+
+function AttachmentImage({ file, download }: { file: Attachment; download: (file: Attachment) => void }) {
+  const [uri, setUri] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void attachmentPreviewUri(file).then(value => { if (!cancelled) setUri(value); }).catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [file]);
+  if (failed) return <Label muted>图片暂时无法显示</Label>;
+  if (!uri) return <Label muted>图片加载中…</Label>;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={file.fileName} onPress={() => download(file)}>
+      <RemoteImage uri={uri} style={{ width: 220, height: 160, borderRadius: 12 }} onError={() => setFailed(true)} />
+    </Pressable>
+  );
 }
 
 function MarkdownText({ text }: { text: string }) {

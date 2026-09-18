@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
+import { AppState, FlatList, KeyboardAvoidingView, Pressable, ScrollView, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useWorkspace } from '../../domain/store';
@@ -8,9 +8,12 @@ import { activeMentionQuery, mentionCandidates } from '../../domain/compose';
 import { copyText } from '../../platform/clipboard';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
+import { rememberEmotes } from '../../data/media';
+import { RemoteImage } from '../../ui/RemoteImage';
 import { Transfers } from '../../data/transfers';
 import {
   AppHeader,
+  Avatar,
   Button,
   Composer,
   ConversationRow,
@@ -124,7 +127,12 @@ export function MessageRow({
         delayLongPress={450}
         style={{ paddingHorizontal: 16, paddingVertical: grouped ? 2 : 6, alignItems: own ? 'flex-end' : 'flex-start' }}
       >
-        {grouped ? null : <Text style={{ color: t.muted, fontSize: t.type.timestamp, marginBottom: 4 }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${message.authorName} · Bot` : message.authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>}
+        {grouped ? null : (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>
+            {own ? null : <Avatar name={message.authorName} uri={message.authorAvatarUrl} id={message.authorId ?? message.authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={28} />}
+            <Text style={{ color: t.muted, fontSize: t.type.timestamp }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${message.authorName} · Bot` : message.authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+          </View>
+        )}
         <View style={{ maxWidth: '80%', padding: 12, borderRadius: t.radius.bubble, backgroundColor: message.kind === 'system' ? t.soft : own ? t.sharedSoft : t.surface }}>
           {message.replyToMessageId ? (
             <Pressable accessibilityRole="button" accessibilityLabel="定位原消息" onPress={() => locate?.(message.replyToMessageId!)}>
@@ -238,6 +246,12 @@ export function ChatScreen({
     finally { setLoading(false); }
   }, [runtime, target]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void runtime.emotes().then(result => {
+      rememberEmotes(result.items);
+      setEmotes(result.items);
+    }).catch(() => undefined);
+  }, [runtime]);
   useLayoutEffect(() => {
     navigation.setOptions({
       title: topic?.title ?? conversation?.displayTitle ?? '会话',
@@ -280,7 +294,7 @@ export function ChatScreen({
   const unreadId = target.kind === 'topic' ? topic?.lastReadMessageId : conversation?.lastReadMessageId;
   const unreadIndex = unreadId ? messages.findIndex(item => item.id === unreadId) : -1;
   return (
-    <View style={[styles.page, { backgroundColor: t.bg }]}>
+    <KeyboardAvoidingView style={[styles.page, { backgroundColor: t.bg }]} behavior="padding" keyboardVerticalOffset={0}>
       {connection !== '已连接' && <InlineFeedback text={connection} tone="warning" />}
       {target.kind === 'topic' && topic ? <Label muted>{topic.joined ? `话题 · ${conversation?.displayTitle ?? ''}` : '未加入，只能查看摘要'}{topic.status !== 'open' ? ' · 已关闭' : ''}</Label> : null}
       <InlineFeedback text={error || progress} tone={error ? 'danger' : 'info'} />
@@ -346,23 +360,24 @@ export function ChatScreen({
         </View>
       )}
       {emoteOpen && (
-        <ScrollView horizontal style={{ maxHeight: 72, backgroundColor: t.elevated }} contentContainerStyle={{ padding: 8, gap: 8 }}>
-          {emotes.map(emote => (
-            <Button
+        <ScrollView style={{ maxHeight: 220, backgroundColor: t.elevated }} contentContainerStyle={{ padding: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+          {emotes.length ? emotes.map(emote => (
+            <Pressable
               key={emote.id}
-              title={emote.label}
-              secondary
+              accessibilityRole="button"
+              accessibilityLabel={emote.label}
               onPress={() => {
-                const emoteKey = emote.emoteKey || emote.token;
                 if (useWorkspace.getState().chatSettings?.clickImageEmoteToSend) {
                   runtime.patchDraft(key, { text: draft.text ? `${draft.text}:${emote.token}:` : `:${emote.token}:`, mentionIds: draft.mentionIds });
                   send();
                 } else runtime.patchDraft(key, { text: `${draft.text}:${emote.token}:` });
                 setEmoteOpen(false);
-                void emoteKey;
               }}
-            />
-          ))}
+              style={{ width: 56, minHeight: 56, alignItems: 'center', justifyContent: 'center' }}
+            >
+              {emote.src ? <RemoteImage uri={emote.src} style={{ width: 40, height: 40 }} /> : <Text style={{ fontSize: 28 }}>{emote.label}</Text>}
+            </Pressable>
+          )) : <Label muted>正在加载表情…</Label>}
         </ScrollView>
       )}
       {canSend ? (
@@ -396,7 +411,7 @@ export function ChatScreen({
           />
         </View>
       ) : <EmptyState title={target.kind === 'topic' ? '当前话题不可发送' : '当前会话不可发送消息'} />}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

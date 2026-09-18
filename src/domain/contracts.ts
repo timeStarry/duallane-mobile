@@ -32,6 +32,7 @@ export const conversationSchema = z.object({
   id,
   displayTitle: z.string(),
   type: z.enum(['direct', 'group']),
+  avatarEmoji: z.string().nullish(),
   lastMessagePlainText: z.string().default(''),
   lastActivityAt: z.string(),
   unreadCount: z.number().nonnegative().default(0),

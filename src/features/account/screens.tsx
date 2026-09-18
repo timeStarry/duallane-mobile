@@ -89,7 +89,7 @@ function AccountHomeScreen({ runtime, open }: { runtime: Runtime; open: (name: E
       <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
         <SettingRow title="个人资料" detail="显示名与查找可见性" onPress={() => open('Profile')} />
         <SettingRow title="外观与阅读" detail="浅色、深色或跟随系统，仅本机" onPress={() => open('Appearance')} />
-        <SettingRow title="聊天偏好" detail="自动折叠与发送方式，按账号保存" onPress={() => open('ChatPreferences')} />
+        <SettingRow title="聊天偏好" detail="自动折叠、发送方式和表情点击发送" onPress={() => open('ChatPreferences')} />
         <SettingRow title="通知" detail="系统权限与本地通知说明" onPress={() => open('Notifications')} />
         <SettingRow title="空间信息" detail={bootstrap?.space.name} onPress={() => open('Space')} />
         <SettingRow title="关于与更新" detail={`版本 ${installed.appVersion}`} onPress={() => open('About')} />
@@ -173,7 +173,7 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
         <Button title="取消" secondary disabled={saving || !dirty} onPress={() => { setNickname(savedNickname); setDiscoverable(savedDiscoverable); setError(''); }} />
       </View>
       <InlineFeedback text={error} tone="danger" />
-      <EmptyState title="头像稍后接入" detail="更换头像使用独立上传接口。本页不会假装已经保存头像。" />
+      <EmptyState title="更换头像稍后接入" detail="自定义头像会按授权地址加载。上传仍走独立接口，本页不会假装已经保存头像。" />
       <Dialog
         visible={leave}
         title="保存对资料的修改？"

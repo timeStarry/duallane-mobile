@@ -61,6 +61,7 @@ function routeKind(path: string): string {
   if (path.startsWith('/api/workspace/')) return 'workspace';
   if (path.startsWith('/api/auth/mobile/')) return 'mobile_auth';
   if (path.startsWith('/api/')) return 'api';
+  if (path === 'media') return 'media';
   return 'unknown';
 }
 
@@ -89,6 +90,36 @@ export class ApiClient {
   private controllers = new Set<AbortController>();
   constructor(public origin: string, private persist: (session: Session) => Promise<void>, private expired: () => void, private allowed: () => boolean = () => true) {}
   invalidate() { this.generation++; this.session = null; for (const controller of this.controllers) controller.abort(); this.controllers.clear(); }
+  async openMedia(url: string): Promise<Response> {
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { throw new ApiError('response.invalid', 0, 'body.non_json'); }
+    if (parsed.protocol !== 'https:') throw new ApiError('permission.denied', 403);
+    const origin = new URL(this.origin);
+    if (parsed.origin === origin.origin) {
+      const path = `${parsed.pathname}${parsed.search}`;
+      if (!path.startsWith('/api/')) throw new ApiError('permission.denied', 403);
+      return this.raw(path, {}, true);
+    }
+    const headers = new Headers();
+    headers.set('X-DualLane-Client', 'android');
+    headers.set('X-DualLane-Client-Version', installed.appVersion);
+    headers.set('X-DualLane-Protocol-Version', '1');
+    const started = Date.now();
+    try {
+      const response = await fetch(parsed.toString(), { headers, credentials: 'omit', redirect: 'error' });
+      if (!response.ok) {
+        const wrapped = new ApiError('request.failed', response.status, `http.${response.status}`);
+        logApiError('media', wrapped, Date.now() - started);
+        throw wrapped;
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      const wrapped = new ApiError(classifyTransport(error) === 'net.timeout' ? 'request.timeout' : 'request.network', 0, classifyTransport(error));
+      logApiError('media', wrapped, Date.now() - started);
+      throw wrapped;
+    }
+  }
   async raw(path: string, init: RequestInit = {}, authenticated = true, retry = true): Promise<Response> {
     if (!path.startsWith('/api/') && !path.startsWith('/ws/')) throw new Error('Invalid API path');
     const generation = this.generation;
