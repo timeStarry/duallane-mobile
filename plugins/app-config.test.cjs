@@ -11,7 +11,10 @@ test('build config rejects credentials, queries and fragments in the API origin'
       assert.throws(() => getConfig(join(__dirname, '..'), { skipPlugins: true }), /API origin must/);
     }
     process.env.EXPO_PUBLIC_API_ORIGIN = 'https://workspace.example.com:8443';
-    assert.equal(getConfig(join(__dirname, '..'), { skipPlugins: true }).exp.extra.apiOrigin, process.env.EXPO_PUBLIC_API_ORIGIN);
+    const exp = getConfig(join(__dirname, '..'), { skipPlugins: true }).exp;
+    assert.equal(exp.extra.apiOrigin, process.env.EXPO_PUBLIC_API_ORIGIN);
+    assert.match(String(exp.icon), /assets[\\/]icon\.png$/);
+    assert.equal(exp.android?.adaptiveIcon?.backgroundColor, '#F7F2EA');
   } finally {
     if (previous === undefined) delete process.env.EXPO_PUBLIC_API_ORIGIN;
     else process.env.EXPO_PUBLIC_API_ORIGIN = previous;

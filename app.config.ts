@@ -21,8 +21,12 @@ if (updateUrl && (!certificate || !keyId || !updateUrl.startsWith('https://'))) 
 const config: ExpoConfig = {
   name: 'DualLane', slug: 'duallane-mobile', version: appVersion, platforms: ['android'],
   scheme: 'com.timestarry.duallane', userInterfaceStyle: 'automatic',
+  icon: './assets/icon.png',
+  splash: { image: './assets/icon.png', resizeMode: 'contain', backgroundColor: '#F7F2EA' },
   runtimeVersion: 'android-1',
   android: { package: 'com.timestarry.duallane', versionCode, allowBackup: false, softwareKeyboardLayoutMode: 'pan',
+    icon: './assets/icon.png',
+    adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#F7F2EA' },
     permissions: ['POST_NOTIFICATIONS'], blockedPermissions: ['android.permission.RECORD_AUDIO', 'android.permission.SCHEDULE_EXACT_ALARM', 'android.permission.USE_EXACT_ALARM', 'android.permission.FOREGROUND_SERVICE'] },
   plugins: [['expo-build-properties', { android: { minSdkVersion: 26, compileSdkVersion: 36, targetSdkVersion: 36 } }],
     'expo-secure-store', 'expo-document-picker', ['expo-notifications', { defaultChannel: 'messages' }], './plugins/android-signing.cjs', './plugins/android-build-memory.cjs', './plugins/android-cronet.cjs'],

@@ -32,7 +32,7 @@ GitHub 托管的 Java 17 和 Android SDK，执行 `pnpm check`、`assembleReleas
 
 `DUALLANE_API_ORIGIN` 是发布包及 PR 测试包共同使用的默认服务配置；当前维护者配置为
 `https://duallane.tsio.top`，通过构建环境注入，不写死在客户端源码。已配置的包不显示服务器
-输入，已有账号可直接使用 GitHub 登录；可选邀请链接必须属于同一服务。无登录会话时，
+输入，已有账号可直接使用 GitHub 登录；邀请入口默认降为「还没有账号？」，点开后的链接必须属于同一服务。无登录会话时，
 版本检查在后台进行，不阻塞登录入口。更新检查或 GitHub 登录失败时，界面会附带稳定诊断
 code（如 `net.failed`、`net.tls`、`http.404`、`body.schema`），logcat 中对应
 `src=duallane event=api_error` 记录；不得把这些 code 当成服务端已拒绝登录。
