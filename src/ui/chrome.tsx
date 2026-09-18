@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bot } from 'lucide-react-native';
-import type { Conversation } from '../domain/contracts';
+import type { Conversation, Member } from '../domain/contracts';
 import { RemoteImage } from './RemoteImage';
 import { formatListTime, stableTone } from './format';
 import { useTheme } from './theme';
@@ -109,16 +109,17 @@ export function Avatar({
   );
 }
 
-export function conversationIdentity(conversation: Conversation, selfId?: string) {
+export function conversationIdentity(conversation: Conversation, selfId?: string, directory: Member[] = []) {
   if (conversation.type === 'group') {
     return { shape: 'group' as const, name: conversation.displayTitle, id: conversation.id, uri: undefined as string | undefined, emoji: conversation.avatarEmoji };
   }
-  const other = conversation.members.find(member => member.id !== selfId);
+  const other = conversation.members.find(member => member.id !== selfId) ?? directory.find(member => member.displayName === conversation.displayTitle);
+  const listed = other?.id ? directory.find(member => member.id === other.id) : undefined;
   return {
-    shape: other?.kind === 'bot' ? ('bot' as const) : ('person' as const),
-    name: other?.displayName ?? conversation.displayTitle,
-    id: other?.id ?? conversation.id,
-    uri: other?.avatarUrl,
+    shape: (other?.kind ?? listed?.kind) === 'bot' ? ('bot' as const) : ('person' as const),
+    name: other?.displayName ?? listed?.displayName ?? conversation.displayTitle,
+    id: other?.id ?? listed?.id ?? conversation.id,
+    uri: other?.avatarUrl ?? listed?.avatarUrl,
     emoji: undefined as string | undefined,
   };
 }
@@ -126,14 +127,16 @@ export function conversationIdentity(conversation: Conversation, selfId?: string
 export function ConversationRow({
   conversation,
   selfId,
+  directory,
   onPress,
 }: {
   conversation: Conversation;
   selfId?: string;
+  directory?: Member[];
   onPress: () => void;
 }) {
   const t = useTheme();
-  const identity = conversationIdentity(conversation, selfId);
+  const identity = conversationIdentity(conversation, selfId, directory);
   const unread = conversation.unreadCount;
   const unreadText = unread > 0 ? `${Math.min(unread, 99)}${unread > 99 ? '+' : ''}条未读` : '无未读';
   const muted = conversation.notificationLevel === 'muted';

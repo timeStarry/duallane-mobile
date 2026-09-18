@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Image, type ImageStyle, type StyleProp } from 'react-native';
+import { ActivityIndicator, Image, View, type ImageStyle, type StyleProp } from 'react-native';
 import { localMediaUri } from '../data/media';
 
 export function RemoteImage({
@@ -22,6 +22,12 @@ export function RemoteImage({
     void localMediaUri(uri).then(local => { if (!cancelled) setSource(local); }).catch(() => { if (!cancelled) onError?.(); });
     return () => { cancelled = true; };
   }, [onError, uri]);
-  if (!source) return null;
+  if (!source) {
+    return (
+      <View style={[{ alignItems: 'center', justifyContent: 'center' }, style]}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
   return <Image source={{ uri: source }} style={style} onError={onError} accessibilityIgnoresInvertColors />;
 }

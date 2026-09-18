@@ -23,6 +23,7 @@ export class Runtime {
   private socket:WebSocket|null=null;
   private retry:ReturnType<typeof setTimeout>|null=null;
   private heartbeat:ReturnType<typeof setInterval>|null=null;
+  private poll:ReturnType<typeof setInterval>|null=null;
   private refreshTimer:ReturnType<typeof setTimeout>|null=null;
   private attempts=0;
   private inFlight=new Set<string>();
@@ -236,9 +237,9 @@ export class Runtime {
     socket.onopen=()=>{hello();};
     socket.onmessage=e=>{this.queue=this.queue.then(async()=>{if(!this.current(epoch)||this.socket!==socket)return;let raw:unknown;try{raw=JSON.parse(String(e.data));}catch{this.scheduleSync();return;}
       const result=tracker.accept(raw);if(result.sync){this.scheduleSync();return;}if(result.event)await this.applyEvent(result.event,!!result.replay);if(!this.current(epoch)||this.socket!==socket)return;
-      this.attempts=0;useWorkspace.setState({cursor:tracker.cursor,connection:'已连接'});if(result.hello)hello();
+      this.attempts=0;this.stopHttpSync();useWorkspace.setState({cursor:tracker.cursor,connection:'已连接'});if(result.hello)hello();
     }).catch(()=>{if(!this.current(epoch)||this.socket!==socket)return;useWorkspace.setState({connection:'同步未完成'});this.scheduleSync();});};
-    socket.onerror=()=>socket.close();socket.onclose=()=>{if(this.socket!==socket||!this.current(epoch))return;this.disconnect();useWorkspace.setState({connection:'正在重新连接'});this.scheduleRetry();};
+    socket.onerror=()=>socket.close();socket.onclose=()=>{if(this.socket!==socket||!this.current(epoch))return;this.disconnect();useWorkspace.setState({connection:'正在重新连接'});this.startHttpSync();this.scheduleRetry();};
     this.refreshTimer=setTimeout(()=>void this.resume(),Math.max(1000,Date.parse(api.session!.accessTokenExpiresAt)-Date.now()-15000));
   }
   private scheduleRetry(){if(!this.active||!this.api?.session||this.forced()||this.retry)return;this.retry=setTimeout(()=>{this.retry=null;void this.resume();},Math.min(30000,1000*2**Math.min(this.attempts++,5)));}
@@ -246,8 +247,11 @@ export class Runtime {
   resume(){if(this.resuming)return this.resuming;const task=this.reconnect();this.resuming=task;void task.finally(()=>{if(this.resuming===task)this.resuming=null;});return task;}
   private async reconnect(){const epoch=this.epoch,api=this.api;if(!this.current(epoch)||!api)return;this.disconnect();try{await this.checkPolicy();if(!this.current(epoch)||this.forced())return;if(api.session){await this.bootstrap(true);this.connect();}}catch(error){if(!this.current(epoch))return;if(error instanceof ApiError&&([401,403].includes(error.status)||error.code==='workspace.disabled')){await this.logout(false);useWorkspace.setState({error:errorText(error)});return;}useWorkspace.setState({connection:'连接暂时不可用',error:errorText(error)});this.scheduleRetry();}}
   disconnect(){if(this.retry)clearTimeout(this.retry);if(this.heartbeat)clearInterval(this.heartbeat);if(this.refreshTimer)clearTimeout(this.refreshTimer);this.retry=null;this.heartbeat=null;this.refreshTimer=null;const socket=this.socket;this.socket=null;if(socket)socket.close();}
-  async logout(remote=true){const api=this.api,session=api?.session;this.epoch++;api?.invalidate();this.disconnect();this.api=null;this.notified.clear();this.inFlight.clear();this.resuming=null;this.starting=null;const key=useWorkspace.getState().accountKey;useWorkspace.getState().reset();if(key){clearAccountFiles(key);cache.clearAccount(key);}await credentials.clear();await clearNotifications();
+  private startHttpSync(){if(this.poll||!this.active)return;void this.httpSync();this.poll=setInterval(()=>{void this.httpSync();},8000);}
+  private stopHttpSync(){if(this.poll)clearInterval(this.poll);this.poll=null;}
+  private async httpSync(){if(!this.active||!this.api?.session||useWorkspace.getState().connection==='已连接')return;try{await this.bootstrap(true);if(this.active&&useWorkspace.getState().connection!=='已连接')useWorkspace.setState({connection:'实时未接通，已用 HTTP 同步'});}catch{/* WebSocket retry continues */}}
+  async logout(remote=true){const api=this.api,session=api?.session;this.epoch++;api?.invalidate();this.stopHttpSync();this.disconnect();this.api=null;this.notified.clear();this.inFlight.clear();this.resuming=null;this.starting=null;const key=useWorkspace.getState().accountKey;useWorkspace.getState().reset();if(key){clearAccountFiles(key);cache.clearAccount(key);}await credentials.clear();await clearNotifications();
     if(remote&&api&&session){try{await api.raw('/api/auth/mobile/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refreshToken:session.refreshToken})},false);}catch{/* Local logout must still complete offline. */}}api?.invalidate();
   }
-  dispose(){this.active=false;this.disconnect();this.stopAppState?.();this.stopAppState=null;}
+  dispose(){this.active=false;this.stopHttpSync();this.disconnect();this.stopAppState?.();this.stopAppState=null;}
 }

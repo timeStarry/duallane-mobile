@@ -17,6 +17,19 @@ test('group conversations use the workspace emoji avatar instead of a title lett
   expect(conversationIdentity(conversation)).toMatchObject({ shape: 'group', emoji: '🧪', uri: undefined });
 });
 
+test('direct conversations fall back to the member directory when the row has no avatar URL', () => {
+  const conversation = conversationSchema.parse({
+    id: 'd2',
+    displayTitle: '信标',
+    type: 'direct',
+    lastActivityAt: '2026-09-18T00:00:00Z',
+    members: [{ id: 'bot-1', displayName: '信标', kind: 'bot' }],
+  });
+  expect(conversationIdentity(conversation, 'self', [
+    { id: 'bot-1', displayName: '信标', kind: 'bot', avatarUrl: 'https://duallane.tsio.top/api/workspace/avatars/bot-1/1', capabilities: { canStartDirectConversation: true } },
+  ]).uri).toBe('https://duallane.tsio.top/api/workspace/avatars/bot-1/1');
+});
+
 test('direct conversations use the other member avatar URL', () => {
   const conversation = conversationSchema.parse({
     id: 'd1',

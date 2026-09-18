@@ -52,25 +52,36 @@ function cacheKey(url: string): string {
   }
 }
 
+export function resolveMediaUrl(url: string, origin: string): string {
+  if (url.startsWith('https://')) return url;
+  if (url.startsWith('/')) return `${origin.replace(/\/$/, '')}${url}`;
+  throw new Error('Invalid media url');
+}
+
 export async function localMediaUri(url: string): Promise<string> {
-  const key = cacheKey(url);
-  const hit = memory.get(key);
-  if (hit) return hit;
-  if (/^https:\/\/avatars\.githubusercontent\.com\//i.test(url)) {
-    memory.set(key, url);
-    return url;
-  }
   const api = client;
   if (!api) throw new Error('Media client unavailable');
-  const response = await api.openMedia(url);
+  const resolved = resolveMediaUrl(url, api.origin);
+  const key = cacheKey(resolved);
+  const hit = memory.get(key);
+  if (hit) return hit;
+  if (/^https:\/\/avatars\.githubusercontent\.com\//i.test(resolved)) {
+    memory.set(key, resolved);
+    return resolved;
+  }
+  const response = await api.openMedia(resolved);
   const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.byteLength) throw new Error('Empty media');
   const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, key);
   const file = new File(Paths.cache, digest);
-  if (!file.exists) {
-    file.create();
-    const handle = file.open();
-    try { handle.writeBytes(bytes); } finally { handle.close(); }
+  if (file.exists && file.size > 0) {
+    memory.set(key, file.uri);
+    return file.uri;
   }
+  if (file.exists) file.delete();
+  file.create();
+  const handle = file.open();
+  try { handle.writeBytes(bytes); } finally { handle.close(); }
   memory.set(key, file.uri);
   return file.uri;
 }
