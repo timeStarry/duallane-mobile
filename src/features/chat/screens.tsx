@@ -20,6 +20,8 @@ import {
   Dialog,
   EmptyState,
   IconButton,
+  SettingGroup,
+  SettingRow,
   InlineFeedback,
   Input,
   Label,
@@ -330,33 +332,46 @@ export function DetailsScreen({ id, runtime, kind = 'conversation', onCreateTopi
   const [leave, setLeave] = useState(false);
   const level = (kind === 'topic' ? topic?.notificationLevel : conversation?.notificationLevel) ?? 'muted';
   return (
-    <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={styles.content}>
-      <Text style={[styles.section, { color: t.text }]}>{kind === 'topic' ? topic?.title : conversation?.displayTitle}</Text>
-      {kind === 'topic' ? <Label muted>{topic?.joined ? '已加入' : '未加入'} · {topic?.status === 'open' ? '进行中' : '已关闭'}</Label> : <Label>{conversation?.retentionText}</Label>}
-      <Label muted>共享空间会保存聊天和文件。</Label>
-      <Label>消息提醒</Label>
-      <SegmentedControl
-        accessibilityLabel="消息提醒"
-        value={level}
-        options={[
-          { value: 'all', label: '所有消息' },
-          { value: 'mentions', label: '仅提到我' },
-          { value: 'muted', label: '免打扰' },
-        ]}
-        onChange={next => void (kind === 'topic' ? runtime.topicNotification(id, next) : runtime.notification(id, next)).catch(e => setError(errorText(e)))}
-      />
+    <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={{ paddingVertical: 16, gap: 20 }}>
+      <View style={styles.content}>
+        <Text style={[styles.section, { color: t.text }]}>{kind === 'topic' ? topic?.title : conversation?.displayTitle}</Text>
+        {kind === 'topic' ? <Label muted>{topic?.joined ? '已加入' : '未加入'} · {topic?.status === 'open' ? '进行中' : '已关闭'}</Label> : <Label>{conversation?.retentionText}</Label>}
+        <Label muted>共享空间会保存聊天和文件。</Label>
+      </View>
+      <SettingGroup title="提醒">
+        <View style={{ padding: 16, gap: 12 }}>
+          <SegmentedControl
+            accessibilityLabel="消息提醒"
+            value={level}
+            options={[
+              { value: 'all', label: '所有消息' },
+              { value: 'mentions', label: '仅提到我' },
+              { value: 'muted', label: '免打扰' },
+            ]}
+            onChange={next => void (kind === 'topic' ? runtime.topicNotification(id, next) : runtime.notification(id, next)).catch(e => setError(errorText(e)))}
+          />
+        </View>
+      </SettingGroup>
       <InlineFeedback text={error} tone="danger" />
       {kind === 'conversation' && conversation?.type === 'group' ? (
-        <>
-          <Label>新建话题</Label>
-          <Input accessibilityLabel="话题标题" placeholder="话题标题" value={title} onChangeText={setTitle} />
-          <Button title="创建话题" disabled={!title.trim()} onPress={() => void runtime.createTopic(id, title.trim()).then(topic => { setTitle(''); onCreateTopic?.(topic); }).catch(e => setError(errorText(e)))} />
-          <Button title="刷新本群话题" secondary onPress={() => void runtime.listTopics(id).catch(e => setError(errorText(e)))} />
-        </>
+        <SettingGroup title="话题">
+          <View style={{ padding: 16, gap: 12 }}>
+            <Input accessibilityLabel="话题标题" placeholder="话题标题" value={title} onChangeText={setTitle} />
+            <Button title="创建话题" disabled={!title.trim()} onPress={() => void runtime.createTopic(id, title.trim()).then(topic => { setTitle(''); onCreateTopic?.(topic); }).catch(e => setError(errorText(e)))} />
+            <Button title="刷新本群话题" secondary onPress={() => void runtime.listTopics(id).catch(e => setError(errorText(e)))} />
+          </View>
+        </SettingGroup>
       ) : null}
-      {kind === 'topic' && topic?.joined ? <Button title="退出话题" variant="danger" onPress={() => setLeave(true)} /> : null}
-      <Label>会话成员</Label>
-      {(kind === 'topic' ? [] : conversation?.members ?? []).map(member => <MemberRow key={member.id} member={member} />)}
+      {kind === 'topic' && topic?.joined ? (
+        <SettingGroup title="危险" danger>
+          <SettingRow title="退出话题" danger onPress={() => setLeave(true)} />
+        </SettingGroup>
+      ) : null}
+      {kind === 'conversation' ? (
+        <SettingGroup title="成员">
+          {(conversation?.members ?? []).map(member => <MemberRow key={member.id} member={member} />)}
+        </SettingGroup>
+      ) : null}
       <Dialog
         visible={leave}
         title="退出话题？"
