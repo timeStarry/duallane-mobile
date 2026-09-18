@@ -26,6 +26,7 @@ import {
   MemberRow,
   MessageContent,
   ObjectActionSheet,
+  ReactionGlyph,
   PageState,
   SegmentedControl,
   TopicRow,
@@ -151,7 +152,10 @@ export function MessageRow({
                   onPress={() => runtime && void runtime.react(message.id, reaction.emoteKey, reaction.reactedByCurrentUser)}
                   style={{ paddingHorizontal: 8, minHeight: 32, borderRadius: 16, backgroundColor: reaction.reactedByCurrentUser ? t.sharedSoft : t.soft, justifyContent: 'center' }}
                 >
-                  <Text style={{ color: t.text, fontSize: t.type.meta }}>{reaction.emoteKey} {reaction.count}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <ReactionGlyph emoteKey={reaction.emoteKey} />
+                    <Text style={{ color: t.text, fontSize: t.type.meta }}>{reaction.count}</Text>
+                  </View>
                 </Pressable>
               ))}
             </View>
@@ -273,12 +277,13 @@ export function ChatScreen({
   const send = (existing?: Message) => {
     setError('');
     nearBottom.current = true;
-    const pending = existing ? undefined : draft.pendingAttachment;
+    const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
+    const pending = existing ? undefined : latest.pendingAttachment;
     const task = pending ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === pending.taskId) : undefined;
-    void runtime.send(target.kind === 'conversation' ? target.id : target.conversationId, existing?.plainText ?? draft.text, existing, existing?.attachments[0]?.id, {
+    void runtime.send(target.kind === 'conversation' ? target.id : target.conversationId, existing?.plainText ?? latest.text, existing, existing?.attachments[0]?.id, {
       topicId: target.kind === 'topic' ? target.id : undefined,
-      replyToMessageId: existing?.replyToMessageId ?? draft.replyToMessageId,
-      mentionIds: draft.mentionIds,
+      replyToMessageId: existing?.replyToMessageId ?? latest.replyToMessageId,
+      mentionIds: latest.mentionIds,
       syncToGroup: target.kind === 'topic' && syncToGroup,
       upload: task ? () => {
         const api = runtime.api;
@@ -365,10 +370,9 @@ export function ChatScreen({
               accessibilityRole="button"
               accessibilityLabel={emote.label}
               onPress={() => {
-                if (useWorkspace.getState().chatSettings?.clickImageEmoteToSend) {
-                  runtime.patchDraft(key, { text: draft.text ? `${draft.text}:${emote.token}:` : `:${emote.token}:`, mentionIds: draft.mentionIds });
-                  send();
-                } else runtime.patchDraft(key, { text: `${draft.text}:${emote.token}:` });
+                const next = `${useWorkspace.getState().drafts[key]?.text ?? draft.text}${emote.token}`;
+                runtime.patchDraft(key, { text: next, mentionIds: draft.mentionIds });
+                if (useWorkspace.getState().chatSettings?.clickImageEmoteToSend) send();
                 setEmoteOpen(false);
               }}
               style={{ width: 56, minHeight: 56, alignItems: 'center', justifyContent: 'center' }}

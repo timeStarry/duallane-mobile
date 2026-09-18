@@ -12,6 +12,7 @@ jest.mock('../src/data/transfers',()=>({Transfers:jest.fn()}));
 jest.mock('expo-constants',()=>({__esModule:true,default:{expoConfig:{extra:{environment:'test',apiOrigin:'',channel:'internal'}},nativeAppVersion:'0.1.0',nativeBuildVersion:'1'}}));
 jest.mock('../src/platform/storage',()=>({cache:{get:jest.fn()}}));
 jest.mock('../src/platform/notifications',()=>({enableNotifications:jest.fn()}));
+jest.mock('../src/ui/RemoteImage',()=>({RemoteImage:({uri}:{uri:string})=>uri}));
 const file={id:'f1',fileName:'example.txt',mimeType:'text/plain',byteSize:3,status:'available',capabilities:{canDownload:true}};
 const message={id:'m1',conversationId:'c1',authorName:'Test',kind:'user',createdAt:'2026-01-01T00:00:00Z',plainText:'example.txt',content:{format:'duallane.message+json;v=1',blocks:[{type:'attachment',attachmentId:'f1'}]},attachments:[file]};
 
@@ -79,4 +80,18 @@ test('an unconfigured development build still requests a service address before 
   fireEvent.press(view.getByRole('button',{name:'使用 GitHub 登录'}));
   await waitFor(()=>expect(runtime.login).toHaveBeenCalledWith('https://development.test',undefined));
   await waitFor(()=>expect(view.getByRole('button',{name:'使用 GitHub 登录'})).toBeEnabled());
+});
+
+test('catalog emote tokens in ordinary markdown text render as catalog image sources',()=>{
+  const parsed=parseMessage({
+    id:'m2',conversationId:'c1',authorName:'Test',kind:'user',createdAt:'2026-01-01T00:00:00Z',
+    plainText:'手机的[bili:melon]表情',
+    content:{format:'duallane.message+json;v=1',blocks:[{type:'text',text:'手机的[bili:melon]表情'}]},
+    attachments:[],
+  })!;
+  const view=render(<MessageRow message={parsed} retry={jest.fn()} download={jest.fn()}/>);
+  expect(view.getByLabelText('[bili:melon]')).toBeTruthy();
+  expect(view.getByText('手机的')).toBeTruthy();
+  expect(view.getByText('表情')).toBeTruthy();
+  expect(view.queryByText('[bili:melon]')).toBeNull();
 });

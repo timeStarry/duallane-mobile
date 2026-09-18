@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Linking, Pressable, Text, View } from 'react-native';
 import type { Attachment, Block, Message } from '../domain/contracts';
+import { catalogImage, catalogUnicodeGlyph } from '../domain/emote-catalog';
 import { hiddenTypes } from '../domain/hide';
 import { extractHttpUrls, prepareWorkspaceMarkdown, safeHttpUrl } from '../domain/markdown';
 import { useWorkspace } from '../domain/store';
@@ -22,7 +23,6 @@ export function MessageContent({
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
 }) {
-  const t = useTheme();
   const settings = useWorkspace(s => s.chatSettings);
   const [expanded, setExpanded] = useState(false);
   const matched = hiddenTypes(settings, message.blocks, message.attachments, message.plainText);
@@ -36,7 +36,7 @@ export function MessageContent({
   if (message.fallback || !message.blocks.length) {
     return (
       <View>
-        <Text selectable style={{ fontSize: t.type.body, lineHeight: t.type.bodyLine, color: t.text }}>{message.plainText}</Text>
+        <RichText text={message.plainText} markdown={false} />
         {message.fallback ? <Label muted>部分内容暂不支持，可在“我的”检查更新。</Label> : null}
         {message.attachments.map(file => <FileRow key={file.id} file={file} download={() => download(file)} />)}
       </View>
@@ -92,10 +92,30 @@ function BlockView({
   return null;
 }
 
+export function EmoteImage({ uri, token, size }: { uri: string; token: string; size: number }) {
+  const [failed, setFailed] = useState(false);
+  const fail = useCallback(() => setFailed(true), []);
+  if (failed) return <Text>{token}</Text>;
+  return (
+    <View accessible accessibilityRole="image" accessibilityLabel={token}>
+      <RemoteImage uri={uri} style={{ width: size, height: size }} onError={fail} />
+    </View>
+  );
+}
+
+export function ReactionGlyph({ emoteKey }: { emoteKey: string }) {
+  const src = emoteSource(emoteKey) ?? catalogImage(emoteKey)?.src;
+  const glyph = catalogUnicodeGlyph(emoteKey);
+  if (src) return <EmoteImage uri={src} token={emoteKey} size={16} />;
+  return <Text>{glyph ?? emoteKey}</Text>;
+}
+
 function EmoteView({ shortcode }: { shortcode: string }) {
   const src = emoteSource(shortcode);
-  if (src) return <RemoteImage uri={src} style={{ width: 32, height: 32 }} />;
-  return <Text style={{ fontSize: 28 }}>{shortcode.startsWith('custom:') ? `[${shortcode}]` : `:${shortcode}:`}</Text>;
+  if (src) return <EmoteImage uri={src} token={shortcode.startsWith('[') ? shortcode : `:${shortcode}:`} size={32} />;
+  const glyph = catalogUnicodeGlyph(shortcode);
+  if (glyph) return <Text style={{ fontSize: 28 }}>{glyph}</Text>;
+  return <Text style={{ fontSize: 28 }}>{shortcode.startsWith('custom:') || shortcode.startsWith('[') ? (shortcode.startsWith('[') ? shortcode : `[${shortcode}]`) : `:${shortcode}:`}</Text>;
 }
 
 function AttachmentImage({ file, download }: { file: Attachment; download: (file: Attachment) => void }) {
@@ -115,30 +135,45 @@ function AttachmentImage({ file, download }: { file: Attachment; download: (file
   );
 }
 
-function renderCatalogText(text: string, fontSize: number, color: string) {
-  return splitCatalogEmotes(text).map((part, index) => {
-    if (part.src) return <RemoteImage key={`${part.token}:${index}`} uri={part.src} style={{ width: 28, height: 28 }} />;
-    return <Text key={index} selectable style={{ fontSize, color }}>{part.text}</Text>;
-  });
+function MarkdownText({ text }: { text: string }) {
+  return <RichText text={text} markdown />;
 }
 
-function MarkdownText({ text }: { text: string }) {
+function RichText({ text, markdown }: { text: string; markdown: boolean }) {
   const t = useTheme();
-  const prepared = prepareWorkspaceMarkdown(text);
-  if (prepared.plain) {
-    return <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>{renderCatalogText(prepared.source, t.type.body, t.text)}</View>;
-  }
-  const urls = extractHttpUrls(prepared.source);
+  const prepared = markdown ? prepareWorkspaceMarkdown(text) : { source: text.replace(/\r\n?/g, '\n'), plain: true };
+  const urls = prepared.plain ? [] : extractHttpUrls(prepared.source);
   return (
     <View>
       {prepared.source.split('\n').map((line, index) => (
-        <Text key={index} selectable style={{ fontSize: t.type.body, lineHeight: t.type.bodyLine, color: t.text }}>
-          {renderInline(line, t.focus)}
-        </Text>
+        <RichLine key={index} line={line} markdown={!prepared.plain} fontSize={t.type.body} color={t.text} linkColor={t.focus} />
       ))}
       {urls.map(url => (
         <Text key={url} style={{ color: t.focus }} onPress={() => void Linking.openURL(url)}>{url}</Text>
       ))}
+    </View>
+  );
+}
+
+function RichLine({ line, markdown, fontSize, color, linkColor }: { line: string; markdown: boolean; fontSize: number; color: string; linkColor: string }) {
+  const parts = splitCatalogEmotes(line);
+  if (parts.length === 1 && parts[0]?.text !== undefined && !parts[0].src) {
+    return (
+      <Text selectable style={{ fontSize, lineHeight: fontSize + 6, color }}>
+        {markdown ? renderInline(parts[0].text, linkColor) : parts[0].text}
+      </Text>
+    );
+  }
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
+      {parts.map((part, index) => {
+        if (part.src) return <EmoteImage key={`${part.token}:${index}`} uri={part.src} token={part.token ?? ''} size={28} />;
+        return (
+          <Text key={index} selectable style={{ fontSize, color }}>
+            {markdown ? renderInline(part.text ?? '', linkColor) : part.text}
+          </Text>
+        );
+      })}
     </View>
   );
 }

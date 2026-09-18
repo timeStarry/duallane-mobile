@@ -1,4 +1,5 @@
 import type { Attachment, Block, ChatSettings } from './contracts';
+import { containsImageEmoteToken } from './emote-catalog';
 import { prepareWorkspaceMarkdown } from './markdown';
 
 export function shouldCollapseText(blocks: Block[]) {
@@ -19,7 +20,7 @@ export function classifyHiddenContent(blocks: Block[], attachments: Attachment[]
   const found = new Set<'image' | 'emote' | 'long'>();
   if (!blocks.length) {
     if (shouldCollapseText([{ type: 'text', text: fallbackText }])) found.add('long');
-    if (/\p{Extended_Pictographic}/u.test(fallbackText)) found.add('emote');
+    if (/\p{Extended_Pictographic}/u.test(fallbackText) || containsImageEmoteToken(fallbackText)) found.add('emote');
     return [...found];
   }
   if (shouldCollapseText(blocks)) found.add('long');
@@ -29,7 +30,7 @@ export function classifyHiddenContent(blocks: Block[], attachments: Attachment[]
     if (block.type === 'text') {
       const prepared = prepareWorkspaceMarkdown(block.text);
       if (/!\[[^\]]*\]\(\s*https?:\/\//.test(prepared.source)) found.add('image');
-      if (/\p{Extended_Pictographic}/u.test(prepared.source)) found.add('emote');
+      if (/\p{Extended_Pictographic}/u.test(prepared.source) || containsImageEmoteToken(prepared.source)) found.add('emote');
     }
   }
   return [...found];

@@ -3,6 +3,7 @@ import * as Crypto from 'expo-crypto';
 import { z } from 'zod';
 import type { ApiClient } from './client';
 import type { Attachment, Emote } from '../domain/contracts';
+import { catalogImage, customEmoteSrc, splitImageEmotes } from '../domain/emote-catalog';
 
 const memory = new Map<string, string>();
 const emotes = new Map<string, string>();
@@ -14,7 +15,6 @@ export function setMediaClient(next: ApiClient | null): void {
 }
 
 const PREVIEWABLE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp']);
-const CATALOG_PACKS = 'bili|wechat|feishu|xiaohongshu|heybox|tieba|qq|douyin';
 
 export function isPreviewableImage(file: { mimeType: string; fileName?: string }): boolean {
   if (PREVIEWABLE.has(file.mimeType.toLowerCase())) return true;
@@ -35,26 +35,11 @@ export function rememberEmotes(items: Emote[]): void {
 export function emoteSource(shortcode: string): string | undefined {
   const mapped = emotes.get(shortcode) ?? emotes.get(shortcode.replace(/^:|:$/g, ''));
   if (mapped) return mapped;
-  const custom = /^custom:([a-f0-9-]{36})$/i.exec(shortcode) ?? /^\[custom:([a-f0-9-]{36})\]$/i.exec(shortcode);
-  if (custom) return `/api/workspace/emotes/${custom[1]}/content`;
-  const catalog = new RegExp(`^\\[(${CATALOG_PACKS}):([^\\]\\s]+)\\]$`, 'i').exec(shortcode);
-  if (catalog?.[1] && catalog[2]) return `/emotes/${catalog[1].toLowerCase()}/${catalog[2]}.png`;
-  return undefined;
+  return customEmoteSrc(shortcode) ?? catalogImage(shortcode)?.src;
 }
 
 export function splitCatalogEmotes(text: string): Array<{ text?: string; src?: string; token?: string }> {
-  const pattern = new RegExp(`\\[(${CATALOG_PACKS}):([^\\]\\s]+)\\]`, 'gi');
-  const parts: Array<{ text?: string; src?: string; token?: string }> = [];
-  let last = 0;
-  for (const match of text.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    if (index > last) parts.push({ text: text.slice(last, index) });
-    if (match[1] && match[2]) parts.push({ token: match[0], src: `/emotes/${match[1].toLowerCase()}/${match[2]}.png` });
-    last = index + match[0].length;
-  }
-  if (!parts.length) return [{ text }];
-  if (last < text.length) parts.push({ text: text.slice(last) });
-  return parts;
+  return splitImageEmotes(text, emotes);
 }
 
 export async function attachmentPreviewUri(file: Attachment): Promise<string> {

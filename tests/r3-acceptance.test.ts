@@ -84,6 +84,14 @@ test('A27 auto-hide is a local display preference and does not recall the messag
   expect(types).toContain('emote');
   expect(message.recalledAt).toBeFalsy();
   expect(message.hiddenByCurrentUser).toBe(false);
+  const catalog = parseMessage({
+    ...valid,
+    content: { format: 'duallane.message+json;v=1', blocks: [{ type: 'text', text: '手机的[bili:melon]表情' }] },
+  })!;
+  expect(hiddenTypes(
+    { clickImageEmoteToSend: false, replyAutoMention: false, autoHideMessages: true, autoHideMessageTypes: ['emote'] },
+    catalog.blocks, catalog.attachments, catalog.plainText,
+  )).toContain('emote');
 });
 
 test('A28 local notifications honor self, replay, muted, mentions and topic targets', () => {
