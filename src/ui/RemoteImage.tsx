@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, View, type ImageStyle, type StyleProp } from 'react-native';
 import { localMediaUri } from '../data/media';
 
@@ -12,6 +12,8 @@ export function RemoteImage({
   onError?: () => void;
 }) {
   const [source, setSource] = useState<string | null>(uri.startsWith('file:') || /^https:\/\/avatars\.githubusercontent\.com\//i.test(uri) ? uri : null);
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   useEffect(() => {
     let cancelled = false;
     if (uri.startsWith('file:') || /^https:\/\/avatars\.githubusercontent\.com\//i.test(uri)) {
@@ -19,9 +21,9 @@ export function RemoteImage({
       return;
     }
     setSource(null);
-    void localMediaUri(uri).then(local => { if (!cancelled) setSource(local); }).catch(() => { if (!cancelled) onError?.(); });
+    void localMediaUri(uri).then(local => { if (!cancelled) setSource(local); }).catch(() => { if (!cancelled) onErrorRef.current?.(); });
     return () => { cancelled = true; };
-  }, [onError, uri]);
+  }, [uri]);
   if (!source) {
     return (
       <View style={[{ alignItems: 'center', justifyContent: 'center' }, style]}>

@@ -28,11 +28,11 @@
 
 | 编号 | 能力 | Go | 当前移动端 | 本轮 |
 | --- | --- | --- | --- | --- |
-| MSG-01 | 结构化 blocks（text／mention／link／emoji／attachment） | 消息 DTO `content` | 按 block 渲染；未知仍 fallback | R2 已接 |
-| MSG-02 | Markdown 安全子集 | Web `WorkspaceMarkdown` | 无 WebView；表格／HTML 纯文 | R2 已接 |
+| MSG-01 | 结构化 blocks（text／mention／link／emoji／attachment） | 消息 DTO `content` | 按 block 渲染；未知仍 fallback；catalog 小表情 token 按 Web `emote-packs.json` 的 src 渲染 | R2 已接 |
+| MSG-02 | Markdown 安全子集 | Web `WorkspaceMarkdown` | 无 WebView；表格／HTML 纯文；Markdown 文本中的 `[bili:melon]` 等 token 仍拆成图片 | R2 已接 |
 | MSG-03 | 回复 | 创建消息 `replyToMessageId` | 引用预览／取消／定位 | R2 已接 |
 | MSG-04 | @ 成员 | mention block | 候选与结构化 mention | R2 已接 |
-| MSG-05 | 表情与反应 | emote 路由；`POST/DELETE .../reactions` | 选择器与计数 | R2 已接 |
+| MSG-05 | 表情与反应 | emote 路由；`POST/DELETE .../reactions` | 选择器插入 catalog token（不包 `:`）；反应显示 catalog 图／unicode | R2 已接 |
 | MSG-06 | 复制／撤回／隐藏／常驻 | recall、hidden、pins | 长按与更多；三者分开 | R2 已接 |
 | MSG-07 | 历史、已读、未读分界 | messages + read | 分页、未读分界、引用定位 | R2 已接 |
 | MSG-08 | 草稿、失败重试、clientMessageId | 创建消息幂等 | 草稿含引用／附件／提及 | R2 已接 |
@@ -45,4 +45,4 @@
 
 ## 3. 当前解析缺口
 
-[`parseMessage`](../../../src/domain/contracts.ts) 已纳入 `topicId`、`replyToMessageId`、`reactions`、`pin`、作者扩展字段，以及 `card`／`emote_collection`／`topic_reference` 已知 block。未知 block／kind 仍安全 fallback 到 `plainText`，不执行 payload。
+[`parseMessage`](../../../src/domain/contracts.ts) 已纳入 `topicId`、`replyToMessageId`、`reactions`、`pin`、作者扩展字段，以及 `card`／`emote_collection`／`topic_reference` 已知 block。未知 block／kind 仍安全 fallback 到 `plainText`，不执行 payload。正文里的 catalog 小表情与 Web 相同：token 如 `[bili:melon]`、`[wechat:微笑]` 对照主仓 `apps/web/shared/emote-packs.json` 快照解析为 `/emotes/...` 同源静态图，不按 id 猜 `.png` 文件名。未知 token 保持原文。表情包管理工具仍未接。

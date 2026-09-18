@@ -4,7 +4,7 @@ export { AppHeader, Avatar, ConversationRow, TopicRow, conversationIdentity } fr
 export { SwitchRow, Select, PageState } from './controls';
 export { FileRow, AttachmentPreview, TransferItem } from './files';
 export { Composer, ReplyPreview } from './composer';
-export { MessageContent } from './MessageContent';
+export { EmoteImage, MessageContent, ReactionGlyph } from './MessageContent';
 export { MemberRow } from './members';
 
 export const styles = StyleSheet.create({
