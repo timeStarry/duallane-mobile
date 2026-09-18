@@ -2,7 +2,7 @@ const { mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
 const { withAppBuildGradle, withDangerousMod, withMainApplication } = require('expo/config-plugins');
 
-const CRONET_EMBEDDED = 'org.chromium.net:cronet-embedded:119.6045.31';
+const CRONET_EMBEDDED = 'org.chromium.net:cronet-embedded:143.7445.0';
 const CRONET_OKHTTP = 'com.google.net.cronet:cronet-okhttp:0.1.1';
 const INSTALL_CALL = 'CronetNetworking.install(this)';
 

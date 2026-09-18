@@ -19,7 +19,7 @@ const main = `class MainApplication : Application(), ReactApplication {
 
 test('prebuild adds embedded Cronet dependencies once', () => {
   const result = addGradleDependencies(gradle);
-  assert.match(result, /cronet-embedded:119\.6045\.31/);
+  assert.match(result, /cronet-embedded:143\.7445\.0/);
   assert.match(result, /cronet-okhttp:0\.1\.1/);
   assert.equal(addGradleDependencies(result), result);
 });

@@ -16,7 +16,8 @@
 ## 决定
 
 选 2。HTTP 仍只访问已配置的 HTTPS origin；Cronet 只替换传输栈。Play Services Cronet
-在国内小米机上经常不可用，因此嵌入 `cronet-embedded`。
+在国内小米机上经常不可用，因此嵌入 `cronet-embedded`。版本用当前 Chrome 主线（143），
+避免 119 那种偏短的 Client Hello 被路径上的 RST 注入打掉。
 
 ## 观测
 
