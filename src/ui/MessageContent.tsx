@@ -8,7 +8,7 @@ import { FileRow } from './files';
 import { Label } from './primitives';
 import { useTheme } from './theme';
 import { WorkspaceCard } from './cards';
-import { attachmentPreviewUri, emoteSource } from '../data/media';
+import { attachmentPreviewUri, emoteSource, isPreviewableImage, splitCatalogEmotes } from '../data/media';
 import { RemoteImage } from './RemoteImage';
 
 export function MessageContent({
@@ -77,12 +77,8 @@ function BlockView({
   if (block.type === 'attachment') {
     const file = attachments.find(item => item.id === block.attachmentId);
     if (!file) return <Label muted>附件不可用</Label>;
-    return (
-      <View style={{ gap: 8 }}>
-        {file.mimeType.startsWith('image/') ? <AttachmentImage file={file} download={download} /> : null}
-        <FileRow file={file} download={() => download(file)} />
-      </View>
-    );
+    if (isPreviewableImage(file)) return <AttachmentImage file={file} download={download} />;
+    return <FileRow file={file} download={() => download(file)} />;
   }
   if (block.type === 'card') return <WorkspaceCard block={block} runtime={runtime} onOpenTopic={onOpenTopic} />;
   if (block.type === 'emote_collection') return <Label>{block.share?.revokedAt ? '表情合集已失效' : `表情合集 ${block.share?.name ?? ''}`}</Label>;
@@ -109,21 +105,28 @@ function AttachmentImage({ file, download }: { file: Attachment; download: (file
     let cancelled = false;
     void attachmentPreviewUri(file).then(value => { if (!cancelled) setUri(value); }).catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
-  }, [file]);
-  if (failed) return <Label muted>图片暂时无法显示</Label>;
+  }, [file.id, file.byteSize, file.fileName, file.mimeType]);
+  if (failed) return <FileRow file={file} download={() => download(file)} />;
   if (!uri) return <Label muted>图片加载中…</Label>;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={file.fileName} onPress={() => download(file)}>
-      <RemoteImage uri={uri} style={{ width: 220, height: 160, borderRadius: 12 }} onError={() => setFailed(true)} />
+    <Pressable accessibilityRole="button" accessibilityLabel={`预览图片 ${file.fileName}`} onPress={() => download(file)}>
+      <RemoteImage uri={uri} style={{ width: 240, height: 180, borderRadius: 12 }} onError={() => setFailed(true)} />
     </Pressable>
   );
+}
+
+function renderCatalogText(text: string, fontSize: number, color: string) {
+  return splitCatalogEmotes(text).map((part, index) => {
+    if (part.src) return <RemoteImage key={`${part.token}:${index}`} uri={part.src} style={{ width: 28, height: 28 }} />;
+    return <Text key={index} selectable style={{ fontSize, color }}>{part.text}</Text>;
+  });
 }
 
 function MarkdownText({ text }: { text: string }) {
   const t = useTheme();
   const prepared = prepareWorkspaceMarkdown(text);
   if (prepared.plain) {
-    return <Text selectable style={{ fontSize: t.type.body, lineHeight: t.type.bodyLine, color: t.text }}>{prepared.source}</Text>;
+    return <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>{renderCatalogText(prepared.source, t.type.body, t.text)}</View>;
   }
   const urls = extractHttpUrls(prepared.source);
   return (

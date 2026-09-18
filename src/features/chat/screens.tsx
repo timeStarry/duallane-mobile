@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AppState, FlatList, Keyboard, KeyboardAvoidingView, Pressable, ScrollView, Text, View } from 'react-native';
+import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useWorkspace } from '../../domain/store';
@@ -231,7 +231,6 @@ export function ChatScreen({
   const [emoteOpen, setEmoteOpen] = useState(false);
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList<Message>>(null);
-  const [keyboard, setKeyboard] = useState(0);
   const nearBottom = useRef(true);
   const [newMessages, setNewMessages] = useState(false);
   const mentionQuery = activeMentionQuery(draft.text);
@@ -245,11 +244,6 @@ export function ChatScreen({
     finally { setLoading(false); }
   }, [runtime, target]);
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    const shown = Keyboard.addListener('keyboardDidShow', event => setKeyboard(event.endCoordinates.height));
-    const hidden = Keyboard.addListener('keyboardDidHide', () => setKeyboard(0));
-    return () => { shown.remove(); hidden.remove(); };
-  }, []);
   useEffect(() => {
     void runtime.emotes().then(result => {
       rememberEmotes(result.items);
@@ -298,7 +292,7 @@ export function ChatScreen({
   const unreadId = target.kind === 'topic' ? topic?.lastReadMessageId : conversation?.lastReadMessageId;
   const unreadIndex = unreadId ? messages.findIndex(item => item.id === unreadId) : -1;
   return (
-    <KeyboardAvoidingView style={[styles.page, { backgroundColor: t.bg }]} behavior="padding" keyboardVerticalOffset={56}>
+    <View style={[styles.page, { backgroundColor: t.bg }]}>
       {connection !== '已连接' && <InlineFeedback text={connection} tone="warning" />}
       {target.kind === 'topic' && topic ? <Label muted>{topic.joined ? `话题 · ${conversation?.displayTitle ?? ''}` : '未加入，只能查看摘要'}{topic.status !== 'open' ? ' · 已关闭' : ''}</Label> : null}
       <InlineFeedback text={error || progress} tone={error ? 'danger' : 'info'} />
@@ -385,7 +379,7 @@ export function ChatScreen({
         </ScrollView>
       )}
       {canSend ? (
-        <View style={{ paddingBottom: keyboard ? 8 : Math.max(insets.bottom, 8) }}>
+        <View style={{ paddingBottom: Math.max(insets.bottom, 8) }}>
           {target.kind === 'topic' && topic?.allowSyncToGroup ? (
             <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: 40, justifyContent: 'center' }}>
               <Label muted>{syncToGroup ? '将同步到群聊' : '默认只发到话题，点按改为同步到群'}</Label>
@@ -415,7 +409,7 @@ export function ChatScreen({
           />
         </View>
       ) : <EmptyState title={target.kind === 'topic' ? '当前话题不可发送' : '当前会话不可发送消息'} />}
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
