@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AppState, FlatList, KeyboardAvoidingView, Pressable, ScrollView, Text, View } from 'react-native';
+import { AppState, FlatList, Keyboard, KeyboardAvoidingView, Pressable, ScrollView, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useWorkspace } from '../../domain/store';
@@ -41,6 +41,7 @@ export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Run
   const topics = useWorkspace(s => s.topics);
   const connection = useWorkspace(s => s.connection);
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
+  const directory = useWorkspace(s => s.bootstrap?.members);
   const [query, setQuery] = useState('');
   const [list, setList] = useState<'conversations' | 'topics'>('conversations');
   const [error, setError] = useState('');
@@ -82,7 +83,7 @@ export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Run
         </PageState>
       ) : (
         <PageState status={items.length ? 'ready' : 'empty'} emptyTitle="还没有会话" emptyDetail="可以从成员列表发起私聊。">
-          <FlatList style={{ flex: 1 }} data={items} keyExtractor={c => c.id} renderItem={({ item }) => <ConversationRow conversation={item} selfId={selfId} onPress={() => open(item.id)} />} />
+          <FlatList style={{ flex: 1 }} data={items} keyExtractor={c => c.id} renderItem={({ item }) => <ConversationRow conversation={item} selfId={selfId} directory={directory} onPress={() => open(item.id)} />} />
         </PageState>
       )}
     </View>
@@ -129,7 +130,7 @@ export function MessageRow({
       >
         {grouped ? null : (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>
-            {own ? null : <Avatar name={message.authorName} uri={message.authorAvatarUrl} id={message.authorId ?? message.authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={28} />}
+            {own ? null : <Avatar name={message.authorName} uri={message.authorAvatarUrl || conversation?.members.find(member => member.id === message.authorId)?.avatarUrl} id={message.authorId ?? message.authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={28} />}
             <Text style={{ color: t.muted, fontSize: t.type.timestamp }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${message.authorName} · Bot` : message.authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
           </View>
         )}
@@ -163,9 +164,6 @@ export function MessageRow({
               <Button title="重试发送" secondary onPress={retry} />
             </>
           )}
-          <Pressable accessibilityRole="button" accessibilityLabel="更多消息动作" onPress={() => setSheet(true)} style={{ minHeight: 32, justifyContent: 'center' }}>
-            <Text style={{ color: t.muted, fontSize: t.type.meta }}>更多</Text>
-          </Pressable>
         </View>
       </Pressable>
       <ObjectActionSheet
@@ -233,6 +231,7 @@ export function ChatScreen({
   const [emoteOpen, setEmoteOpen] = useState(false);
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList<Message>>(null);
+  const [keyboard, setKeyboard] = useState(0);
   const nearBottom = useRef(true);
   const [newMessages, setNewMessages] = useState(false);
   const mentionQuery = activeMentionQuery(draft.text);
@@ -246,6 +245,11 @@ export function ChatScreen({
     finally { setLoading(false); }
   }, [runtime, target]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const shown = Keyboard.addListener('keyboardDidShow', event => setKeyboard(event.endCoordinates.height));
+    const hidden = Keyboard.addListener('keyboardDidHide', () => setKeyboard(0));
+    return () => { shown.remove(); hidden.remove(); };
+  }, []);
   useEffect(() => {
     void runtime.emotes().then(result => {
       rememberEmotes(result.items);
@@ -294,7 +298,7 @@ export function ChatScreen({
   const unreadId = target.kind === 'topic' ? topic?.lastReadMessageId : conversation?.lastReadMessageId;
   const unreadIndex = unreadId ? messages.findIndex(item => item.id === unreadId) : -1;
   return (
-    <KeyboardAvoidingView style={[styles.page, { backgroundColor: t.bg }]} behavior="padding" keyboardVerticalOffset={0}>
+    <KeyboardAvoidingView style={[styles.page, { backgroundColor: t.bg }]} behavior="padding" keyboardVerticalOffset={56}>
       {connection !== '已连接' && <InlineFeedback text={connection} tone="warning" />}
       {target.kind === 'topic' && topic ? <Label muted>{topic.joined ? `话题 · ${conversation?.displayTitle ?? ''}` : '未加入，只能查看摘要'}{topic.status !== 'open' ? ' · 已关闭' : ''}</Label> : null}
       <InlineFeedback text={error || progress} tone={error ? 'danger' : 'info'} />
@@ -381,7 +385,7 @@ export function ChatScreen({
         </ScrollView>
       )}
       {canSend ? (
-        <View style={{ paddingBottom: Math.max(insets.bottom, 8) }}>
+        <View style={{ paddingBottom: keyboard ? 8 : Math.max(insets.bottom, 8) }}>
           {target.kind === 'topic' && topic?.allowSyncToGroup ? (
             <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: 40, justifyContent: 'center' }}>
               <Label muted>{syncToGroup ? '将同步到群聊' : '默认只发到话题，点按改为同步到群'}</Label>

@@ -92,13 +92,33 @@ export class ApiClient {
   invalidate() { this.generation++; this.session = null; for (const controller of this.controllers) controller.abort(); this.controllers.clear(); }
   async openMedia(url: string): Promise<Response> {
     let parsed: URL;
-    try { parsed = new URL(url); } catch { throw new ApiError('response.invalid', 0, 'body.non_json'); }
+    try { parsed = new URL(url.startsWith('/') ? `${this.origin}${url}` : url); } catch { throw new ApiError('response.invalid', 0, 'body.non_json'); }
     if (parsed.protocol !== 'https:') throw new ApiError('permission.denied', 403);
     const origin = new URL(this.origin);
     if (parsed.origin === origin.origin) {
       const path = `${parsed.pathname}${parsed.search}`;
-      if (!path.startsWith('/api/')) throw new ApiError('permission.denied', 403);
-      return this.raw(path, {}, true);
+      if (path.startsWith('/api/')) return this.raw(path, {}, true);
+      if (!path.startsWith('/emotes/')) throw new ApiError('permission.denied', 403);
+      const headers = new Headers();
+      headers.set('X-DualLane-Client', 'android');
+      headers.set('X-DualLane-Client-Version', installed.appVersion);
+      headers.set('X-DualLane-Protocol-Version', '1');
+      if (this.session) headers.set('Authorization', `Bearer ${this.session.accessToken}`);
+      const started = Date.now();
+      try {
+        const response = await fetch(`${this.origin}${path}`, { headers, credentials: 'omit', redirect: 'error' });
+        if (!response.ok) {
+          const wrapped = new ApiError('request.failed', response.status, `http.${response.status}`);
+          logApiError('media', wrapped, Date.now() - started);
+          throw wrapped;
+        }
+        return response;
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        const wrapped = new ApiError(classifyTransport(error) === 'net.timeout' ? 'request.timeout' : 'request.network', 0, classifyTransport(error));
+        logApiError('media', wrapped, Date.now() - started);
+        throw wrapped;
+      }
     }
     const headers = new Headers();
     headers.set('X-DualLane-Client', 'android');
