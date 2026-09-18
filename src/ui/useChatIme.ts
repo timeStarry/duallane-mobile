@@ -7,9 +7,9 @@ import {
   useKeyboardController,
   useKeyboardState,
 } from 'react-native-keyboard-controller';
-import { clampImeHeight, composerDock, type ComposerPanel } from './composerDock';
+import { applyMentionSuggestions, clampImeHeight, composerDock, type ComposerPanel } from './composerDock';
 
-export function useChatIme(navBarInset: number) {
+export function useChatIme(navBarInset: number, mentionCount = 0) {
   const { setEnabled } = useKeyboardController();
   const keyboardVisible = useKeyboardState(state => state.isVisible);
   const imeBottom = useKeyboardState(state => state.height);
@@ -30,6 +30,12 @@ export function useChatIme(navBarInset: number) {
   useEffect(() => {
     if (imeBottom > 0) lastImeHeight.current = clampImeHeight(imeBottom, screenHeight);
   }, [imeBottom, screenHeight]);
+
+  useEffect(() => {
+    const next = applyMentionSuggestions(mentionCount, panel);
+    if (next.dismissKeyboard) Keyboard.dismiss();
+    if (next.nextPanel !== panel) setPanel(next.nextPanel);
+  }, [mentionCount, panel]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {

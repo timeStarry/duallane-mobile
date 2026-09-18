@@ -35,9 +35,12 @@ test('grouping uses author identity and breaks on replies hidden recall and syst
 test('unread index splits groups and hidden-in-middle plus unread-at-end stay boundaries', () => {
   const messages = [message(0), message(1), message(2), message(3)];
   expect(getMessageGroupPositions(messages, 2)).toEqual(['start', 'end', 'start', 'end']);
-  expect(workspaceUnreadIndex(messages, 'm0')).toBe(1);
-  expect(workspaceUnreadIndex(messages, 'm3')).toBe(3);
-  expect(getMessageGroupPositions(messages, workspaceUnreadIndex(messages, 'm3'))).toEqual(['start', 'middle', 'end', 'single']);
+  expect(workspaceUnreadIndex(messages, 'm0', 3)).toBe(1);
+  expect(workspaceUnreadIndex(messages, 'm3', 1)).toBe(3);
+  expect(workspaceUnreadIndex(messages, 'missing-on-this-page', 2)).toBe(2);
+  expect(workspaceUnreadIndex(messages, undefined, 2)).toBe(2);
+  expect(workspaceUnreadIndex(messages, 'm0', 0)).toBe(-1);
+  expect(getMessageGroupPositions(messages, workspaceUnreadIndex(messages, 'm3', 1))).toEqual(['start', 'middle', 'end', 'single']);
   const withHidden = [message(0), message(1, { hiddenByCurrentUser: true }), message(2)] as Array<ReturnType<typeof message> & { hiddenByCurrentUser?: boolean }>;
   expect(getMessageGroupPositions(withHidden)).toEqual(['single', 'single', 'single']);
   expect(groupHiddenWorkspaceMessages(withHidden)).toEqual([

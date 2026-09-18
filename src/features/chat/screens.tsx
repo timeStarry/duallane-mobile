@@ -125,7 +125,6 @@ export function ChatScreen({
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  const ime = useChatIme(insets.bottom);
   const [emotePack, setEmotePack] = useState('custom');
   const key = targetKey(target);
   const conversation = useWorkspace(s => s.conversations[target.kind === 'conversation' ? target.id : target.conversationId]);
@@ -135,6 +134,9 @@ export function ChatScreen({
   const connection = useWorkspace(s => s.connection);
   const bootstrapMembers = useWorkspace(s => s.bootstrap?.members ?? []);
   const members = conversation?.members.length ? conversation.members : bootstrapMembers;
+  const mentionQuery = activeMentionQuery(draft.text);
+  const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
+  const ime = useChatIme(insets.bottom, suggestions.length);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(true);
@@ -144,12 +146,6 @@ export function ChatScreen({
   const list = useRef<FlatList>(null);
   const nearBottom = useRef(true);
   const [newMessages, setNewMessages] = useState(false);
-  const mentionQuery = activeMentionQuery(draft.text);
-  const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
-  const setImePanel = ime.setPanel;
-  useEffect(() => {
-    if (suggestions.length > 0) setImePanel('mention');
-  }, [setImePanel, suggestions.length]);
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -198,7 +194,8 @@ export function ChatScreen({
     }).catch(e => setError(errorText(e)));
   };
   const unreadId = target.kind === 'topic' ? topic?.lastReadMessageId : conversation?.lastReadMessageId;
-  const unreadIndex = workspaceUnreadIndex(messages, unreadId);
+  const unreadCount = target.kind === 'topic' ? topic?.unreadCount ?? 0 : conversation?.unreadCount ?? 0;
+  const unreadIndex = workspaceUnreadIndex(messages, unreadId, unreadCount);
   const groupPositions = getMessageGroupPositions(messages, unreadIndex);
   const displayItems = groupHiddenWorkspaceMessages(messages);
   return (

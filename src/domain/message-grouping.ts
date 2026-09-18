@@ -54,9 +54,14 @@ export function getMessageGroupPositions(messages: readonly GroupableMessage[], 
   });
 }
 
-export function workspaceUnreadIndex(messages: readonly { id: string }[], lastReadMessageId?: string | null) {
-  if (!lastReadMessageId) return -1;
-  const lastReadIndex = messages.findIndex(message => message.id === lastReadMessageId);
-  if (lastReadIndex < 0) return -1;
-  return Math.min(messages.length - 1, lastReadIndex + 1);
+export function workspaceUnreadIndex(
+  messages: readonly { id: string }[],
+  lastReadMessageId?: string | null,
+  unreadCount = 0,
+) {
+  if (messages.length === 0 || unreadCount <= 0) return -1;
+  const lastReadIndex = lastReadMessageId ? messages.findIndex(message => message.id === lastReadMessageId) : -1;
+  return lastReadIndex >= 0
+    ? Math.min(messages.length - 1, lastReadIndex + 1)
+    : Math.max(0, messages.length - unreadCount);
 }
