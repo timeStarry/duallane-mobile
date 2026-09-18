@@ -10,6 +10,8 @@ import { errorText } from '../../data/client';
 import { rememberEmotes } from '../../data/media';
 import { Transfers } from '../../data/transfers';
 import { conversationIdentity } from '../../ui/chrome';
+import { groupHiddenWorkspaceMessages } from '../../domain/hidden-messages';
+import { formatMessageDayLabel, getMessageDayKey, getMessageGroupPositions, workspaceUnreadIndex } from '../../domain/message-grouping';
 import { catalogPacks } from '../../domain/emote-catalog';
 import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
 import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
@@ -137,7 +139,7 @@ export function ChatScreen({
   const [progress, setProgress] = useState('');
   const [emotes, setEmotes] = useState<Emote[]>([]);
   const [syncToGroup, setSyncToGroup] = useState(false);
-  const list = useRef<FlatList<Message>>(null);
+  const list = useRef<FlatList>(null);
   const nearBottom = useRef(true);
   const [newMessages, setNewMessages] = useState(false);
   const mentionQuery = activeMentionQuery(draft.text);
@@ -194,7 +196,9 @@ export function ChatScreen({
     }).catch(e => setError(errorText(e)));
   };
   const unreadId = target.kind === 'topic' ? topic?.lastReadMessageId : conversation?.lastReadMessageId;
-  const unreadIndex = unreadId ? messages.findIndex(item => item.id === unreadId) : -1;
+  const unreadIndex = workspaceUnreadIndex(messages, unreadId);
+  const groupPositions = getMessageGroupPositions(messages, unreadIndex);
+  const displayItems = groupHiddenWorkspaceMessages(messages);
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader
@@ -224,8 +228,8 @@ export function ChatScreen({
       ) : (
         <FlatList
           ref={list}
-          data={messages}
-          keyExtractor={m => m.id}
+          data={displayItems}
+          keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
           onScroll={e => {
             const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
@@ -236,25 +240,45 @@ export function ChatScreen({
           onContentSizeChange={() => { if (nearBottom.current) list.current?.scrollToEnd({ animated: false }); }}
           ListHeaderComponent={hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(count === 50)).catch(e => setError(errorText(e))); }} /> : null}
           ListEmptyComponent={!loading ? <EmptyState title="还没有消息" /> : null}
-          renderItem={({ item, index }) => (
-            <MessageRow
-              message={item}
-              previous={messages[index - 1]}
-              showUnread={unreadIndex >= 0 && index === unreadIndex + 1}
-              runtime={runtime}
-              retry={() => send(item)}
-              onReply={item => runtime.patchDraft(key, { replyToMessageId: item.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && item.authorId ? Array.from(new Set([...draft.mentionIds, item.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && item.authorName && !draft.text.includes(`@${item.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${item.authorName} ` : draft.text })}
-              onOpenTopic={onOpenTopic}
-              locate={id => {
-                const at = messages.findIndex(row => row.id === id);
-                if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
-              }}
-              download={file => {
-                const api = runtime.api;
-                if (api) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(e => setError(errorText(e)));
-              }}
-            />
-          )}
+          renderItem={({ item }) => {
+            if (item.kind === 'hidden') {
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`恢复${item.messages.length}条已隐藏消息`}
+                  onPress={() => {
+                    void Promise.all(item.messages.map((hidden: Message) => runtime.hide(hidden.id, false))).catch(error => setError(errorText(error)));
+                  }}
+                  style={{ paddingVertical: 12, alignItems: 'center' }}
+                >
+                  <Text style={{ color: t.muted, fontSize: t.type.meta }}>{item.messages.length} 条已隐藏，点按恢复</Text>
+                </Pressable>
+              );
+            }
+            const sourceIndex = item.sourceIndex;
+            const previousDay = sourceIndex > 0 ? getMessageDayKey(messages[sourceIndex - 1]?.createdAt) : '';
+            const dayKey = getMessageDayKey(item.message.createdAt);
+            return (
+              <MessageRow
+                message={item.message}
+                groupPosition={groupPositions[sourceIndex]}
+                showUnread={unreadIndex >= 0 && sourceIndex === unreadIndex}
+                dayLabel={dayKey && dayKey !== previousDay ? formatMessageDayLabel(item.message.createdAt) : undefined}
+                runtime={runtime}
+                retry={() => send(item.message)}
+                onReply={targetMessage => runtime.patchDraft(key, { replyToMessageId: targetMessage.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorId ? Array.from(new Set([...draft.mentionIds, targetMessage.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorName && !draft.text.includes(`@${targetMessage.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${targetMessage.authorName} ` : draft.text })}
+                onOpenTopic={onOpenTopic}
+                locate={id => {
+                  const at = displayItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
+                  if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
+                }}
+                download={file => {
+                  const api = runtime.api;
+                  if (api) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(e => setError(errorText(e)));
+                }}
+              />
+            );
+          }}
         />
       )}
       {newMessages && <Button title="回到最新" secondary onPress={() => { nearBottom.current = true; setNewMessages(false); list.current?.scrollToEnd(); }} />}

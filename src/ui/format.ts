@@ -1,3 +1,5 @@
+export { formatMessageDayLabel, getMessageDayKey } from '../domain/message-grouping';
+
 export function formatClock(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';

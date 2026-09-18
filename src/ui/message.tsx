@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import type { Attachment, Message } from '../domain/contracts';
+import type { MessageGroupPosition } from '../domain/message-grouping';
 import { useWorkspace } from '../domain/store';
 import { copyText } from '../platform/clipboard';
 import type { Runtime } from '../data/runtime';
@@ -25,7 +26,9 @@ export function MessageRow({
   retry,
   download,
   previous,
+  groupPosition,
   showUnread,
+  dayLabel,
   runtime,
   onReply,
   onOpenTopic,
@@ -35,7 +38,9 @@ export function MessageRow({
   retry: () => void;
   download: (file: Attachment) => void;
   previous?: Message;
+  groupPosition?: MessageGroupPosition;
   showUnread?: boolean;
+  dayLabel?: string;
   runtime?: Runtime;
   onReply?: (message: Message) => void;
   onOpenTopic?: (topicId: string) => void;
@@ -46,25 +51,38 @@ export function MessageRow({
   const conversation = useWorkspace(s => s.conversations[message.conversationId]);
   const own = message.authorId === userId;
   const [sheet, setSheet] = useState(false);
-  const grouped = previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
+  const grouped = groupPosition ? groupPosition === 'middle' || groupPosition === 'end' : previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
+  const position = groupPosition ?? (grouped ? 'end' : 'single');
+  const system = message.kind === 'system' || message.authorKind === 'system';
+  const outer = t.bubble.outer;
+  const inner = t.bubble.inner;
+  const top = position === 'middle' || position === 'end' ? inner : outer;
+  const bottom = position === 'middle' || position === 'start' ? inner : outer;
+  const radiusStyle = own
+    ? { borderTopLeftRadius: outer, borderTopRightRadius: top, borderBottomLeftRadius: outer, borderBottomRightRadius: bottom }
+    : { borderTopLeftRadius: top, borderTopRightRadius: outer, borderBottomLeftRadius: bottom, borderBottomRightRadius: outer };
   const reply = message.replyToMessageId ? useWorkspace.getState().messages[message.topicId ? `topic:${message.topicId}` : message.conversationId]?.find(item => item.id === message.replyToMessageId) : undefined;
   const actions = messageActions(message, { own, group: conversation?.type === 'group', canSend: !!conversation?.capabilities.canSendMessage || !!message.topicId });
   return (
     <View>
-      {showUnread ? <Text style={{ textAlign: 'center', color: t.shared, fontSize: t.type.meta, paddingVertical: 8 }}>未读</Text> : null}
+      {dayLabel ? <Text style={{ textAlign: 'center', color: t.muted, fontSize: t.type.meta, paddingVertical: 8 }}>{dayLabel}</Text> : null}
+      {showUnread ? <Text style={{ textAlign: 'center', color: t.shared, fontSize: t.type.meta, paddingVertical: 8 }}>以下为未读消息</Text> : null}
       <Pressable
         accessibilityLabel={`${message.authorName}，${message.plainText}`}
-        onLongPress={() => setSheet(true)}
+        onLongPress={() => { if (!system) setSheet(true); }}
         delayLongPress={450}
-        style={{ paddingHorizontal: 16, paddingVertical: grouped ? 2 : 6, alignItems: own ? 'flex-end' : 'flex-start' }}
+        style={{ paddingHorizontal: 16, paddingVertical: grouped ? 2 : 6, alignItems: system ? 'center' : own ? 'flex-end' : 'flex-start' }}
       >
-        {grouped ? null : (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>
-            {own ? null : <Avatar name={message.authorName} uri={message.authorAvatarUrl || conversation?.members.find(member => member.id === message.authorId)?.avatarUrl} id={message.authorId ?? message.authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={28} />}
-            <Text style={{ color: t.muted, fontSize: t.type.timestamp }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${message.authorName} · Bot` : message.authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-          </View>
-        )}
-        <View style={{ maxWidth: '80%', padding: 12, borderRadius: t.radius.bubble, backgroundColor: message.kind === 'system' ? t.soft : own ? t.sharedSoft : t.surface }}>
+        {system ? (
+          <Text style={{ color: t.muted, fontSize: t.type.meta, textAlign: 'center' }}>{message.plainText}</Text>
+        ) : (
+          <View style={{ flexDirection: 'row', maxWidth: '80%', alignItems: 'flex-end', gap: 8 }}>
+            {own ? null : grouped ? <View style={{ width: t.list.chatAvatar }} /> : <Avatar name={message.authorName} uri={message.authorAvatarUrl || conversation?.members.find(member => member.id === message.authorId)?.avatarUrl} id={message.authorId ?? message.authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={t.list.chatAvatar} />}
+            <View style={{ flex: 1 }}>
+              {grouped ? null : (
+                <Text style={{ color: t.muted, fontSize: t.type.timestamp, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${message.authorName} · Bot` : message.authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+              )}
+              <View style={{ maxWidth: '100%', padding: 12, backgroundColor: own ? t.sharedSoft : t.surface, alignSelf: own ? 'flex-end' : 'flex-start', ...radiusStyle }}>
           {message.replyToMessageId ? (
             <Pressable accessibilityRole="button" accessibilityLabel="定位原消息" onPress={() => locate?.(message.replyToMessageId!)}>
               <Label muted>{reply && !reply.recalledAt && !reply.hiddenByCurrentUser ? `${reply.authorName}: ${reply.plainText}` : '原消息不可用'}</Label>
@@ -97,7 +115,10 @@ export function MessageRow({
               <Button title="重试发送" secondary onPress={retry} />
             </>
           )}
-        </View>
+              </View>
+            </View>
+          </View>
+        )}
       </Pressable>
       <ObjectActionSheet
         visible={sheet}
