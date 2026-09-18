@@ -3,7 +3,8 @@ export { Label, Button, IconButton, Input, Notice, InlineFeedback, Loading, Empt
 export { CatalogEmoteGrid } from './CatalogEmoteGrid';
 export { AppHeader, Avatar, ConversationRow, TopicRow, conversationIdentity } from './chrome';
 export { DualLaneTabBar } from './tabBar';
-export { MessageRow, messageActions } from './message';
+export { MessageRow } from './message';
+export { messageActions } from '../domain/message-actions';
 export { SwitchRow, Select, PageState } from './controls';
 export { FileRow, AttachmentPreview, TransferItem } from './files';
 export { Composer, ReplyPreview } from './composer';

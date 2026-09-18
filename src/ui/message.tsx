@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 import type { Attachment, Message } from '../domain/contracts';
+import { messageActions } from '../domain/message-actions';
 import type { MessageGroupPosition } from '../domain/message-grouping';
 import { useWorkspace } from '../domain/store';
 import { copyText } from '../platform/clipboard';
@@ -9,17 +12,6 @@ import { Avatar } from './chrome';
 import { Button, InlineFeedback, Label, ObjectActionSheet } from './primitives';
 import { MessageContent, ReactionGlyph } from './MessageContent';
 import { useTheme } from './theme';
-
-export function messageActions(message: Message, flags: { own: boolean; group: boolean; canSend: boolean }): { id: string; title: string; danger?: boolean }[] {
-  if (message.status === 'failed') return [{ id: 'copy', title: '复制' }];
-  if (message.recalledAt || message.deletedAt) return [{ id: 'copy', title: '复制' }];
-  const actions: { id: string; title: string; danger?: boolean }[] = [{ id: 'copy', title: '复制' }];
-  if (flags.canSend && message.kind !== 'system') actions.push({ id: 'reply', title: '回复' });
-  if (message.kind !== 'system') actions.push({ id: 'hide', title: message.hiddenByCurrentUser ? '恢复显示' : '仅自己隐藏' });
-  if (flags.own && message.kind === 'user') actions.push({ id: 'recall', title: '撤回', danger: true });
-  if (flags.group && message.kind === 'user' && !message.topicId) actions.push({ id: 'pin', title: message.pin ? '取消常驻' : '常驻' });
-  return actions;
-}
 
 export function MessageRow({
   message,
@@ -50,10 +42,14 @@ export function MessageRow({
   const userId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const conversation = useWorkspace(s => s.conversations[message.conversationId]);
   const own = message.authorId === userId;
+  const system = message.kind === 'system' || message.authorKind === 'system';
   const [sheet, setSheet] = useState(false);
+  const [cluster, setCluster] = useState(false);
+  const [reactOpen, setReactOpen] = useState(false);
+  const openCluster = () => { if (!system) setCluster(true); };
+  const longPress = Gesture.LongPress().minDuration(450).maxDistance(10).onStart(() => { runOnJS(openCluster)(); });
   const grouped = groupPosition ? groupPosition === 'middle' || groupPosition === 'end' : previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
   const position = groupPosition ?? (grouped ? 'end' : 'single');
-  const system = message.kind === 'system' || message.authorKind === 'system';
   const outer = t.bubble.outer;
   const inner = t.bubble.inner;
   const top = position === 'middle' || position === 'end' ? inner : outer;
@@ -67,9 +63,15 @@ export function MessageRow({
     <View>
       {dayLabel ? <Text style={{ textAlign: 'center', color: t.muted, fontSize: t.type.meta, paddingVertical: 8 }}>{dayLabel}</Text> : null}
       {showUnread ? <Text style={{ textAlign: 'center', color: t.shared, fontSize: t.type.meta, paddingVertical: 8 }}>以下为未读消息</Text> : null}
+      <GestureDetector gesture={longPress}>
       <Pressable
         accessibilityLabel={`${message.authorName}，${message.plainText}`}
-        onLongPress={() => { if (!system) setSheet(true); }}
+        accessibilityActions={system ? undefined : [{ name: 'more', label: '更多' }, { name: 'reply', label: '回复' }]}
+        onAccessibilityAction={event => {
+          if (event.nativeEvent.actionName === 'more') setSheet(true);
+          if (event.nativeEvent.actionName === 'reply') onReply?.(message);
+        }}
+        onLongPress={() => openCluster()}
         delayLongPress={450}
         style={{ paddingHorizontal: 16, paddingVertical: grouped ? 2 : 6, alignItems: system ? 'center' : own ? 'flex-end' : 'flex-start' }}
       >
@@ -119,7 +121,48 @@ export function MessageRow({
             </View>
           </View>
         )}
+        {cluster && !system ? (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+            {actions.filter(action => action.id === 'reply' || action.id === 'copy').map(action => (
+              <Pressable
+                key={action.id}
+                accessibilityRole="button"
+                accessibilityLabel={action.title}
+                onPress={() => {
+                  if (action.id === 'copy') void copyText(message.plainText);
+                  if (action.id === 'reply') onReply?.(message);
+                  setCluster(false);
+                }}
+                style={{ minHeight: 32, paddingHorizontal: 10, borderRadius: 16, backgroundColor: t.soft, justifyContent: 'center' }}
+              >
+                <Text style={{ color: t.text, fontSize: t.type.meta }}>{action.title}</Text>
+              </Pressable>
+            ))}
+            <Pressable accessibilityRole="button" accessibilityLabel="反应" onPress={() => setReactOpen(open => !open)} style={{ minHeight: 32, paddingHorizontal: 10, borderRadius: 16, backgroundColor: t.soft, justifyContent: 'center' }}>
+              <Text style={{ color: t.text, fontSize: t.type.meta }}>反应</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="更多" onPress={() => { setCluster(false); setSheet(true); }} style={{ minHeight: 32, paddingHorizontal: 10, borderRadius: 16, backgroundColor: t.soft, justifyContent: 'center' }}>
+              <Text style={{ color: t.text, fontSize: t.type.meta }}>更多</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {reactOpen && runtime ? (
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+            {['👍', '❤️', '😄'].map(glyph => (
+              <Pressable
+                key={glyph}
+                accessibilityRole="button"
+                accessibilityLabel={`反应 ${glyph}`}
+                onPress={() => { void runtime.react(message.id, glyph, false); setReactOpen(false); setCluster(false); }}
+                style={{ minWidth: 36, minHeight: 36, alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Text>{glyph}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
       </Pressable>
+      </GestureDetector>
       <ObjectActionSheet
         visible={sheet}
         title={`${message.authorName}的消息`}

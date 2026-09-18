@@ -3,6 +3,7 @@ import { AppState, BackHandler, Modal, View } from 'react-native';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { z } from 'zod';
@@ -29,13 +30,15 @@ const navigation = createNavigationContainerRef<RootParams>();
 export default function App() {
   const [mode, setMode] = useState(z.enum(['system', 'light', 'dark']).catch('system').parse(cache.get('appearance')));
   return (
-    <SafeAreaProvider>
-      <ThemeProvider mode={mode}>
-        <KeyboardProvider enabled={false} preserveEdgeToEdge statusBarTranslucent navigationBarTranslucent>
-          <Application mode={mode} setMode={setMode} />
-        </KeyboardProvider>
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider mode={mode}>
+          <KeyboardProvider enabled={false} preserveEdgeToEdge statusBarTranslucent navigationBarTranslucent>
+            <Application mode={mode} setMode={setMode} />
+          </KeyboardProvider>
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
