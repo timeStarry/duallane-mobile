@@ -6,7 +6,9 @@
 - React Navigation Native Stack + Bottom Tabs；不使用 WebView 套壳或 Web 路由兼容层。
 - Zustand + domain reducer/selectors；服务端对象 normalized，transport event 不直接进 UI。
 - Zod（或等价运行时校验）解析 HTTP、WebSocket、消息内容和 release policy。
-- `fetch` 封装 HTTP，原生 WebSocket 处理 Workspace realtime；本地通知 负责 Android 通知。
+- `fetch` 封装 HTTP；Android 用嵌入式 Cronet（含 QUIC/HTTP2）承接 OkHttp，避免部分公网路径对
+  非浏览器 TLS Client Hello 直接 RST。不依赖 Google Play 服务。原生 WebSocket 处理 Workspace
+  realtime；本地通知负责 Android 通知。
 - SQLite/受保护 KV 保存可丢失缓存、草稿和游标；Android Keystore 保存 refresh token。
 - Android APK/AAB 是唯一交付产物；iOS 不在当前架构范围。
 

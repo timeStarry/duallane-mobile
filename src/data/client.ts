@@ -46,7 +46,7 @@ function classifyTransport(error: unknown): string {
   if (lower.includes('cleartext')) return 'net.cleartext';
   if (lower.includes('enotfound') || lower.includes('unable to resolve') || lower.includes('unknown host')) return 'net.dns';
   if (lower.includes('econnrefused') || lower.includes('failed to connect') || lower.includes('connection refused')) return 'net.refused';
-  if (lower.includes('econnreset') || lower.includes('connection reset') || lower.includes('connection was reset') || lower.includes('recv failure')) return 'net.reset';
+  if (lower.includes('econnreset') || lower.includes('connection reset') || lower.includes('connection was reset') || lower.includes('recv failure') || lower.includes('err_connection_reset') || lower.includes('net_error -101')) return 'net.reset';
   if (lower.includes('network request failed') || lower.includes('network error') || lower.includes('failed to fetch')) return 'net.failed';
   return 'net.unknown';
 }

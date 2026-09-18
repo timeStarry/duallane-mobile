@@ -62,10 +62,12 @@ test('transient refresh errors preserve credentials; invalid refresh expires onc
 test('transport failures become classified network errors and never log secrets',async()=>{
   const warn=jest.spyOn(console,'warn').mockImplementation(()=>undefined);
   const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());
+  fetchMock.mockRejectedValueOnce(Object.assign(new Error('Exception in CronetUrlRequest: net::ERR_CONNECTION_RESET, ErrorCode=10, InternalErrorCode=-101'),{name:'IOException'}));
+  await expect(client.json('/api/mobile/release-policy',z.unknown(),undefined,'GET',false)).rejects.toMatchObject({code:'request.network',diagnostic:'net.reset',status:0});
   fetchMock.mockRejectedValueOnce(Object.assign(new Error('Network request failed'),{name:'TypeError'}));
   await expect(client.json('/api/auth/mobile/github/start',z.object({authorizationUrl:z.string()}),{codeChallenge:'secret-challenge'},'POST',false)).rejects.toMatchObject({code:'request.network',diagnostic:'net.failed',status:0});
   expect(errorText(new ApiError('request.network',0,'net.failed'))).toBe('无法连接到服务器，请检查网络后重试（net.failed）');
-  const logged=JSON.parse(String(warn.mock.calls[0]?.[0]));
+  const logged=JSON.parse(String(warn.mock.calls.at(-1)?.[0]));
   expect(logged).toMatchObject({src:'duallane',event:'api_error',route:'github_start',code:'request.network',diagnostic:'net.failed',status:0,appVersion:'0.2.3',versionCode:4});
   expect(JSON.stringify(logged)).not.toMatch(/secret-challenge|workspace\.example|Authorization|refresh/i);
   warn.mockRestore();
