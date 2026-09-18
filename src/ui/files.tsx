@@ -74,6 +74,6 @@ export function TransferItem({
 }
 
 const fileStyles = StyleSheet.create({
-  row: { paddingHorizontal: 16, paddingVertical: 14, minHeight: 64, borderBottomWidth: StyleSheet.hairlineWidth, gap: 4 },
+  row: { paddingHorizontal: 16, paddingVertical: 14, minHeight: 72, borderBottomWidth: StyleSheet.hairlineWidth, gap: 4 },
   actions: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
 });

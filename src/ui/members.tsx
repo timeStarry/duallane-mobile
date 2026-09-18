@@ -22,12 +22,12 @@ export function MemberRow({
         gap: t.space.md,
         paddingHorizontal: t.space.lg,
         paddingVertical: t.space.md,
-        minHeight: 64,
+        minHeight: t.list.rowMin,
         borderBottomWidth: 1,
         borderBottomColor: t.line,
       }}
     >
-      <Avatar name={member.displayName} uri={member.avatarUrl} id={member.id} shape={bot ? 'bot' : 'person'} />
+      <Avatar name={member.displayName} uri={member.avatarUrl} id={member.id} shape={bot ? 'bot' : 'person'} size={t.list.avatar} />
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={{ fontSize: t.type.body, fontWeight: '600', color: t.text }} numberOfLines={1}>
           {member.displayName}

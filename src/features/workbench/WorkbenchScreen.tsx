@@ -24,7 +24,7 @@ import {
   TransferItem,
   styles,
 } from '../../ui/components';
-import { MessageRow } from '../chat/screens';
+import { MessageRow } from '../../ui/message';
 import { useTheme } from '../../ui/theme';
 
 export function WorkbenchScreen() {

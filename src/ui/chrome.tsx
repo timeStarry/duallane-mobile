@@ -1,51 +1,65 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bot } from 'lucide-react-native';
 import type { Conversation, Member } from '../domain/contracts';
 import { RemoteImage } from './RemoteImage';
 import { formatListTime, stableTone } from './format';
+import { UnreadBadge } from './primitives';
 import { useTheme } from './theme';
 
 export function AppHeader({
   title,
   subtitle,
+  leading,
+  trailing,
   right,
   includeTopInset = false,
+  banner,
+  identity,
 }: {
   title: string;
   subtitle?: string;
+  leading?: React.ReactNode;
+  trailing?: React.ReactNode;
   right?: React.ReactNode;
   includeTopInset?: boolean;
+  banner?: React.ReactNode;
+  identity?: { name: string; id: string; uri?: string | null; shape?: 'person' | 'group' | 'bot'; emoji?: string | null };
 }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   return (
-    <View
-      style={{
-        paddingTop: includeTopInset ? insets.top + t.space.sm : t.space.sm,
-        paddingHorizontal: t.space.lg,
-        paddingBottom: t.space.sm,
-        minHeight: includeTopInset ? insets.top + 56 : 52,
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: t.surface,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: t.line,
-        gap: t.space.sm,
-      }}
-    >
-      <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }} numberOfLines={1}>
-          {title}
-        </Text>
-        {subtitle ? (
-          <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }} numberOfLines={1}>
-            {subtitle}
+    <View>
+      <View
+        style={{
+          paddingTop: includeTopInset ? insets.top + t.space.sm : t.space.sm,
+          paddingHorizontal: t.space.lg,
+          paddingBottom: t.space.sm,
+          minHeight: includeTopInset ? insets.top + 56 : 52,
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: t.surface,
+          borderBottomWidth: banner ? 0 : StyleSheet.hairlineWidth,
+          borderBottomColor: t.line,
+          gap: t.space.sm,
+        }}
+      >
+        {leading}
+        {identity ? <Avatar name={identity.name} uri={identity.uri} id={identity.id} shape={identity.shape} emoji={identity.emoji} size={t.list.chatAvatar} /> : null}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }} numberOfLines={1}>
+            {title}
           </Text>
-        ) : null}
+          {subtitle ? (
+            <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }} numberOfLines={1}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        {trailing ?? right}
       </View>
-      {right}
+      {banner}
     </View>
   );
 }
@@ -136,6 +150,7 @@ export function ConversationRow({
   onPress: () => void;
 }) {
   const t = useTheme();
+  const pressedId = useRef<string | null>(null);
   const identity = conversationIdentity(conversation, selfId, directory);
   const unread = conversation.unreadCount;
   const unreadText = unread > 0 ? `${Math.min(unread, 99)}${unread > 99 ? '+' : ''}条未读` : '无未读';
@@ -145,21 +160,22 @@ export function ConversationRow({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`打开${conversation.displayTitle}，${unreadText}${muted ? '，免打扰' : ''}`}
-      onPress={onPress}
+      onPressIn={() => { pressedId.current = conversation.id; }}
+      onPress={() => { if (pressedId.current === conversation.id) onPress(); }}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
         gap: t.space.md,
         paddingHorizontal: t.space.lg,
         paddingVertical: t.space.md,
-        minHeight: 64,
+        minHeight: t.list.rowMin,
         backgroundColor: t.bg,
         opacity: pressed ? t.pressedOpacity : 1,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: t.line,
       })}
     >
-      <Avatar name={identity.name} uri={identity.uri} id={identity.id} shape={identity.shape} emoji={identity.emoji} />
+      <Avatar name={identity.name} uri={identity.uri} id={identity.id} shape={identity.shape} emoji={identity.emoji} size={t.list.avatar} />
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
           <Text style={{ flex: 1, fontSize: 16, fontWeight: '600', color: t.text }} numberOfLines={1}>
@@ -172,11 +188,7 @@ export function ConversationRow({
             {preview}
           </Text>
           {muted ? <Text style={{ fontSize: t.type.timestamp, color: t.muted }}>免打扰</Text> : null}
-          {unread > 0 ? (
-            <View style={{ backgroundColor: t.shared, borderRadius: 10, minWidth: 20, paddingHorizontal: 6, paddingVertical: 2, alignItems: 'center' }}>
-              <Text style={{ color: t.onShared, fontSize: t.type.timestamp, fontWeight: '700' }}>{Math.min(unread, 99)}{unread > 99 ? '+' : ''}</Text>
-            </View>
-          ) : null}
+          <UnreadBadge count={unread} />
         </View>
       </View>
     </Pressable>
@@ -184,43 +196,55 @@ export function ConversationRow({
 }
 
 export function TopicRow({
+  id,
   title,
   groupName,
   preview,
   joined,
   closed,
   unreadCount,
+  groupEmoji,
   onPress,
 }: {
+  id: string;
   title: string;
   groupName: string;
   preview: string;
   joined: boolean;
   closed: boolean;
   unreadCount: number;
+  groupEmoji?: string | null;
   onPress: () => void;
 }) {
   const t = useTheme();
+  const pressedId = useRef<string | null>(null);
   const state = closed ? '已关闭' : joined ? '已加入' : '未加入';
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`打开话题${title}，属于${groupName}，${state}`}
-      onPress={onPress}
+      onPressIn={() => { pressedId.current = id; }}
+      onPress={() => { if (pressedId.current === id) onPress(); }}
       style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: t.space.md,
         paddingHorizontal: t.space.lg,
         paddingVertical: t.space.md,
-        minHeight: 64,
+        minHeight: t.list.rowMin,
         backgroundColor: t.bg,
         opacity: pressed ? t.pressedOpacity : 1,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: t.line,
-        gap: 2,
       })}
     >
-      <Text style={{ fontSize: 16, fontWeight: '600', color: t.text }} numberOfLines={1}>{title}</Text>
-      <Text style={{ fontSize: t.type.meta, color: t.muted }} numberOfLines={1}>{groupName} · {state}{unreadCount > 0 ? ` · ${unreadCount}条未读` : ''}</Text>
-      <Text style={{ fontSize: t.type.control, color: t.muted }} numberOfLines={1}>{preview}</Text>
+      <Avatar name={groupName} id={id} shape="group" emoji={groupEmoji} size={t.list.avatar} />
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text style={{ fontSize: 16, fontWeight: '600', color: t.text }} numberOfLines={1}>{title}</Text>
+        <Text style={{ fontSize: t.type.meta, color: t.muted }} numberOfLines={1}>{groupName} · {state}{unreadCount > 0 ? ` · ${unreadCount}条未读` : ''}</Text>
+        <Text style={{ fontSize: t.type.control, color: t.muted }} numberOfLines={1}>{preview}</Text>
+      </View>
+      <UnreadBadge count={unreadCount} />
     </Pressable>
   );
 }

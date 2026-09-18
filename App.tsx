@@ -4,11 +4,10 @@ import { NavigationContainer, createNavigationContainerRef } from '@react-naviga
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { MessageCircle, Files, Users, UserRound } from 'lucide-react-native';
 import { z } from 'zod';
 import * as Notifications from 'expo-notifications';
 import { ThemeProvider, useTheme, type AppearanceMode } from './src/ui/theme';
-import { Loading, Notice } from './src/ui/components';
+import { DualLaneTabBar, Loading, Notice } from './src/ui/components';
 import { Runtime } from './src/data/runtime';
 import { Transfers } from './src/data/transfers';
 import { useWorkspace } from './src/domain/store';
@@ -94,16 +93,8 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
 
   const tabs = ({ navigation: nav }: NativeStackScreenProps<RootParams, 'Workspace'>) => (
     <Tabs.Navigator
-      screenOptions={({ route }) => ({
-        headerShown: false,
-        tabBarActiveTintColor: t.shared,
-        tabBarInactiveTintColor: t.muted,
-        tabBarStyle: { backgroundColor: t.surface, borderTopColor: t.line },
-        tabBarIcon: ({ color, size }) => {
-          const Icon = { 聊天: MessageCircle, 文件: Files, 成员: Users, 我的: UserRound }[route.name];
-          return <Icon color={color} size={size} />;
-        },
-      })}
+      tabBar={props => <DualLaneTabBar {...props} />}
+      screenOptions={{ headerShown: false }}
     >
       <Tabs.Screen name="聊天">{() => <ConversationsScreen runtime={runtime} open={id => nav.navigate('Chat', { id })} openTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })} />}</Tabs.Screen>
       <Tabs.Screen name="文件">{() => <FilesScreen runtime={runtime} transfers={transfers} />}</Tabs.Screen>
@@ -130,7 +121,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
           }}
         >
           <Stack.Screen name="Workspace" options={{ headerShown: false }}>{tabs}</Stack.Screen>
-          <Stack.Screen name="Chat" options={{ title: '会话' }}>
+          <Stack.Screen name="Chat" options={{ headerShown: false }}>
             {({ route, navigation: nav }) => (
               <ChatScreen
                 target={{ kind: 'conversation', id: route.params.id }}
@@ -144,7 +135,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
               />
             )}
           </Stack.Screen>
-          <Stack.Screen name="Topic" options={{ title: '话题' }}>
+          <Stack.Screen name="Topic" options={{ headerShown: false }}>
             {({ route, navigation: nav }) => (
               <ChatScreen
                 target={{ kind: 'topic', id: route.params.id, conversationId: route.params.conversationId }}

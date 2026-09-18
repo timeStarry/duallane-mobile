@@ -47,10 +47,11 @@ test('the chat home uses a loaded-list filter and an honest topic placeholder', 
   const runtime = new Runtime();
   runtime.listTopics = jest.fn().mockResolvedValue([]);
   const view = render(wrap(<ConversationsScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} />));
+  fireEvent.press(view.getByLabelText('搜索'));
   expect(view.getByLabelText('筛选已加载的会话')).toBeTruthy();
   fireEvent.press(view.getByRole('tab', { name: '话题' }));
   expect(view.getByText('还没有话题')).toBeTruthy();
-  expect(view.queryByLabelText('筛选已加载的会话')).toBeNull();
+  expect(view.getByLabelText('筛选已加载的话题')).toBeTruthy();
 });
 
 test('account categories do not invent device-session or space-admin entries', () => {

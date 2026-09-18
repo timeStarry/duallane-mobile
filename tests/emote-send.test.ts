@@ -14,7 +14,7 @@ test('catalogPacks exposes DualLane packs and omits the empty custom pack', () =
 test('shouldDirectSendWorkspaceEmote only fires for custom image emotes', () => {
   const image = { kind: 'image' };
   const unicode = { kind: 'unicode' };
-  expect(shouldDirectSendWorkspaceEmote({ ...image, customId: 'custom-wave' }, 'custom', true)).toBe(true);
+  expect(shouldDirectSendWorkspaceEmote(image, 'custom', true)).toBe(true);
   expect(shouldDirectSendWorkspaceEmote(image, 'bili', true)).toBe(false);
   expect(shouldDirectSendWorkspaceEmote(image, 'custom', false)).toBe(false);
   expect(shouldDirectSendWorkspaceEmote(unicode, 'custom', true)).toBe(false);
