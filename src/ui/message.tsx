@@ -2,9 +2,11 @@ import React, { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
+import { Copy, Ellipsis, EyeOff, MessageSquare, Pin, Smile, Undo2 } from 'lucide-react-native';
 import type { Attachment, Message } from '../domain/contracts';
 import { messageActions } from '../domain/message-actions';
 import type { MessageGroupPosition } from '../domain/message-grouping';
+import { recalledNotice } from '../domain/recall';
 import { useWorkspace } from '../domain/store';
 import { copyText } from '../platform/clipboard';
 import type { Runtime } from '../data/runtime';
@@ -12,6 +14,15 @@ import { Avatar } from './chrome';
 import { Button, InlineFeedback, Label, ObjectActionSheet } from './primitives';
 import { MessageContent, ReactionGlyph } from './MessageContent';
 import { useTheme } from './theme';
+
+function actionIcon(id: string, color: string) {
+  if (id === 'reply') return <MessageSquare size={18} color={color} />;
+  if (id === 'copy') return <Copy size={18} color={color} />;
+  if (id === 'hide') return <EyeOff size={18} color={color} />;
+  if (id === 'recall') return <Undo2 size={18} color={color} />;
+  if (id === 'pin') return <Pin size={18} color={color} />;
+  return null;
+}
 
 export function MessageRow({
   message,
@@ -61,6 +72,18 @@ export function MessageRow({
     : { borderTopLeftRadius: top, borderTopRightRadius: outer, borderBottomLeftRadius: bottom, borderBottomRightRadius: outer };
   const reply = message.replyToMessageId ? useWorkspace.getState().messages[message.topicId ? `topic:${message.topicId}` : message.conversationId]?.find(item => item.id === message.replyToMessageId) : undefined;
   const actions = messageActions(message, { own, group: conversation?.type === 'group', canSend: !!conversation?.capabilities.canSendMessage || !!message.topicId });
+  const recallText = recalledNotice(message);
+  if (recallText) {
+    return (
+      <View>
+        {dayLabel ? <Text style={{ textAlign: 'center', color: t.muted, fontSize: t.type.meta, paddingVertical: 8 }}>{dayLabel}</Text> : null}
+        <View accessible accessibilityRole="text" accessibilityLabel={recallText} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10 }}>
+          <Undo2 size={14} color={t.muted} />
+          <Text style={{ color: t.muted, fontSize: t.type.meta, flexShrink: 1 }}>{recallText}</Text>
+        </View>
+      </View>
+    );
+  }
   return (
     <View>
       {dayLabel ? <Text style={{ textAlign: 'center', color: t.muted, fontSize: t.type.meta, paddingVertical: 8 }}>{dayLabel}</Text> : null}
@@ -89,7 +112,7 @@ export function MessageRow({
               <View style={{ maxWidth: '100%', padding: 12, backgroundColor: own ? t.sharedSoft : t.surface, alignSelf: own ? 'flex-end' : 'flex-start', ...radiusStyle }}>
           {message.replyToMessageId ? (
             <Pressable accessibilityRole="button" accessibilityLabel="定位原消息" onPress={() => locate?.(message.replyToMessageId!)}>
-              <Label muted>{reply && !reply.recalledAt && !reply.hiddenByCurrentUser ? `${reply.authorName}: ${reply.plainText}` : '原消息不可用'}</Label>
+              <Label muted>{reply && !reply.hiddenByCurrentUser ? (reply.recalledAt ? '已撤回的消息' : `${reply.authorName}: ${reply.plainText}`) : '原消息不可用'}</Label>
             </Pressable>
           ) : null}
           <MessageContent message={message} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} />
@@ -135,16 +158,16 @@ export function MessageRow({
                   if (action.id === 'reply') onReply?.(message);
                   setCluster(false);
                 }}
-                style={{ minHeight: 32, paddingHorizontal: 10, borderRadius: 16, backgroundColor: t.soft, justifyContent: 'center' }}
+                style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: 24, backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }}
               >
-                <Text style={{ color: t.text, fontSize: t.type.meta }}>{action.title}</Text>
+                {actionIcon(action.id, t.text)}
               </Pressable>
             ))}
-            <Pressable accessibilityRole="button" accessibilityLabel="反应" onPress={() => setReactOpen(open => !open)} style={{ minHeight: 32, paddingHorizontal: 10, borderRadius: 16, backgroundColor: t.soft, justifyContent: 'center' }}>
-              <Text style={{ color: t.text, fontSize: t.type.meta }}>反应</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="反应" onPress={() => setReactOpen(open => !open)} style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: 24, backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }}>
+              <Smile size={18} color={t.text} />
             </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="更多" onPress={() => { setCluster(false); setSheet(true); }} style={{ minHeight: 32, paddingHorizontal: 10, borderRadius: 16, backgroundColor: t.soft, justifyContent: 'center' }}>
-              <Text style={{ color: t.text, fontSize: t.type.meta }}>更多</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="更多" onPress={() => { setCluster(false); setSheet(true); }} style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: 24, backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }}>
+              <Ellipsis size={18} color={t.text} />
             </Pressable>
           </View>
         ) : null}
@@ -174,6 +197,7 @@ export function MessageRow({
           id: action.id,
           title: action.title,
           danger: action.danger,
+          icon: actionIcon(action.id, action.danger ? t.danger : t.text),
           onPress: () => {
             if (action.id === 'copy') void copyText(message.plainText);
             if (action.id === 'reply') onReply?.(message);

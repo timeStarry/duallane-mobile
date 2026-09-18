@@ -1,5 +1,7 @@
 import { emoteSource, isPreviewableImage, resolveMediaUrl, splitCatalogEmotes } from '../src/data/media';
-import { catalogImage, catalogUnicodeGlyph, splitImageEmotes } from '../src/domain/emote-catalog';
+import { composerEmotePacks, catalogImage, catalogUnicodeGlyph, enabledCatalogPacks, splitImageEmotes } from '../src/domain/emote-catalog';
+import { botAssetAvatar, isAllowedSameOriginMediaPath, sanitizeWorkspaceAvatarUrl } from '../src/domain/media-path';
+import { recalledNotice } from '../src/domain/recall';
 
 jest.mock('expo-file-system', () => ({ File: class {}, Paths: { cache: '' } }));
 jest.mock('expo-crypto', () => ({ digestStringAsync: jest.fn(), CryptoDigestAlgorithm: { SHA256: 'SHA-256' } }));
@@ -26,6 +28,32 @@ test('catalog emote tokens use the web catalog src instead of guessing filenames
   expect(splitImageEmotes(':[bili:melon]:')).toEqual([{ token: '[bili:melon]', src: '/emotes/bili/melon.png' }]);
   expect(splitImageEmotes('未知 [bili:nope]')).toEqual([{ text: '未知 [bili:nope]' }]);
   expect(catalogUnicodeGlyph('emoji:grinning')).toBe('😀');
+});
+
+test('same-origin bot and catalog assets are allowed media paths', () => {
+  expect(isAllowedSameOriginMediaPath('/assets/beacon-avatar.png')).toBe(true);
+  expect(isAllowedSameOriginMediaPath('/assets/echo-avatar.svg')).toBe(true);
+  expect(isAllowedSameOriginMediaPath('/assets/../secret')).toBe(false);
+  expect(sanitizeWorkspaceAvatarUrl('/assets/beacon-avatar.png')).toBe('/assets/beacon-avatar.png');
+  expect(sanitizeWorkspaceAvatarUrl('https://duallane.tsio.top/api/workspace/avatars/other/2')).toBe('/api/workspace/avatars/other/2');
+  expect(botAssetAvatar('信标')).toBe('/assets/beacon-avatar.png');
+  expect(botAssetAvatar('回声')).toBe('/assets/echo-avatar.svg');
+});
+
+test('composer packs put custom collections beside enabled catalog packs', () => {
+  const packs = composerEmotePacks({
+    entries: [{ type: 'emote', emote: { id: 'e1', kind: 'image', label: '猫', token: '[custom:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee]', src: '/api/workspace/emotes/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/content' } }],
+    emotes: [],
+    collections: [{ id: 'col1', name: '妙脆角', items: [{ id: 'e2', kind: 'image', label: '角', token: '[custom:bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee]', src: '/api/workspace/emotes/bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee/content' }] }],
+  }, ['feishu']);
+  expect(packs.map(pack => pack.id)).toEqual(['custom', 'collection:col1', 'feishu']);
+  expect(packs[0]?.label).toBe('收藏');
+  expect(enabledCatalogPacks(['bili']).every(pack => pack.id === 'bili')).toBe(true);
+});
+
+test('recalled notices keep the server sentence instead of a generic unavailable label', () => {
+  expect(recalledNotice({ recalledAt: '2026-09-16T01:00:00Z', authorName: 'Member', recallReason: '内容有误', plainText: 'Member因内容有误撤回了一条消息' })).toBe('Member因内容有误撤回了一条消息');
+  expect(recalledNotice({ recalledAt: '2026-09-16T01:00:00Z', authorName: 'Member', recallReason: '写错了', plainText: '消息已不可用' })).toBe('Member因写错了撤回了一条消息');
 });
 
 test('previewable image types match the web allow-list', () => {

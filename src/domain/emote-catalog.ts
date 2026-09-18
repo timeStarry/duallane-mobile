@@ -15,12 +15,13 @@ const catalogItemSchema = z.object({
 const catalogPackSchema = z.object({
   id: z.string(),
   label: z.string(),
+  defaultEnabled: z.boolean().optional(),
   items: z.array(catalogItemSchema),
 }).passthrough();
 
 export type CatalogImage = { src: string; label: string; packId: string; id: string };
 export type CatalogPackItem = { kind: string; id: string; label: string; token?: string; src?: string; value?: string };
-export type CatalogPack = { id: string; label: string; items: CatalogPackItem[] };
+export type CatalogPack = { id: string; label: string; items: CatalogPackItem[]; defaultEnabled?: boolean };
 
 const imageByToken = new Map<string, CatalogImage>();
 const imageByKey = new Map<string, CatalogImage>();
@@ -37,6 +38,7 @@ for (const pack of parsed.success ? parsed.data : []) {
   catalogPackList.push({
     id: pack.id,
     label: pack.label,
+    defaultEnabled: pack.defaultEnabled,
     items: pack.items.map(item => ({
       kind: item.kind,
       id: item.id,
@@ -125,5 +127,33 @@ export function containsImageEmoteToken(text: string) {
 }
 
 export function catalogPacks(): CatalogPack[] {
-  return catalogPackList.filter(pack => pack.id !== 'custom');
+  return catalogPackList.filter(pack => pack.id !== 'custom' && pack.id !== 'douyin' && pack.id !== 'qq');
+}
+
+export function composerEmotePacks(
+  library: { entries?: Array<{ type: string; emote?: { id: string; kind: string; label: string; token: string; src?: string } }>; emotes?: Array<{ id: string; kind: string; label: string; token: string; src?: string }>; collections?: Array<{ id: string; name: string; items: Array<{ id: string; kind: string; label: string; token: string; src?: string }> }> } | null,
+  enabledIds?: string[],
+): CatalogPack[] {
+  const toItem = (emote: { id: string; kind: string; label: string; token: string; src?: string }): CatalogPackItem => ({
+    kind: emote.kind, id: emote.id, label: emote.label, token: emote.token, src: emote.src,
+  });
+  const loose = (library?.entries ?? []).filter(entry => entry.type === 'emote' && entry.emote).map(entry => toItem(entry.emote!));
+  const fallback = (library?.emotes ?? []).map(toItem);
+  const customItems = loose.length ? loose : fallback;
+  const collections = (library?.collections ?? []).map(collection => ({
+    id: `collection:${collection.id}`,
+    label: collection.name,
+    items: collection.items.map(toItem),
+  }));
+  return [
+    { id: 'custom', label: '收藏', items: customItems },
+    ...collections,
+    ...enabledCatalogPacks(enabledIds),
+  ];
+}
+
+export function enabledCatalogPacks(enabledIds?: string[]): CatalogPack[] {
+  const visible = catalogPacks();
+  if (!enabledIds?.length) return visible.filter(pack => pack.defaultEnabled !== false);
+  return visible.filter(pack => enabledIds.includes(pack.id));
 }

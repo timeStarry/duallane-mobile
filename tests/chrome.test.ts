@@ -27,7 +27,8 @@ test('direct conversations fall back to the member directory when the row has no
   });
   expect(conversationIdentity(conversation, 'self', [
     { id: 'bot-1', displayName: '信标', kind: 'bot', avatarUrl: 'https://duallane.tsio.top/api/workspace/avatars/bot-1/1', capabilities: { canStartDirectConversation: true } },
-  ]).uri).toBe('https://duallane.tsio.top/api/workspace/avatars/bot-1/1');
+  ]).uri).toBe('/api/workspace/avatars/bot-1/1');
+  expect(conversationIdentity(conversation, 'self').uri).toBe('/assets/beacon-avatar.png');
 });
 
 test('direct conversations use the other member avatar URL', () => {
@@ -44,6 +45,6 @@ test('direct conversations use the other member avatar URL', () => {
   expect(conversationIdentity(conversation, 'self')).toMatchObject({
     shape: 'person',
     name: '格总',
-    uri: 'https://duallane.tsio.top/api/workspace/avatars/other/2',
+    uri: '/api/workspace/avatars/other/2',
   });
 });

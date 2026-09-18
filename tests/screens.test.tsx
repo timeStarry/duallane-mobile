@@ -23,8 +23,10 @@ test('chat attachments expose an authorized download action',()=>{
   fireEvent.press(view.getByRole('button',{name:'下载并保存'}));expect(download).toHaveBeenCalledWith(file);
 });
 test('recalled messages never expose the old attachment action',()=>{
-  const view=render(<MessageRow message={parseMessage({...message,recalledAt:'2026-01-02T00:00:00Z'})!} retry={jest.fn()} download={jest.fn()}/>);
-  expect(view.queryByRole('button',{name:'下载并保存'})).toBeNull();expect(view.getByText('消息已不可用')).toBeTruthy();
+  const view=render(<MessageRow message={parseMessage({...message,recalledAt:'2026-01-02T00:00:00Z',recallReason:'内容有误',plainText:'Test因内容有误撤回了一条消息'})!} retry={jest.fn()} download={jest.fn()}/>);
+  expect(view.queryByRole('button',{name:'下载并保存'})).toBeNull();
+  expect(view.getByText('Test因内容有误撤回了一条消息')).toBeTruthy();
+  expect(view.queryByText('消息已不可用')).toBeNull();
 });
 
 test('a configured release offers direct GitHub login without a server address or required form field',async()=>{

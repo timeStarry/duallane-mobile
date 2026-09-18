@@ -3,7 +3,7 @@ import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-nat
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useWorkspace } from '../../domain/store';
-import { targetKey, type ChatTarget, type Draft, type Emote, type Message, type Topic } from '../../domain/contracts';
+import { targetKey, type ChatTarget, type Draft, type Emote, type EmoteLibrary, type Message, type Topic } from '../../domain/contracts';
 import { activeMentionQuery, mentionCandidates } from '../../domain/compose';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
@@ -12,7 +12,7 @@ import { Transfers } from '../../data/transfers';
 import { conversationIdentity } from '../../ui/chrome';
 import { groupHiddenWorkspaceMessages } from '../../domain/hidden-messages';
 import { formatMessageDayLabel, getMessageDayKey, getMessageGroupPositions, workspaceUnreadIndex } from '../../domain/message-grouping';
-import { catalogPacks } from '../../domain/emote-catalog';
+import { composerEmotePacks } from '../../domain/emote-catalog';
 import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
 import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
 import { useChatIme } from '../../ui/useChatIme';
@@ -39,7 +39,7 @@ import {
   styles,
 } from '../../ui/components';
 import { useTheme } from '../../ui/theme';
-import { ChevronLeft, Info, Search } from 'lucide-react-native';
+import { AtSign, Bell, BellOff, ChevronLeft, Info, Search } from 'lucide-react-native';
 
 const emptyMessages: Message[] = [];
 const emptyDraft: Draft = { text: '', mentionIds: [] };
@@ -142,9 +142,12 @@ export function ChatScreen({
   const [hasOlder, setHasOlder] = useState(true);
   const [progress, setProgress] = useState('');
   const [emotes, setEmotes] = useState<Emote[]>([]);
+  const [library, setLibrary] = useState<EmoteLibrary | null>(null);
+  const chatSettings = useWorkspace(s => s.chatSettings);
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList>(null);
   const nearBottom = useRef(true);
+  const olderReady = useRef(false);
   const [newMessages, setNewMessages] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
@@ -156,10 +159,22 @@ export function ChatScreen({
   }, [runtime, target]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    void runtime.emotes().then(result => {
-      rememberEmotes(result.items);
-      setEmotes(result.items);
-    }).catch(() => undefined);
+    olderReady.current = false;
+    const timer = setTimeout(() => { olderReady.current = true; }, 400);
+    return () => clearTimeout(timer);
+  }, [target]);
+  useEffect(() => {
+    void Promise.all([runtime.emotes(), runtime.emoteLibrary()]).then(([list, nextLibrary]) => {
+      const collected = [...list.items, ...nextLibrary.emotes, ...nextLibrary.collections.flatMap(collection => collection.items)];
+      rememberEmotes(collected);
+      setEmotes(list.items);
+      setLibrary(nextLibrary);
+    }).catch(() => {
+      void runtime.emotes().then(result => {
+        rememberEmotes(result.items);
+        setEmotes(result.items);
+      }).catch(() => undefined);
+    });
   }, [runtime]);
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const identity = conversation ? conversationIdentity(conversation, selfId, members) : undefined;
@@ -227,17 +242,23 @@ export function ChatScreen({
       ) : (
         <FlatList
           ref={list}
-          data={displayItems}
+          inverted
+          data={[...displayItems].reverse()}
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
           onScroll={e => {
-            const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
-            nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 100;
+            nearBottom.current = e.nativeEvent.contentOffset.y < 80;
             if (nearBottom.current) setNewMessages(false);
           }}
           scrollEventThrottle={100}
-          onContentSizeChange={() => { if (nearBottom.current) list.current?.scrollToEnd({ animated: false }); }}
-          ListHeaderComponent={hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(count === 50)).catch(e => setError(errorText(e))); }} /> : null}
+          onContentSizeChange={() => { if (nearBottom.current) list.current?.scrollToOffset({ offset: 0, animated: false }); }}
+          onEndReached={() => {
+            if (!olderReady.current || !hasOlder || !messages.length) return;
+            const first = messages[0]?.id;
+            void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(count === 50)).catch(e => setError(errorText(e)));
+          }}
+          onEndReachedThreshold={0.2}
+          ListFooterComponent={hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(count === 50)).catch(e => setError(errorText(e))); }} /> : null}
           ListEmptyComponent={!loading ? <EmptyState title="还没有消息" /> : null}
           renderItem={({ item }) => {
             if (item.kind === 'hidden') {
@@ -268,7 +289,7 @@ export function ChatScreen({
                 onReply={targetMessage => runtime.patchDraft(key, { replyToMessageId: targetMessage.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorId ? Array.from(new Set([...draft.mentionIds, targetMessage.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorName && !draft.text.includes(`@${targetMessage.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${targetMessage.authorName} ` : draft.text })}
                 onOpenTopic={onOpenTopic}
                 locate={id => {
-                  const at = displayItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
+                  const at = [...displayItems].reverse().findIndex(entry => entry.kind === 'message' && entry.message.id === id);
                   if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
                 }}
                 onPreview={onPreview}
@@ -281,7 +302,7 @@ export function ChatScreen({
           }}
         />
       )}
-      {newMessages && <Button title="回到最新" secondary onPress={() => { nearBottom.current = true; setNewMessages(false); list.current?.scrollToEnd(); }} />}
+      {newMessages && <Button title="回到最新" secondary onPress={() => { nearBottom.current = true; setNewMessages(false); list.current?.scrollToOffset({ offset: 0, animated: true }); }} />}
       {canSend ? (
         <View style={{ paddingBottom: ime.dock.dockBottom }}>
           {target.kind === 'topic' && topic?.allowSyncToGroup ? (
@@ -295,7 +316,7 @@ export function ChatScreen({
             onSend={() => send()}
             sendDisabled={!draft.text.trim() && !draft.pendingAttachment}
             attachDisabled={!conversation?.capabilities.canUploadFile || !!progress}
-            reply={reply ? { author: reply.authorName, preview: reply.recalledAt || reply.hiddenByCurrentUser ? '原消息不可用' : reply.plainText } : undefined}
+            reply={reply ? { author: reply.authorName, preview: reply.hiddenByCurrentUser ? '已隐藏的消息' : reply.recalledAt ? '已撤回的消息' : reply.plainText } : undefined}
             onClearReply={() => runtime.patchDraft(key, { replyToMessageId: undefined })}
             attachmentName={draft.pendingAttachment?.fileName}
             onClearAttachment={() => runtime.patchDraft(key, { pendingAttachment: undefined })}
@@ -305,7 +326,7 @@ export function ChatScreen({
           <View style={{ height: ime.dock.panelHeight, overflow: 'hidden', backgroundColor: t.elevated }}>
             {ime.panel === 'emoji' ? (
               <CatalogEmoteGrid
-                packs={[{ id: 'custom', label: '自定义', items: emotes.map(emote => ({ kind: emote.kind, id: emote.id, label: emote.label, token: emote.token, src: emote.src })) }, ...catalogPacks()]}
+                packs={composerEmotePacks(library ?? { emotes, collections: [], entries: emotes.map(emote => ({ id: emote.id, type: 'emote', emote })) }, chatSettings?.enabledPackIds)}
                 selectedPackId={emotePack}
                 onSelectPack={setEmotePack}
                 onPick={(item, packId) => {
@@ -382,9 +403,9 @@ export function DetailsScreen({ id, runtime, kind = 'conversation', onCreateTopi
             accessibilityLabel="消息提醒"
             value={level}
             options={[
-              { value: 'all', label: '所有消息' },
-              { value: 'mentions', label: '仅提到我' },
-              { value: 'muted', label: '免打扰' },
+              { value: 'all', label: '全部', icon: <Bell size={18} color={t.text} /> },
+              { value: 'mentions', label: '提及', icon: <AtSign size={18} color={t.text} /> },
+              { value: 'muted', label: '免打扰', icon: <BellOff size={18} color={t.text} /> },
             ]}
             onChange={next => void (kind === 'topic' ? runtime.topicNotification(id, next) : runtime.notification(id, next)).catch(e => setError(errorText(e)))}
           />

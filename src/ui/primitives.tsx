@@ -180,7 +180,7 @@ export function SegmentedControl<T extends string>({
   accessibilityLabel,
 }: {
   value: T;
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; icon?: React.ReactNode }[];
   onChange: (value: T) => void;
   accessibilityLabel: string;
 }) {
@@ -208,9 +208,12 @@ export function SegmentedControl<T extends string>({
               backgroundColor: selected ? t.surface : 'transparent',
             }}
           >
-            <Text style={{ color: selected ? t.text : t.muted, fontWeight: selected ? '600' : '500', fontSize: t.type.control }}>
-              {option.label}
-            </Text>
+            <View style={{ alignItems: 'center', gap: 2 }}>
+              {option.icon}
+              <Text style={{ color: selected ? t.text : t.muted, fontWeight: selected ? '600' : '500', fontSize: t.type.meta }}>
+                {option.label}
+              </Text>
+            </View>
           </Pressable>
         );
       })}
@@ -223,17 +226,22 @@ export function SettingRow({
   detail,
   onPress,
   danger = false,
+  icon,
 }: {
   title: string;
   detail?: string;
   onPress?: () => void;
   danger?: boolean;
+  icon?: React.ReactNode;
 }) {
   const t = useTheme();
   const content = (
-    <View style={[styles.setting, { borderBottomColor: t.line, minHeight: t.hit }]}>
-      <Text style={{ fontSize: t.type.body, color: danger ? t.danger : t.text, fontWeight: '500' }}>{title}</Text>
-      {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }}>{detail}</Text> : null}
+    <View style={[styles.setting, { borderBottomColor: t.line, minHeight: t.hit, flexDirection: 'row', alignItems: 'center', gap: t.space.md }]}>
+      {icon}
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={{ fontSize: t.type.body, color: danger ? t.danger : t.text, fontWeight: '500' }}>{title}</Text>
+        {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }}>{detail}</Text> : null}
+      </View>
     </View>
   );
   if (!onPress) return content;
@@ -296,7 +304,7 @@ export function ObjectActionSheet({
   visible: boolean;
   title: string;
   detail?: string;
-  actions: { id: string; title: string; onPress: () => void; danger?: boolean; disabled?: boolean }[];
+  actions: { id: string; title: string; onPress: () => void; danger?: boolean; disabled?: boolean; icon?: React.ReactNode }[];
   onRequestClose: () => void;
 }) {
   const t = useTheme();
@@ -308,16 +316,30 @@ export function ObjectActionSheet({
           <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }}>{title}</Text>
           {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted }}>{detail}</Text> : null}
           {actions.map(action => (
-            <Button
+            <Pressable
               key={action.id}
-              title={action.title}
+              accessibilityRole="button"
+              accessibilityLabel={action.title}
+              accessibilityState={{ disabled: action.disabled }}
               disabled={action.disabled}
-              variant={action.danger ? 'danger' : 'secondary'}
               onPress={() => {
                 onRequestClose();
                 action.onPress();
               }}
-            />
+              style={({ pressed }) => ({
+                minHeight: t.hit,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: t.space.md,
+                paddingHorizontal: t.space.md,
+                borderRadius: t.radius.control,
+                backgroundColor: action.danger ? t.dangerSoft : t.soft,
+                opacity: action.disabled ? t.disabledOpacity : pressed ? t.pressedOpacity : 1,
+              })}
+            >
+              {action.icon}
+              <Text style={{ color: action.danger ? t.danger : t.text, fontSize: t.type.body, fontWeight: '500' }}>{action.title}</Text>
+            </Pressable>
           ))}
           <Button title="取消" variant="ghost" onPress={onRequestClose} />
         </View>

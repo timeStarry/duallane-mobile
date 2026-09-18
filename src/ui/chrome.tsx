@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bot } from 'lucide-react-native';
 import type { Conversation, Member } from '../domain/contracts';
+import { botAssetAvatar, sanitizeWorkspaceAvatarUrl } from '../domain/media-path';
 import { RemoteImage } from './RemoteImage';
 import { formatListTime, stableTone } from './format';
 import { UnreadBadge } from './primitives';
@@ -84,7 +85,8 @@ export function Avatar({
   const backgroundColor = stableTone(id) === 0 ? t.avatarA : t.avatarB;
   const radius = shape === 'person' ? size / 2 : t.radius.entity;
   const letter = [...name.trim()].find(char => char.trim()) ?? '?';
-  const showImage = !!uri && !imageFailed && !emoji;
+  const safeUri = sanitizeWorkspaceAvatarUrl(uri) || botAssetAvatar(name) || '';
+  const showImage = !!safeUri && !imageFailed && !emoji;
   return (
     <View
       accessibilityIgnoresInvertColors
@@ -101,7 +103,7 @@ export function Avatar({
       {emoji ? (
         <Text style={{ fontSize: size * 0.52 }}>{emoji}</Text>
       ) : showImage ? (
-        <RemoteImage uri={uri} style={{ width: size, height: size }} onError={() => setImageFailed(true)} />
+        <RemoteImage uri={safeUri} style={{ width: size, height: size }} onError={() => setImageFailed(true)} />
       ) : (
         <Text style={{ color: t.text, fontWeight: '600', fontSize: size * 0.38 }}>{letter}</Text>
       )}
@@ -133,7 +135,7 @@ export function conversationIdentity(conversation: Conversation, selfId?: string
     shape: (other?.kind ?? listed?.kind) === 'bot' ? ('bot' as const) : ('person' as const),
     name: other?.displayName ?? listed?.displayName ?? conversation.displayTitle,
     id: other?.id ?? listed?.id ?? conversation.id,
-    uri: other?.avatarUrl ?? listed?.avatarUrl,
+    uri: sanitizeWorkspaceAvatarUrl(other?.avatarUrl ?? listed?.avatarUrl) || botAssetAvatar(other?.displayName ?? listed?.displayName ?? conversation.displayTitle),
     emoji: undefined as string | undefined,
   };
 }

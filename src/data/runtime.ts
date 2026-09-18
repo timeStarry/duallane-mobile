@@ -4,7 +4,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { z } from 'zod';
 import { ApiClient, ApiError, errorDiagnostic, errorText } from './client';
 import { setMediaClient } from './media';
-import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteListSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
+import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteLibrarySchema, emoteListSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
 import { composeBlocks } from '../domain/compose';
 import { assertAllowedCardAction } from '../domain/actions';
 import { clearAccountFiles } from './transfers';
@@ -156,7 +156,7 @@ export class Runtime {
     if(this.current(epoch))useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));
   }
   async notification(id:string,level:'all'|'mentions'|'muted'){await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/notification`,z.unknown(),{level},'PATCH');await this.bootstrap();}
-  async updateProfile(patch:{nickname?:string|null;searchDiscoverable?:boolean}){
+  async updateProfile(patch:{nickname?:string|null;searchDiscoverable?:boolean;recallReason?:string}){
     const epoch=this.epoch;
     const result=await this.requireApi().json('/api/workspace/me/profile',profileResponseSchema,patch,'PATCH');
     if(!this.current(epoch))throw new Error('Stale session');
@@ -208,6 +208,7 @@ export class Runtime {
     await this.open(conversationId);
   }
   async emotes(){return this.requireApi().json('/api/workspace/me/emotes',emoteListSchema);}
+  async emoteLibrary(){return this.requireApi().json('/api/workspace/me/emote-library',emoteLibrarySchema);}
   async resolveCard(cardId:string){const result=await this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}`,z.object({card:cardResolutionSchema}));return result.card;}
   async cardAction(cardId:string,actionId:string,allowed:string[]=[],revision?:number){
     assertAllowedCardAction(actionId,allowed);

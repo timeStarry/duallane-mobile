@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { sessionSchema, type Session } from '../domain/contracts';
+import { isAllowedSameOriginMediaPath } from '../domain/media-path';
 import { installed } from '../platform/config';
 import { fetch } from 'expo/fetch';
 
@@ -98,7 +99,7 @@ export class ApiClient {
     if (parsed.origin === origin.origin) {
       const path = `${parsed.pathname}${parsed.search}`;
       if (path.startsWith('/api/')) return this.raw(path, {}, true);
-      if (!path.startsWith('/emotes/')) throw new ApiError('permission.denied', 403);
+      if (!isAllowedSameOriginMediaPath(path)) throw new ApiError('permission.denied', 403);
       const headers = new Headers();
       headers.set('X-DualLane-Client', 'android');
       headers.set('X-DualLane-Client-Version', installed.appVersion);

@@ -99,9 +99,9 @@ function BlockView({
 export function EmoteImage({ uri, token, size }: { uri: string; token: string; size: number }) {
   const [failed, setFailed] = useState(false);
   const fail = useCallback(() => setFailed(true), []);
-  if (failed) return <Text>{token}</Text>;
+  if (failed) return <View style={{ width: size, height: size }} />;
   return (
-    <View accessible accessibilityRole="image" accessibilityLabel={token}>
+    <View accessible accessibilityRole="image" accessibilityLabel={token.startsWith('[custom:') ? '自定义表情' : token}>
       <RemoteImage uri={uri} style={{ width: size, height: size }} onError={fail} />
     </View>
   );
