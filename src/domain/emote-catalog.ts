@@ -19,11 +19,14 @@ const catalogPackSchema = z.object({
 }).passthrough();
 
 export type CatalogImage = { src: string; label: string; packId: string; id: string };
+export type CatalogPackItem = { kind: string; id: string; label: string; token?: string; src?: string; value?: string };
+export type CatalogPack = { id: string; label: string; items: CatalogPackItem[] };
 
 const imageByToken = new Map<string, CatalogImage>();
 const imageByKey = new Map<string, CatalogImage>();
 const unicodeByKey = new Map<string, string>();
 const imagePackIds: string[] = [];
+const catalogPackList: CatalogPack[] = [];
 
 const parsed = z.array(catalogPackSchema).safeParse(rawCatalog);
 if (!parsed.success) {
@@ -31,6 +34,18 @@ if (!parsed.success) {
 }
 
 for (const pack of parsed.success ? parsed.data : []) {
+  catalogPackList.push({
+    id: pack.id,
+    label: pack.label,
+    items: pack.items.map(item => ({
+      kind: item.kind,
+      id: item.id,
+      label: item.label,
+      token: item.token,
+      src: item.src,
+      value: item.value,
+    })),
+  });
   if (pack.id !== 'emoji' && pack.id !== 'custom') imagePackIds.push(pack.id);
   for (const item of pack.items) {
     if (item.kind === 'unicode' && item.value) {
@@ -107,4 +122,8 @@ export function splitImageEmotes(text: string, extra?: Map<string, string>): Arr
 
 export function containsImageEmoteToken(text: string) {
   return splitImageEmotes(text).some(part => !!part.src);
+}
+
+export function catalogPacks(): CatalogPack[] {
+  return catalogPackList.filter(pack => pack.id !== 'custom');
 }

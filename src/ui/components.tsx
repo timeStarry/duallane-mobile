@@ -1,5 +1,6 @@
 import { StyleSheet } from 'react-native';
-export { Label, Button, IconButton, Input, Notice, InlineFeedback, Loading, Empty, EmptyState, SegmentedControl, SettingRow, Dialog, ObjectActionSheet } from './primitives';
+export { Label, Button, IconButton, Input, Notice, InlineFeedback, Loading, Empty, EmptyState, SegmentedControl, SettingRow, SettingGroup, UnreadBadge, ConnectionBanner, Dialog, ObjectActionSheet } from './primitives';
+export { CatalogEmoteGrid } from './CatalogEmoteGrid';
 export { AppHeader, Avatar, ConversationRow, TopicRow, conversationIdentity } from './chrome';
 export { SwitchRow, Select, PageState } from './controls';
 export { FileRow, AttachmentPreview, TransferItem } from './files';

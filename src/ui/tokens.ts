@@ -33,6 +33,30 @@ export const hit = 48;
 export const pressedOpacity = 0.72;
 export const disabledOpacity = 0.4;
 
+export const motion = {
+  press: 120,
+  content: 180,
+  detail: 200,
+  switch: 160,
+  ease: [0.2, 0.75, 0.25, 1] as const,
+} as const;
+
+export type MotionKind = 'press' | 'content' | 'detail' | 'switch';
+
+export const list = {
+  rowMin: 72,
+  avatar: 48,
+  chatAvatar: 32,
+  unreadBadge: 18,
+} as const;
+
+/** Android messenger bubbles. Inner 0 = DESIGN_SYSTEM flat group edges. */
+export const bubble = {
+  maxWidthPercent: 0.8,
+  outer: 16,
+  inner: 0,
+} as const;
+
 export const originalTheme: Record<ColorMode, SemanticColors> = {
   light: {
     bg: '#f5f7f8',
@@ -94,9 +118,14 @@ export type Theme = SemanticColors & {
   hit: typeof hit;
   pressedOpacity: typeof pressedOpacity;
   disabledOpacity: typeof disabledOpacity;
+  motion: typeof motion;
+  list: typeof list;
+  bubble: typeof bubble;
+  reduceMotion: boolean;
+  motionMs: (kind: MotionKind) => number;
 };
 
-export function resolveTheme(mode: ColorMode): Theme {
+export function resolveTheme(mode: ColorMode, reduceMotion = false): Theme {
   return {
     ...originalTheme[mode],
     mode,
@@ -106,5 +135,10 @@ export function resolveTheme(mode: ColorMode): Theme {
     hit,
     pressedOpacity,
     disabledOpacity,
+    motion,
+    list,
+    bubble,
+    reduceMotion,
+    motionMs: kind => (reduceMotion ? 0 : motion[kind]),
   };
 }

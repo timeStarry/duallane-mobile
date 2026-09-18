@@ -3,6 +3,7 @@ import { fireEvent, render } from '@testing-library/react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ConversationRow } from '../src/ui/chrome';
+import { ConnectionBanner, SettingGroup, SettingRow } from '../src/ui/primitives';
 import { ThemeProvider } from '../src/ui/theme';
 import { ConversationsScreen } from '../src/features/screens';
 import { AccountNavigator } from '../src/features/account/screens';
@@ -69,6 +70,27 @@ test('account categories do not invent device-session or space-admin entries', (
   expect(view.queryByText('设备会话')).toBeNull();
   expect(view.queryByText('邀请管理')).toBeNull();
   expect(view.getByRole('button', { name: '退出登录' })).toBeTruthy();
+});
+
+test('connection banner keeps HTTP sync copy and has no reconnect action', () => {
+  const view = render(wrap(<ConnectionBanner connection="实时未接通，已用 HTTP 同步" />));
+  expect(view.getByText('实时未接通，已用 HTTP 同步')).toBeTruthy();
+  expect(view.queryByText('重新连接')).toBeNull();
+  expect(view.queryByRole('button', { name: '重新连接' })).toBeNull();
+  const hidden = render(wrap(<ConnectionBanner connection="已连接" />));
+  expect(hidden.queryByText('实时未接通，已用 HTTP 同步')).toBeNull();
+  expect(hidden.queryByText('已连接')).toBeNull();
+});
+
+test('setting groups use inset surfaces without inventing a reconnect control', () => {
+  const view = render(wrap(
+    <SettingGroup title="空间">
+      <SettingRow title="关于与更新" onPress={() => undefined} />
+    </SettingGroup>,
+  ));
+  expect(view.getByText('空间')).toBeTruthy();
+  expect(view.getByText('关于与更新')).toBeTruthy();
+  expect(view.queryByText('重新连接')).toBeNull();
 });
 
 test('the workbench renders official primitives with synthetic content', () => {
