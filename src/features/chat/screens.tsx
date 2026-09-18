@@ -113,12 +113,14 @@ export function ChatScreen({
   transfers,
   details,
   onOpenTopic,
+  onPreview,
 }: {
   target: ChatTarget;
   runtime: Runtime;
   transfers: Transfers;
   details: () => void;
   onOpenTopic?: (topicId: string) => void;
+  onPreview?: (file: import('../../domain/contracts').Attachment) => void;
 }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
@@ -272,6 +274,7 @@ export function ChatScreen({
                   const at = displayItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
                   if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
                 }}
+                onPreview={onPreview}
                 download={file => {
                   const api = runtime.api;
                   if (api) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(e => setError(errorText(e)));

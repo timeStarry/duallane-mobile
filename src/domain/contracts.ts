@@ -8,6 +8,7 @@ export const memberSchema = z.object({
   avatarUrl: z.string().nullish(),
   githubLogin: z.string().nullish(),
   nickname: z.string().nullish(),
+  remark: z.string().nullish(),
   searchDiscoverable: z.boolean().optional(),
   roleLabel: z.string().optional(),
   capabilities: z.object({ canStartDirectConversation: z.boolean().default(false) }).default({ canStartDirectConversation: false }),

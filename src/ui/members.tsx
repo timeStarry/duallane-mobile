@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import type { Member } from '../domain/contracts';
 import { Avatar } from './chrome';
 import { Button } from './primitives';
@@ -8,13 +8,15 @@ import { useTheme } from './theme';
 export function MemberRow({
   member,
   onDirect,
+  onPress,
 }: {
   member: Member;
   onDirect?: () => void;
+  onPress?: () => void;
 }) {
   const t = useTheme();
   const bot = member.kind === 'bot';
-  return (
+  const row = (
     <View
       style={{
         flexDirection: 'row',
@@ -36,5 +38,11 @@ export function MemberRow({
       </View>
       {onDirect ? <Button title="发起私聊" secondary onPress={onDirect} /> : null}
     </View>
+  );
+  if (!onPress) return row;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={member.displayName} onPress={onPress}>
+      {row}
+    </Pressable>
   );
 }

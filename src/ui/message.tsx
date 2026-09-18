@@ -24,6 +24,7 @@ export function MessageRow({
   runtime,
   onReply,
   onOpenTopic,
+  onPreview,
   locate,
 }: {
   message: Message;
@@ -36,6 +37,7 @@ export function MessageRow({
   runtime?: Runtime;
   onReply?: (message: Message) => void;
   onOpenTopic?: (topicId: string) => void;
+  onPreview?: (file: Attachment) => void;
   locate?: (id: string) => void;
 }) {
   const t = useTheme();
@@ -90,7 +92,7 @@ export function MessageRow({
               <Label muted>{reply && !reply.recalledAt && !reply.hiddenByCurrentUser ? `${reply.authorName}: ${reply.plainText}` : '原消息不可用'}</Label>
             </Pressable>
           ) : null}
-          <MessageContent message={message} download={download} onOpenTopic={onOpenTopic} runtime={runtime} />
+          <MessageContent message={message} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} />
           {message.reactions?.length ? (
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
               {message.reactions.map(reaction => (

@@ -214,6 +214,7 @@ export class Runtime {
     return this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}/actions`,z.object({action:z.unknown()}).passthrough(),{actionId,clientActionId:Crypto.randomUUID(),expectedRevision:revision,input:{}});
   }
   async remark(userId:string,value:string){await this.requireApi().json(`/api/workspace/members/${encodeURIComponent(userId)}/remark`,z.unknown(),{remark:value},'PUT');await this.bootstrap();}
+  async clearRemark(userId:string){await this.requireApi().json(`/api/workspace/members/${encodeURIComponent(userId)}/remark`,z.unknown(),undefined,'DELETE');await this.bootstrap();}
   async direct(userId:string){const epoch=this.epoch;const r=await this.requireApi().json('/api/workspace/conversations',z.object({conversation:conversationSchema}),{type:'direct',memberIds:[userId]});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.setState(s=>({conversations:{...s.conversations,[r.conversation.id]:r.conversation}}));return r.conversation.id;}
   private async applyEvent(event:WorkspaceEvent,replay:boolean){const s=useWorkspace.getState();if(!s.bootstrap||event.spaceId!==s.bootstrap.space.id)return;
     const message=parseMessage(event.payload.message);

@@ -10,6 +10,7 @@ import { z } from 'zod';
 import * as Notifications from 'expo-notifications';
 import { ThemeProvider, useTheme, type AppearanceMode } from './src/ui/theme';
 import { DualLaneTabBar, Loading, Notice } from './src/ui/components';
+import { MediaViewer } from './src/ui/MediaViewer';
 import { Runtime } from './src/data/runtime';
 import { Transfers } from './src/data/transfers';
 import { useWorkspace } from './src/domain/store';
@@ -21,7 +22,7 @@ import { cache } from './src/platform/storage';
 import { notificationTarget } from './src/platform/notifications';
 import { errorText } from './src/data/client';
 
-type RootParams = { Workspace: undefined; Chat: { id: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' } };
+type RootParams = { Workspace: undefined; Chat: { id: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' }; Media: { id: string; fileName: string; mimeType: string; byteSize: number; status: string } };
 type TabsParams = { 聊天: undefined; 文件: undefined; 成员: undefined; 我的: undefined };
 const Stack = createNativeStackNavigator<RootParams>();
 const Tabs = createBottomTabNavigator<TabsParams>();
@@ -138,6 +139,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                   const topic = useWorkspace.getState().topics[topicId];
                   nav.navigate('Topic', { id: topicId, conversationId: topic?.conversationId ?? route.params.id });
                 }}
+                onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status })}
               />
             )}
           </Stack.Screen>
@@ -149,6 +151,19 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                 transfers={transfers}
                 details={() => nav.navigate('Details', { id: route.params.id, kind: 'topic' })}
                 onOpenTopic={topicId => nav.navigate('Topic', { id: topicId, conversationId: route.params.conversationId })}
+                onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status })}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Media" options={{ headerShown: false }}>
+            {({ route, navigation: nav }) => (
+              <MediaViewer
+                file={{ id: route.params.id, fileName: route.params.fileName, mimeType: route.params.mimeType, byteSize: route.params.byteSize, status: route.params.status, capabilities: { canDownload: true } }}
+                onClose={() => nav.goBack()}
+                onDownload={() => {
+                  const api = runtime.api;
+                  if (api) void transfers.download(api, useWorkspace.getState().accountKey, { id: route.params.id, fileName: route.params.fileName, mimeType: route.params.mimeType, byteSize: route.params.byteSize, status: route.params.status, capabilities: { canDownload: true } }).catch(() => undefined);
+                }}
               />
             )}
           </Stack.Screen>
