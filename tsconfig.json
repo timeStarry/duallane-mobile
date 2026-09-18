@@ -1,1 +1,1 @@
-{"extends":"expo/tsconfig.base","compilerOptions":{"strict":true,"noUncheckedIndexedAccess":true,"types":["jest","node"]},"include":["src/**/*.ts","src/**/*.tsx","src/**/*.json","App.tsx","app.config.ts","tests/**/*.ts","tests/**/*.tsx"]}
+{"extends":"expo/tsconfig.base","compilerOptions":{"strict":true,"noUncheckedIndexedAccess":true,"types":["jest","node"]},"include":["src/**/*.ts","src/**/*.tsx","src/**/*.json","src/**/*.d.ts","App.tsx","app.config.ts","tests/**/*.ts","tests/**/*.tsx"]}

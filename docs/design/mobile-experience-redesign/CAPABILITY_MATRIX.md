@@ -8,7 +8,7 @@
 
 | 能力 | Go / 契约 | 当前移动端 | 本轮 |
 | --- | --- | --- | --- |
-| GitHub PKCE 登录、邀请、会话恢复 | `/api/auth/mobile/github/*`、refresh、logout | 已接 | 保留；R1 只改登录层次 |
+| GitHub PKCE 登录、邀请、会话恢复 | `/api/auth/mobile/github/*`、refresh、logout | 已接；发布包 GitHub 主按钮，邀请在「还没有账号？」后 | 保留；R1 只改登录层次 |
 | 默认服务注入 | 构建 `EXPO_PUBLIC_API_ORIGIN` | 已接 | 保留 |
 | Bootstrap | `GET /api/workspace/bootstrap` | 已接，字段偏最小 | R2 按需扩展投影 |
 | 更新门禁 | `GET /api/mobile/release-policy` | 已接 | 保留；网络失败不得伪装强更 |

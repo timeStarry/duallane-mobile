@@ -33,17 +33,20 @@ test('a configured release offers direct GitHub login without a server address o
   const view=render(<LoginScreen runtime={runtime}/>);
   expect(view.queryByLabelText('服务地址或邀请链接')).toBeNull();
   expect(view.queryByPlaceholderText('HTTPS 服务地址或空间邀请链接')).toBeNull();
-  expect(view.getByLabelText('空间邀请链接（可选）').props.value).toBe('');
+  expect(view.queryByLabelText('空间邀请链接（可选）')).toBeNull();
+  expect(view.getByLabelText('DualLane')).toBeTruthy();
+  expect(view.getByRole('button',{name:'还没有账号？'})).toBeTruthy();
   expect(view.getByRole('button',{name:'使用 GitHub 登录'})).toBeEnabled();
   fireEvent.press(view.getByRole('button',{name:'使用 GitHub 登录'}));
   await waitFor(()=>expect(runtime.login).toHaveBeenCalledWith('https://duallane.tsio.top',undefined));
   await waitFor(()=>expect(view.getByRole('button',{name:'使用 GitHub 登录'})).toBeEnabled());
 });
 
-test('the optional invitation field passes a same-service invitation into GitHub login',async()=>{
+test('the optional invitation field stays behind a secondary account prompt',async()=>{
   config.apiOrigin='https://duallane.tsio.top';
   const runtime=new Runtime();runtime.login=jest.fn().mockResolvedValue(undefined);
   const view=render(<LoginScreen runtime={runtime}/>);
+  fireEvent.press(view.getByRole('button',{name:'还没有账号？'}));
   fireEvent.changeText(view.getByLabelText('空间邀请链接（可选）'),'https://duallane.tsio.top/workspace?invite=test-code');
   fireEvent.press(view.getByRole('button',{name:'使用 GitHub 登录'}));
   await waitFor(()=>expect(runtime.login).toHaveBeenCalledWith('https://duallane.tsio.top','test-code'));
@@ -54,6 +57,7 @@ test('a different-service invitation cannot initiate OAuth from the configured l
   config.apiOrigin='https://duallane.tsio.top';
   const runtime=new Runtime();runtime.login=jest.fn().mockResolvedValue(undefined);
   const view=render(<LoginScreen runtime={runtime}/>);
+  fireEvent.press(view.getByRole('button',{name:'还没有账号？'}));
   fireEvent.changeText(view.getByLabelText('空间邀请链接（可选）'),'https://other.test/workspace?invite=test-code');
   fireEvent.press(view.getByRole('button',{name:'使用 GitHub 登录'}));
   await waitFor(()=>expect(view.getByText('请使用当前服务的有效空间邀请链接')).toBeTruthy());
@@ -75,6 +79,7 @@ test('an unconfigured development build still requests a service address before 
   const runtime=new Runtime();runtime.login=jest.fn().mockResolvedValue(undefined);
   const view=render(<LoginScreen runtime={runtime}/>);
   expect(view.queryByLabelText('空间邀请链接（可选）')).toBeNull();
+  expect(view.queryByRole('button',{name:'还没有账号？'})).toBeNull();
   expect(view.getByRole('button',{name:'使用 GitHub 登录'})).toBeDisabled();
   fireEvent.changeText(view.getByLabelText('服务地址或邀请链接'),'https://development.test');
   fireEvent.press(view.getByRole('button',{name:'使用 GitHub 登录'}));

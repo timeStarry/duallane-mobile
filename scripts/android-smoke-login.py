@@ -13,7 +13,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-LOGIN_LABELS = ('DualLane', '空间邀请链接（可选）', '使用 GitHub 登录')
+LOGIN_LABELS = ('DualLane', '使用 GitHub 登录', '还没有账号？')
 FORBIDDEN_LABELS = ('服务地址或邀请链接',)
 ANR_WAIT_IDS = ('android:id/aerr_wait',)
 ANR_WAIT_TEXT = ('Wait', '等待')
