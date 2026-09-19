@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +13,7 @@ import { conversationIdentity } from '../../ui/chrome';
 import { groupHiddenWorkspaceMessages } from '../../domain/hidden-messages';
 import { formatMessageDayLabel, getMessageDayKey, getMessageGroupPositions, workspaceUnreadIndex } from '../../domain/message-grouping';
 import { composerEmotePacks } from '../../domain/emote-catalog';
+import { isPinnedToLatest, newestFirstTranscript, shouldLoadOlderHistory } from '../../domain/transcript-scroll';
 import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
 import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
 import { useChatIme } from '../../ui/useChatIme';
@@ -146,8 +147,9 @@ export function ChatScreen({
   const chatSettings = useWorkspace(s => s.chatSettings);
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList>(null);
-  const nearBottom = useRef(true);
-  const olderReady = useRef(false);
+  const pinToLatest = useRef(true);
+  const draggingTranscript = useRef(false);
+  const historyReady = useRef(false);
   const [newMessages, setNewMessages] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
@@ -159,10 +161,12 @@ export function ChatScreen({
   }, [runtime, target]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    olderReady.current = false;
-    const timer = setTimeout(() => { olderReady.current = true; }, 400);
-    return () => clearTimeout(timer);
-  }, [target]);
+    pinToLatest.current = true;
+    draggingTranscript.current = false;
+    historyReady.current = false;
+    setNewMessages(false);
+    setHasOlder(true);
+  }, [key]);
   useEffect(() => {
     void Promise.all([runtime.emotes(), runtime.emoteLibrary()]).then(([list, nextLibrary]) => {
       const collected = [...list.items, ...nextLibrary.emotes, ...nextLibrary.collections.flatMap(collection => collection.items)];
@@ -178,19 +182,35 @@ export function ChatScreen({
   }, [runtime]);
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const identity = conversation ? conversationIdentity(conversation, selfId, members) : undefined;
+  const lastId = messages.at(-1)?.id;
+  const scrollToLatest = useCallback((animated: boolean) => {
+    pinToLatest.current = true;
+    setNewMessages(false);
+    list.current?.scrollToOffset({ offset: 0, animated });
+  }, []);
+  const applyUserOffset = (offsetY: number) => {
+    const pinned = isPinnedToLatest(offsetY);
+    pinToLatest.current = pinned;
+    setNewMessages(show => {
+      const next = !pinned;
+      return show === next ? show : next;
+    });
+  };
   useEffect(() => {
-    if (nearBottom.current) list.current?.scrollToEnd({ animated: false });
+    if (!lastId) return;
+    if (pinToLatest.current) list.current?.scrollToOffset({ offset: 0, animated: false });
     else setNewMessages(true);
-    const last = messages.at(-1);
-    if (last && !last.status && nearBottom.current && AppState.currentState === 'active') {
-      void runtime.markRead(target.id, last.id, target.kind === 'topic').catch(() => undefined);
+    if (pinToLatest.current && AppState.currentState === 'active') {
+      const last = useWorkspace.getState().messages[key]?.at(-1);
+      if (last && !last.status) void runtime.markRead(target.id, last.id, target.kind === 'topic').catch(() => undefined);
     }
-  }, [messages, runtime, target]);
+  }, [key, lastId, runtime, target.id, target.kind]);
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
   const send = (existing?: Message) => {
     setError('');
-    nearBottom.current = true;
+    pinToLatest.current = true;
+    setNewMessages(false);
     const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
     const pending = existing ? undefined : latest.pendingAttachment;
     const task = pending ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === pending.taskId) : undefined;
@@ -212,7 +232,8 @@ export function ChatScreen({
   const unreadCount = target.kind === 'topic' ? topic?.unreadCount ?? 0 : conversation?.unreadCount ?? 0;
   const unreadIndex = workspaceUnreadIndex(messages, unreadId, unreadCount);
   const groupPositions = getMessageGroupPositions(messages, unreadIndex);
-  const displayItems = groupHiddenWorkspaceMessages(messages);
+  const displayItems = useMemo(() => groupHiddenWorkspaceMessages(messages), [messages]);
+  const transcriptItems = useMemo(() => newestFirstTranscript(displayItems), [displayItems]);
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader
@@ -241,19 +262,33 @@ export function ChatScreen({
         </View>
       ) : (
         <FlatList
+          key={key}
           ref={list}
           inverted
-          data={[...displayItems].reverse()}
+          data={transcriptItems}
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
+          onScrollBeginDrag={() => {
+            draggingTranscript.current = true;
+            historyReady.current = true;
+          }}
+          onScrollEndDrag={e => {
+            draggingTranscript.current = false;
+            applyUserOffset(e.nativeEvent.contentOffset.y);
+          }}
+          onMomentumScrollEnd={e => {
+            draggingTranscript.current = false;
+            applyUserOffset(e.nativeEvent.contentOffset.y);
+          }}
           onScroll={e => {
-            nearBottom.current = e.nativeEvent.contentOffset.y < 80;
-            if (nearBottom.current) setNewMessages(false);
+            if (!draggingTranscript.current) return;
+            applyUserOffset(e.nativeEvent.contentOffset.y);
           }}
           scrollEventThrottle={100}
-          onContentSizeChange={() => { if (nearBottom.current) list.current?.scrollToOffset({ offset: 0, animated: false }); }}
+          onLayout={() => { if (pinToLatest.current) list.current?.scrollToOffset({ offset: 0, animated: false }); }}
+          onContentSizeChange={() => { if (pinToLatest.current) list.current?.scrollToOffset({ offset: 0, animated: false }); }}
           onEndReached={() => {
-            if (!olderReady.current || !hasOlder || !messages.length) return;
+            if (!shouldLoadOlderHistory({ historyReady: historyReady.current, hasOlder, messageCount: messages.length })) return;
             const first = messages[0]?.id;
             void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(count === 50)).catch(e => setError(errorText(e)));
           }}
@@ -289,7 +324,7 @@ export function ChatScreen({
                 onReply={targetMessage => runtime.patchDraft(key, { replyToMessageId: targetMessage.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorId ? Array.from(new Set([...draft.mentionIds, targetMessage.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorName && !draft.text.includes(`@${targetMessage.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${targetMessage.authorName} ` : draft.text })}
                 onOpenTopic={onOpenTopic}
                 locate={id => {
-                  const at = [...displayItems].reverse().findIndex(entry => entry.kind === 'message' && entry.message.id === id);
+                  const at = transcriptItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
                   if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
                 }}
                 onPreview={onPreview}
@@ -302,7 +337,7 @@ export function ChatScreen({
           }}
         />
       )}
-      {newMessages && <Button title="回到最新" secondary onPress={() => { nearBottom.current = true; setNewMessages(false); list.current?.scrollToOffset({ offset: 0, animated: true }); }} />}
+      {newMessages && <Button title="回到最新" secondary onPress={() => scrollToLatest(true)} />}
       {canSend ? (
         <View style={{ paddingBottom: ime.dock.dockBottom }}>
           {target.kind === 'topic' && topic?.allowSyncToGroup ? (
