@@ -1,38 +1,46 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useWorkspace } from '../../domain/store';
-import { targetKey, type Attachment, type ChatTarget, type Draft, type Emote, type Message, type Topic } from '../../domain/contracts';
+import { targetKey, type ChatTarget, type Draft, type Emote, type EmoteLibrary, type Message, type Topic } from '../../domain/contracts';
 import { activeMentionQuery, mentionCandidates } from '../../domain/compose';
-import { copyText } from '../../platform/clipboard';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
 import { rememberEmotes } from '../../data/media';
-import { RemoteImage } from '../../ui/RemoteImage';
 import { Transfers } from '../../data/transfers';
+import { conversationIdentity } from '../../ui/chrome';
+import { groupHiddenWorkspaceMessages } from '../../domain/hidden-messages';
+import { formatMessageDayLabel, getMessageDayKey, getMessageGroupPositions, workspaceUnreadIndex } from '../../domain/message-grouping';
+import { composerEmotePacks } from '../../domain/emote-catalog';
+import { hasOlderMessages, isPinnedToLatest, newestFirstTranscript, shouldLoadOlderHistory, transcriptMode } from '../../domain/transcript-scroll';
+import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
+import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
+import { useChatIme } from '../../ui/useChatIme';
 import {
   AppHeader,
-  Avatar,
   Button,
   Composer,
+  ConnectionBanner,
   ConversationRow,
   Dialog,
   EmptyState,
+  IconButton,
+  SettingGroup,
+  SettingRow,
   InlineFeedback,
   Input,
   Label,
   Loading,
   MemberRow,
-  MessageContent,
-  ObjectActionSheet,
-  ReactionGlyph,
+  MessageRow,
   PageState,
   SegmentedControl,
   TopicRow,
   styles,
 } from '../../ui/components';
 import { useTheme } from '../../ui/theme';
+import { AtSign, Bell, BellOff, ChevronLeft, Info, Search } from 'lucide-react-native';
 
 const emptyMessages: Message[] = [];
 const emptyDraft: Draft = { text: '', mentionIds: [] };
@@ -44,15 +52,22 @@ export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Run
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const directory = useWorkspace(s => s.bootstrap?.members);
   const [query, setQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [list, setList] = useState<'conversations' | 'topics'>('conversations');
   const [error, setError] = useState('');
   const t = useTheme();
   useEffect(() => { if (list === 'topics') void runtime.listTopics().catch(e => setError(errorText(e))); }, [list, runtime]);
   const items = Object.values(conversations).filter(c => c.displayTitle.toLowerCase().includes(query.toLowerCase())).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
   const topicItems = Object.values(topics).filter(topic => topic.title.includes(query) || (topic.descriptionPreview ?? '').includes(query));
+  const filterLabel = list === 'topics' ? '筛选已加载的话题' : '筛选已加载的会话';
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
-      <AppHeader title="聊天" subtitle={connection === '已连接' ? undefined : connection} includeTopInset />
+      <AppHeader
+        title="聊天"
+        includeTopInset
+        trailing={<IconButton label="搜索" onPress={() => setSearchOpen(open => !open)}><Search color={t.muted} size={22} /></IconButton>}
+        banner={<ConnectionBanner connection={connection} />}
+      />
       <View style={styles.content}>
         <SegmentedControl
           accessibilityLabel="会话与话题"
@@ -60,7 +75,7 @@ export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Run
           options={[{ value: 'conversations', label: '会话' }, { value: 'topics', label: '话题' }]}
           onChange={setList}
         />
-        <Input accessibilityLabel={list === 'topics' ? '筛选已加载的话题' : '筛选已加载的会话'} placeholder={list === 'topics' ? '筛选已加载的话题' : '筛选已加载的会话'} value={query} onChangeText={setQuery} />
+        {searchOpen ? <Input accessibilityLabel={filterLabel} placeholder={filterLabel} value={query} onChangeText={setQuery} /> : null}
         <InlineFeedback text={error} tone="danger" />
       </View>
       {list === 'topics' ? (
@@ -71,12 +86,14 @@ export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Run
             keyExtractor={topic => topic.id}
             renderItem={({ item }) => (
               <TopicRow
+                id={item.id}
                 title={item.title}
                 groupName={conversations[item.conversationId]?.displayTitle ?? '群聊'}
                 preview={item.descriptionPreview || item.description || (item.joined ? '已加入' : '未加入')}
                 joined={item.joined}
                 closed={item.status !== 'open'}
                 unreadCount={item.unreadCount}
+                groupEmoji={conversations[item.conversationId]?.avatarEmoji}
                 onPress={() => openTopic(item)}
               />
             )}
@@ -91,134 +108,25 @@ export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Run
   );
 }
 
-export function MessageRow({
-  message,
-  retry,
-  download,
-  previous,
-  showUnread,
-  runtime,
-  onReply,
-  onOpenTopic,
-  locate,
-}: {
-  message: Message;
-  retry: () => void;
-  download: (file: Attachment) => void;
-  previous?: Message;
-  showUnread?: boolean;
-  runtime?: Runtime;
-  onReply?: (message: Message) => void;
-  onOpenTopic?: (topicId: string) => void;
-  locate?: (id: string) => void;
-}) {
-  const t = useTheme();
-  const userId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
-  const conversation = useWorkspace(s => s.conversations[message.conversationId]);
-  const own = message.authorId === userId;
-  const [sheet, setSheet] = useState(false);
-  const grouped = previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
-  const reply = message.replyToMessageId ? useWorkspace.getState().messages[message.topicId ? `topic:${message.topicId}` : message.conversationId]?.find(item => item.id === message.replyToMessageId) : undefined;
-  const actions = messageActions(message, { own, group: conversation?.type === 'group', canSend: !!conversation?.capabilities.canSendMessage || !!message.topicId });
-  return (
-    <View>
-      {showUnread ? <Text style={{ textAlign: 'center', color: t.shared, fontSize: t.type.meta, paddingVertical: 8 }}>未读</Text> : null}
-      <Pressable
-        accessibilityLabel={`${message.authorName}，${message.plainText}`}
-        onLongPress={() => setSheet(true)}
-        delayLongPress={450}
-        style={{ paddingHorizontal: 16, paddingVertical: grouped ? 2 : 6, alignItems: own ? 'flex-end' : 'flex-start' }}
-      >
-        {grouped ? null : (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>
-            {own ? null : <Avatar name={message.authorName} uri={message.authorAvatarUrl || conversation?.members.find(member => member.id === message.authorId)?.avatarUrl} id={message.authorId ?? message.authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={28} />}
-            <Text style={{ color: t.muted, fontSize: t.type.timestamp }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${message.authorName} · Bot` : message.authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-          </View>
-        )}
-        <View style={{ maxWidth: '80%', padding: 12, borderRadius: t.radius.bubble, backgroundColor: message.kind === 'system' ? t.soft : own ? t.sharedSoft : t.surface }}>
-          {message.replyToMessageId ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="定位原消息" onPress={() => locate?.(message.replyToMessageId!)}>
-              <Label muted>{reply && !reply.recalledAt && !reply.hiddenByCurrentUser ? `${reply.authorName}: ${reply.plainText}` : '原消息不可用'}</Label>
-            </Pressable>
-          ) : null}
-          <MessageContent message={message} download={download} onOpenTopic={onOpenTopic} runtime={runtime} />
-          {message.reactions?.length ? (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-              {message.reactions.map(reaction => (
-                <Pressable
-                  key={reaction.emoteKey}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${reaction.emoteKey} ${reaction.count}${reaction.reactedByCurrentUser ? '，已选择' : ''}`}
-                  onPress={() => runtime && void runtime.react(message.id, reaction.emoteKey, reaction.reactedByCurrentUser)}
-                  style={{ paddingHorizontal: 8, minHeight: 32, borderRadius: 16, backgroundColor: reaction.reactedByCurrentUser ? t.sharedSoft : t.soft, justifyContent: 'center' }}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <ReactionGlyph emoteKey={reaction.emoteKey} />
-                    <Text style={{ color: t.text, fontSize: t.type.meta }}>{reaction.count}</Text>
-                  </View>
-                </Pressable>
-              ))}
-            </View>
-          ) : null}
-          {message.pin ? <Label muted>常驻</Label> : null}
-          {message.status === 'sending' && <Label muted>发送中…</Label>}
-          {message.status === 'failed' && (
-            <>
-              <InlineFeedback text={message.error ?? '发送失败'} tone="danger" />
-              <Button title="重试发送" secondary onPress={retry} />
-            </>
-          )}
-        </View>
-      </Pressable>
-      <ObjectActionSheet
-        visible={sheet}
-        title={`${message.authorName}的消息`}
-        detail={message.plainText.slice(0, 80)}
-        onRequestClose={() => setSheet(false)}
-        actions={actions.map(action => ({
-          id: action.id,
-          title: action.title,
-          danger: action.danger,
-          onPress: () => {
-            if (action.id === 'copy') void copyText(message.plainText);
-            if (action.id === 'reply') onReply?.(message);
-            if (action.id === 'recall' && runtime) void runtime.recall(message.id);
-            if (action.id === 'hide' && runtime) void runtime.hide(message.id, !message.hiddenByCurrentUser);
-            if (action.id === 'pin' && runtime) void runtime.pin(message.conversationId, message.id, !!message.pin);
-          },
-        }))}
-      />
-    </View>
-  );
-}
-
-function messageActions(message: Message, flags: { own: boolean; group: boolean; canSend: boolean }): { id: string; title: string; danger?: boolean }[] {
-  if (message.status === 'failed') return [{ id: 'copy', title: '复制' }];
-  if (message.recalledAt || message.deletedAt) return [{ id: 'copy', title: '复制' }];
-  const actions: { id: string; title: string; danger?: boolean }[] = [{ id: 'copy', title: '复制' }];
-  if (flags.canSend && message.kind !== 'system') actions.push({ id: 'reply', title: '回复' });
-  if (message.kind !== 'system') actions.push({ id: 'hide', title: message.hiddenByCurrentUser ? '恢复显示' : '仅自己隐藏' });
-  if (flags.own && message.kind === 'user') actions.push({ id: 'recall', title: '撤回', danger: true });
-  if (flags.group && message.kind === 'user' && !message.topicId) actions.push({ id: 'pin', title: message.pin ? '取消常驻' : '常驻' });
-  return actions;
-}
-
 export function ChatScreen({
   target,
   runtime,
   transfers,
   details,
   onOpenTopic,
+  onPreview,
 }: {
   target: ChatTarget;
   runtime: Runtime;
   transfers: Transfers;
   details: () => void;
   onOpenTopic?: (topicId: string) => void;
+  onPreview?: (file: import('../../domain/contracts').Attachment) => void;
 }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const [emotePack, setEmotePack] = useState('custom');
   const key = targetKey(target);
   const conversation = useWorkspace(s => s.conversations[target.kind === 'conversation' ? target.id : target.conversationId]);
   const topic = useWorkspace(s => target.kind === 'topic' ? s.topics[target.id] : undefined);
@@ -227,56 +135,97 @@ export function ChatScreen({
   const connection = useWorkspace(s => s.connection);
   const bootstrapMembers = useWorkspace(s => s.bootstrap?.members ?? []);
   const members = conversation?.members.length ? conversation.members : bootstrapMembers;
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [hasOlder, setHasOlder] = useState(true);
-  const [progress, setProgress] = useState('');
-  const [emotes, setEmotes] = useState<Emote[]>([]);
-  const [emoteOpen, setEmoteOpen] = useState(false);
-  const [syncToGroup, setSyncToGroup] = useState(false);
-  const list = useRef<FlatList<Message>>(null);
-  const nearBottom = useRef(true);
-  const [newMessages, setNewMessages] = useState(false);
   const mentionQuery = activeMentionQuery(draft.text);
   const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
+  const ime = useChatIme(insets.bottom, suggestions.length);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
+  const [progress, setProgress] = useState('');
+  const [emotes, setEmotes] = useState<Emote[]>([]);
+  const [library, setLibrary] = useState<EmoteLibrary | null>(null);
+  const chatSettings = useWorkspace(s => s.chatSettings);
+  const [syncToGroup, setSyncToGroup] = useState(false);
+  const list = useRef<FlatList>(null);
+  const pinToLatest = useRef(true);
+  const draggingTranscript = useRef(false);
+  const historyReady = useRef(false);
+  const [newMessages, setNewMessages] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      if (target.kind === 'topic') await runtime.openTopic(target.id);
-      else await runtime.open(target.id);
+      const count = target.kind === 'topic' ? await runtime.openTopic(target.id) : await runtime.open(target.id);
+      setHasOlder(hasOlderMessages(count ?? 0));
     } catch (e) { setError(errorText(e)); }
     finally { setLoading(false); }
   }, [runtime, target]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    void runtime.emotes().then(result => {
-      rememberEmotes(result.items);
-      setEmotes(result.items);
-    }).catch(() => undefined);
-  }, [runtime]);
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      title: topic?.title ?? conversation?.displayTitle ?? '会话',
-      headerRight: () => (
-        <Pressable accessibilityRole="button" accessibilityLabel="会话详情" onPress={details} style={{ minWidth: t.hit, minHeight: t.hit, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 }}>
-          <Text style={{ color: t.shared, fontWeight: '600' }}>详情</Text>
-        </Pressable>
-      ),
-    });
-  }, [conversation?.displayTitle, details, navigation, t.hit, t.shared, topic?.title]);
+    pinToLatest.current = true;
+    draggingTranscript.current = false;
+    historyReady.current = false;
+    setNewMessages(false);
+    setHasOlder(hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
+  }, [key]);
   useEffect(() => {
-    if (nearBottom.current) list.current?.scrollToEnd({ animated: false });
+    void Promise.all([runtime.emotes(), runtime.emoteLibrary()]).then(([list, nextLibrary]) => {
+      const collected = [...list.items, ...nextLibrary.emotes, ...nextLibrary.collections.flatMap(collection => collection.items)];
+      rememberEmotes(collected);
+      setEmotes(list.items);
+      setLibrary(nextLibrary);
+    }).catch(() => {
+      void runtime.emotes().then(result => {
+        rememberEmotes(result.items);
+        setEmotes(result.items);
+      }).catch(() => undefined);
+    });
+  }, [runtime]);
+  const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
+  const identity = conversation ? conversationIdentity(conversation, selfId, members) : undefined;
+  const lastId = messages.at(-1)?.id;
+  const mode = transcriptMode(hasOlder);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const scrollToLatest = useCallback((animated: boolean) => {
+    pinToLatest.current = true;
+    setNewMessages(false);
+    if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated });
+    else list.current?.scrollToEnd({ animated });
+  }, []);
+  const applyUserOffset = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const pinned = isPinnedToLatest({
+      mode: modeRef.current,
+      offsetY: contentOffset.y,
+      contentHeight: contentSize.height,
+      layoutHeight: layoutMeasurement.height,
+    });
+    pinToLatest.current = pinned;
+    setNewMessages(show => {
+      const next = !pinned;
+      return show === next ? show : next;
+    });
+  };
+  const pinIfNeeded = () => {
+    if (!pinToLatest.current) return;
+    if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated: false });
+    else list.current?.scrollToEnd({ animated: false });
+  };
+  useEffect(() => {
+    if (!lastId) return;
+    if (pinToLatest.current) pinIfNeeded();
     else setNewMessages(true);
-    const last = messages.at(-1);
-    if (last && !last.status && nearBottom.current && AppState.currentState === 'active') {
-      void runtime.markRead(target.id, last.id, target.kind === 'topic').catch(() => undefined);
+    if (pinToLatest.current && AppState.currentState === 'active') {
+      const last = useWorkspace.getState().messages[key]?.at(-1);
+      if (last && !last.status) void runtime.markRead(target.id, last.id, target.kind === 'topic').catch(() => undefined);
     }
-  }, [messages, runtime, target]);
+  }, [key, lastId, runtime, target.id, target.kind]);
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
   const send = (existing?: Message) => {
     setError('');
-    nearBottom.current = true;
+    pinToLatest.current = true;
+    setNewMessages(false);
     const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
     const pending = existing ? undefined : latest.pendingAttachment;
     const task = pending ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === pending.taskId) : undefined;
@@ -295,11 +244,31 @@ export function ChatScreen({
     }).catch(e => setError(errorText(e)));
   };
   const unreadId = target.kind === 'topic' ? topic?.lastReadMessageId : conversation?.lastReadMessageId;
-  const unreadIndex = unreadId ? messages.findIndex(item => item.id === unreadId) : -1;
+  const unreadCount = target.kind === 'topic' ? topic?.unreadCount ?? 0 : conversation?.unreadCount ?? 0;
+  const unreadIndex = workspaceUnreadIndex(messages, unreadId, unreadCount);
+  const groupPositions = getMessageGroupPositions(messages, unreadIndex);
+  const displayItems = useMemo(() => groupHiddenWorkspaceMessages(messages), [messages]);
+  const transcriptItems = useMemo(() => newestFirstTranscript(displayItems), [displayItems]);
+  const listItems = mode === 'history' ? transcriptItems : displayItems;
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
-      {connection !== '已连接' && <InlineFeedback text={connection} tone="warning" />}
-      {target.kind === 'topic' && topic ? <Label muted>{topic.joined ? `话题 · ${conversation?.displayTitle ?? ''}` : '未加入，只能查看摘要'}{topic.status !== 'open' ? ' · 已关闭' : ''}</Label> : null}
+      <AppHeader
+        includeTopInset
+        title={topic?.title ?? conversation?.displayTitle ?? '会话'}
+        subtitle={target.kind === 'topic' ? (topic?.joined ? `话题 · ${conversation?.displayTitle ?? ''}` : '未加入，只能查看摘要') : conversation?.type === 'group' ? `${conversation.members.length} 位成员` : undefined}
+        identity={identity}
+        leading={(
+          <IconButton label="返回" onPress={() => navigation.goBack()}>
+            <ChevronLeft color={t.text} size={24} />
+          </IconButton>
+        )}
+        trailing={(
+          <IconButton label="会话详情" onPress={details}>
+            <Info color={t.shared} size={22} />
+          </IconButton>
+        )}
+        banner={<ConnectionBanner connection={connection} />}
+      />
       <InlineFeedback text={error || progress} tone={error ? 'danger' : 'info'} />
       {loading && <Loading />}
       {target.kind === 'topic' && topic && !topic.joined ? (
@@ -309,81 +278,84 @@ export function ChatScreen({
         </View>
       ) : (
         <FlatList
+          key={`${key}:${mode}`}
           ref={list}
-          data={messages}
-          keyExtractor={m => m.id}
+          inverted={mode === 'history'}
+          data={listItems}
+          keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
+          onScrollBeginDrag={() => {
+            draggingTranscript.current = true;
+            historyReady.current = true;
+          }}
+          onScrollEndDrag={e => {
+            draggingTranscript.current = false;
+            applyUserOffset(e);
+          }}
+          onMomentumScrollEnd={e => {
+            draggingTranscript.current = false;
+            applyUserOffset(e);
+          }}
           onScroll={e => {
-            const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
-            nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 100;
-            if (nearBottom.current) setNewMessages(false);
+            if (!draggingTranscript.current) return;
+            applyUserOffset(e);
           }}
           scrollEventThrottle={100}
-          onContentSizeChange={() => { if (nearBottom.current) list.current?.scrollToEnd({ animated: false }); }}
-          ListHeaderComponent={hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(count === 50)).catch(e => setError(errorText(e))); }} /> : null}
+          onLayout={pinIfNeeded}
+          onContentSizeChange={pinIfNeeded}
+          onEndReached={() => {
+            if (!shouldLoadOlderHistory({ historyReady: historyReady.current, hasOlder, messageCount: messages.length })) return;
+            const first = messages[0]?.id;
+            void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e)));
+          }}
+          onEndReachedThreshold={0.2}
+          ListFooterComponent={mode === 'history' && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e))); }} /> : null}
           ListEmptyComponent={!loading ? <EmptyState title="还没有消息" /> : null}
-          renderItem={({ item, index }) => (
-            <MessageRow
-              message={item}
-              previous={messages[index - 1]}
-              showUnread={unreadIndex >= 0 && index === unreadIndex + 1}
-              runtime={runtime}
-              retry={() => send(item)}
-              onReply={item => runtime.patchDraft(key, { replyToMessageId: item.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && item.authorId ? Array.from(new Set([...draft.mentionIds, item.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && item.authorName && !draft.text.includes(`@${item.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${item.authorName} ` : draft.text })}
-              onOpenTopic={onOpenTopic}
-              locate={id => {
-                const at = messages.findIndex(row => row.id === id);
-                if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
-              }}
-              download={file => {
-                const api = runtime.api;
-                if (api) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(e => setError(errorText(e)));
-              }}
-            />
-          )}
+          renderItem={({ item }) => {
+            if (item.kind === 'hidden') {
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`恢复${item.messages.length}条已隐藏消息`}
+                  onPress={() => {
+                    void Promise.all(item.messages.map((hidden: Message) => runtime.hide(hidden.id, false))).catch(error => setError(errorText(error)));
+                  }}
+                  style={{ paddingVertical: 12, alignItems: 'center' }}
+                >
+                  <Text style={{ color: t.muted, fontSize: t.type.meta }}>{item.messages.length} 条已隐藏，点按恢复</Text>
+                </Pressable>
+              );
+            }
+            const sourceIndex = item.sourceIndex;
+            const previousDay = sourceIndex > 0 ? getMessageDayKey(messages[sourceIndex - 1]?.createdAt) : '';
+            const dayKey = getMessageDayKey(item.message.createdAt);
+            return (
+              <MessageRow
+                message={item.message}
+                groupPosition={groupPositions[sourceIndex]}
+                showUnread={unreadIndex >= 0 && sourceIndex === unreadIndex}
+                dayLabel={dayKey && dayKey !== previousDay ? formatMessageDayLabel(item.message.createdAt) : undefined}
+                runtime={runtime}
+                retry={() => send(item.message)}
+                onReply={targetMessage => runtime.patchDraft(key, { replyToMessageId: targetMessage.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorId ? Array.from(new Set([...draft.mentionIds, targetMessage.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorName && !draft.text.includes(`@${targetMessage.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${targetMessage.authorName} ` : draft.text })}
+                onOpenTopic={onOpenTopic}
+                locate={id => {
+                  const at = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
+                  if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
+                }}
+                onPreview={onPreview}
+                download={file => {
+                  const api = runtime.api;
+                  if (api) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(e => setError(errorText(e)));
+                }}
+              />
+            );
+          }}
         />
       )}
-      {newMessages && <Button title="回到最新" secondary onPress={() => { nearBottom.current = true; setNewMessages(false); list.current?.scrollToEnd(); }} />}
-      {suggestions.length > 0 && (
-        <View style={{ backgroundColor: t.elevated, borderTopWidth: 1, borderTopColor: t.line }}>
-          {suggestions.map(member => (
-            <Pressable
-              key={member.id}
-              accessibilityRole="button"
-              accessibilityLabel={`提及${member.displayName}`}
-              onPress={() => {
-                const prefix = draft.text.replace(/@([^\s@]*)$/, '');
-                runtime.patchDraft(key, { text: `${prefix}@${member.displayName} `, mentionIds: Array.from(new Set([...draft.mentionIds, member.id])) });
-              }}
-              style={{ minHeight: t.hit, paddingHorizontal: 16, justifyContent: 'center' }}
-            >
-              <Text style={{ color: t.text }}>{member.displayName}{member.kind === 'bot' ? ' · Bot' : ''}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-      {emoteOpen && (
-        <ScrollView style={{ maxHeight: 220, backgroundColor: t.elevated }} contentContainerStyle={{ padding: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          {emotes.length ? emotes.map(emote => (
-            <Pressable
-              key={emote.id}
-              accessibilityRole="button"
-              accessibilityLabel={emote.label}
-              onPress={() => {
-                const next = `${useWorkspace.getState().drafts[key]?.text ?? draft.text}${emote.token}`;
-                runtime.patchDraft(key, { text: next, mentionIds: draft.mentionIds });
-                if (useWorkspace.getState().chatSettings?.clickImageEmoteToSend) send();
-                setEmoteOpen(false);
-              }}
-              style={{ width: 56, minHeight: 56, alignItems: 'center', justifyContent: 'center' }}
-            >
-              {emote.src ? <RemoteImage uri={emote.src} style={{ width: 40, height: 40 }} /> : <Text style={{ fontSize: 28 }}>{emote.label}</Text>}
-            </Pressable>
-          )) : <Label muted>正在加载表情…</Label>}
-        </ScrollView>
-      )}
+      {newMessages && <Button title="回到最新" secondary onPress={() => scrollToLatest(true)} />}
       {canSend ? (
-        <View style={{ paddingBottom: Math.max(insets.bottom, 8) }}>
+        <View style={{ paddingBottom: ime.dock.dockBottom }}>
           {target.kind === 'topic' && topic?.allowSyncToGroup ? (
             <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: 40, justifyContent: 'center' }}>
               <Label muted>{syncToGroup ? '将同步到群聊' : '默认只发到话题，点按改为同步到群'}</Label>
@@ -395,22 +367,66 @@ export function ChatScreen({
             onSend={() => send()}
             sendDisabled={!draft.text.trim() && !draft.pendingAttachment}
             attachDisabled={!conversation?.capabilities.canUploadFile || !!progress}
-            reply={reply ? { author: reply.authorName, preview: reply.recalledAt || reply.hiddenByCurrentUser ? '原消息不可用' : reply.plainText } : undefined}
+            reply={reply ? { author: reply.authorName, preview: reply.hiddenByCurrentUser ? '已隐藏的消息' : reply.recalledAt ? '已撤回的消息' : reply.plainText } : undefined}
             onClearReply={() => runtime.patchDraft(key, { replyToMessageId: undefined })}
             attachmentName={draft.pendingAttachment?.fileName}
             onClearAttachment={() => runtime.patchDraft(key, { pendingAttachment: undefined })}
-            onEmote={() => {
-              setEmoteOpen(open => !open);
-              if (!emotes.length) void runtime.emotes().then(result => setEmotes(result.items)).catch(e => setError(errorText(e)));
-            }}
-            onAttach={() => {
-              const account = useWorkspace.getState().accountKey;
-              void transfers.choose(account, target.kind === 'conversation' ? target.id : undefined).then(task => {
-                if (!task) return;
-                runtime.patchDraft(key, { pendingAttachment: { taskId: task.id, fileName: task.fileName, mimeType: task.mimeType, byteSize: task.byteSize } });
-              }).catch(e => setError(errorText(e)));
-            }}
+            onEmote={() => ime.openPanel('emoji')}
+            onAttach={() => ime.openPanel('attach')}
           />
+          <View style={{ height: ime.dock.panelHeight, overflow: 'hidden', backgroundColor: t.elevated }}>
+            {ime.panel === 'emoji' ? (
+              <CatalogEmoteGrid
+                packs={composerEmotePacks(library ?? { emotes, collections: [], entries: emotes.map(emote => ({ id: emote.id, type: 'emote', emote })) }, chatSettings?.enabledPackIds)}
+                selectedPackId={emotePack}
+                onSelectPack={setEmotePack}
+                onPick={(item, packId) => {
+                  const token = item.token ?? item.value ?? `[${packId}:${item.id}]`;
+                  const enabled = useWorkspace.getState().chatSettings?.clickImageEmoteToSend ?? false;
+                  if (shouldDirectSendWorkspaceEmote(item, packId, enabled)) {
+                    runtime.patchDraft(key, { text: token, mentionIds: draft.mentionIds });
+                    send();
+                    ime.closePanel();
+                    return;
+                  }
+                  const next = `${useWorkspace.getState().drafts[key]?.text ?? draft.text}${token}`;
+                  runtime.patchDraft(key, { text: next, mentionIds: draft.mentionIds });
+                }}
+              />
+            ) : null}
+            {ime.panel === 'attach' ? (
+              <View style={{ padding: 16 }}>
+                <Button
+                  title="选择文件"
+                  secondary
+                  disabled={!conversation?.capabilities.canUploadFile || !!progress}
+                  onPress={() => {
+                    const account = useWorkspace.getState().accountKey;
+                    void transfers.choose(account, target.kind === 'conversation' ? target.id : undefined).then(task => {
+                      if (!task) return;
+                      runtime.patchDraft(key, { pendingAttachment: { taskId: task.id, fileName: task.fileName, mimeType: task.mimeType, byteSize: task.byteSize } });
+                      ime.closePanel();
+                    }).catch(e => setError(errorText(e)));
+                  }}
+                />
+              </View>
+            ) : null}
+            {ime.panel === 'mention' ? suggestions.map(member => (
+              <Pressable
+                key={member.id}
+                accessibilityRole="button"
+                accessibilityLabel={`提及${member.displayName}`}
+                onPress={() => {
+                  const prefix = draft.text.replace(/@([^\s@]*)$/, '');
+                  runtime.patchDraft(key, { text: `${prefix}@${member.displayName} `, mentionIds: Array.from(new Set([...draft.mentionIds, member.id])) });
+                  ime.closePanel();
+                }}
+                style={{ minHeight: t.hit, paddingHorizontal: 16, justifyContent: 'center' }}
+              >
+                <Text style={{ color: t.text }}>{member.displayName}{member.kind === 'bot' ? ' · Bot' : ''}</Text>
+              </Pressable>
+            )) : null}
+          </View>
         </View>
       ) : <EmptyState title={target.kind === 'topic' ? '当前话题不可发送' : '当前会话不可发送消息'} />}
     </View>
@@ -426,33 +442,46 @@ export function DetailsScreen({ id, runtime, kind = 'conversation', onCreateTopi
   const [leave, setLeave] = useState(false);
   const level = (kind === 'topic' ? topic?.notificationLevel : conversation?.notificationLevel) ?? 'muted';
   return (
-    <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={styles.content}>
-      <Text style={[styles.section, { color: t.text }]}>{kind === 'topic' ? topic?.title : conversation?.displayTitle}</Text>
-      {kind === 'topic' ? <Label muted>{topic?.joined ? '已加入' : '未加入'} · {topic?.status === 'open' ? '进行中' : '已关闭'}</Label> : <Label>{conversation?.retentionText}</Label>}
-      <Label muted>共享空间会保存聊天和文件。</Label>
-      <Label>消息提醒</Label>
-      <SegmentedControl
-        accessibilityLabel="消息提醒"
-        value={level}
-        options={[
-          { value: 'all', label: '所有消息' },
-          { value: 'mentions', label: '仅提到我' },
-          { value: 'muted', label: '免打扰' },
-        ]}
-        onChange={next => void (kind === 'topic' ? runtime.topicNotification(id, next) : runtime.notification(id, next)).catch(e => setError(errorText(e)))}
-      />
+    <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={{ paddingVertical: 16, gap: 20 }}>
+      <View style={styles.content}>
+        <Text style={[styles.section, { color: t.text }]}>{kind === 'topic' ? topic?.title : conversation?.displayTitle}</Text>
+        {kind === 'topic' ? <Label muted>{topic?.joined ? '已加入' : '未加入'} · {topic?.status === 'open' ? '进行中' : '已关闭'}</Label> : <Label>{conversation?.retentionText}</Label>}
+        <Label muted>共享空间会保存聊天和文件。</Label>
+      </View>
+      <SettingGroup title="提醒">
+        <View style={{ padding: 16, gap: 12 }}>
+          <SegmentedControl
+            accessibilityLabel="消息提醒"
+            value={level}
+            options={[
+              { value: 'all', label: '全部', icon: <Bell size={18} color={t.text} /> },
+              { value: 'mentions', label: '提及', icon: <AtSign size={18} color={t.text} /> },
+              { value: 'muted', label: '免打扰', icon: <BellOff size={18} color={t.text} /> },
+            ]}
+            onChange={next => void (kind === 'topic' ? runtime.topicNotification(id, next) : runtime.notification(id, next)).catch(e => setError(errorText(e)))}
+          />
+        </View>
+      </SettingGroup>
       <InlineFeedback text={error} tone="danger" />
       {kind === 'conversation' && conversation?.type === 'group' ? (
-        <>
-          <Label>新建话题</Label>
-          <Input accessibilityLabel="话题标题" placeholder="话题标题" value={title} onChangeText={setTitle} />
-          <Button title="创建话题" disabled={!title.trim()} onPress={() => void runtime.createTopic(id, title.trim()).then(topic => { setTitle(''); onCreateTopic?.(topic); }).catch(e => setError(errorText(e)))} />
-          <Button title="刷新本群话题" secondary onPress={() => void runtime.listTopics(id).catch(e => setError(errorText(e)))} />
-        </>
+        <SettingGroup title="话题">
+          <View style={{ padding: 16, gap: 12 }}>
+            <Input accessibilityLabel="话题标题" placeholder="话题标题" value={title} onChangeText={setTitle} />
+            <Button title="创建话题" disabled={!title.trim()} onPress={() => void runtime.createTopic(id, title.trim()).then(topic => { setTitle(''); onCreateTopic?.(topic); }).catch(e => setError(errorText(e)))} />
+            <Button title="刷新本群话题" secondary onPress={() => void runtime.listTopics(id).catch(e => setError(errorText(e)))} />
+          </View>
+        </SettingGroup>
       ) : null}
-      {kind === 'topic' && topic?.joined ? <Button title="退出话题" variant="danger" onPress={() => setLeave(true)} /> : null}
-      <Label>会话成员</Label>
-      {(kind === 'topic' ? [] : conversation?.members ?? []).map(member => <MemberRow key={member.id} member={member} />)}
+      {kind === 'topic' && topic?.joined ? (
+        <SettingGroup title="危险" danger>
+          <SettingRow title="退出话题" danger onPress={() => setLeave(true)} />
+        </SettingGroup>
+      ) : null}
+      {kind === 'conversation' ? (
+        <SettingGroup title="成员">
+          {(conversation?.members ?? []).map(member => <MemberRow key={member.id} member={member} />)}
+        </SettingGroup>
+      ) : null}
       <Dialog
         visible={leave}
         title="退出话题？"

@@ -15,11 +15,13 @@ import { RemoteImage } from './RemoteImage';
 export function MessageContent({
   message,
   download,
+  onPreview,
   onOpenTopic,
   runtime,
 }: {
   message: Message;
   download: (file: Attachment) => void;
+  onPreview?: (file: Attachment) => void;
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
 }) {
@@ -45,7 +47,7 @@ export function MessageContent({
   return (
     <View style={{ gap: 6 }}>
       {message.blocks.map((block, index) => (
-        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onOpenTopic={onOpenTopic} runtime={runtime} />
+        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} />
       ))}
     </View>
   );
@@ -55,12 +57,14 @@ function BlockView({
   block,
   attachments,
   download,
+  onPreview,
   onOpenTopic,
   runtime,
 }: {
   block: Block;
   attachments: Attachment[];
   download: (file: Attachment) => void;
+  onPreview?: (file: Attachment) => void;
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
 }) {
@@ -77,7 +81,7 @@ function BlockView({
   if (block.type === 'attachment') {
     const file = attachments.find(item => item.id === block.attachmentId);
     if (!file) return <Label muted>附件不可用</Label>;
-    if (isPreviewableImage(file)) return <AttachmentImage file={file} download={download} />;
+    if (isPreviewableImage(file)) return <AttachmentImage file={file} download={download} onPreview={onPreview} />;
     return <FileRow file={file} download={() => download(file)} />;
   }
   if (block.type === 'card') return <WorkspaceCard block={block} runtime={runtime} onOpenTopic={onOpenTopic} />;
@@ -95,9 +99,9 @@ function BlockView({
 export function EmoteImage({ uri, token, size }: { uri: string; token: string; size: number }) {
   const [failed, setFailed] = useState(false);
   const fail = useCallback(() => setFailed(true), []);
-  if (failed) return <Text>{token}</Text>;
+  if (failed) return <View style={{ width: size, height: size }} />;
   return (
-    <View accessible accessibilityRole="image" accessibilityLabel={token}>
+    <View accessible accessibilityRole="image" accessibilityLabel={token.startsWith('[custom:') ? '自定义表情' : token}>
       <RemoteImage uri={uri} style={{ width: size, height: size }} onError={fail} />
     </View>
   );
@@ -118,7 +122,7 @@ function EmoteView({ shortcode }: { shortcode: string }) {
   return <Text style={{ fontSize: 28 }}>{shortcode.startsWith('custom:') || shortcode.startsWith('[') ? (shortcode.startsWith('[') ? shortcode : `[${shortcode}]`) : `:${shortcode}:`}</Text>;
 }
 
-function AttachmentImage({ file, download }: { file: Attachment; download: (file: Attachment) => void }) {
+function AttachmentImage({ file, download, onPreview }: { file: Attachment; download: (file: Attachment) => void; onPreview?: (file: Attachment) => void }) {
   const [uri, setUri] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -129,7 +133,7 @@ function AttachmentImage({ file, download }: { file: Attachment; download: (file
   if (failed) return <FileRow file={file} download={() => download(file)} />;
   if (!uri) return <Label muted>图片加载中…</Label>;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`预览图片 ${file.fileName}`} onPress={() => download(file)}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`预览图片 ${file.fileName}`} onPress={() => (onPreview ?? download)(file)}>
       <RemoteImage uri={uri} style={{ width: 240, height: 180, borderRadius: 12 }} onError={() => setFailed(true)} />
     </Pressable>
   );

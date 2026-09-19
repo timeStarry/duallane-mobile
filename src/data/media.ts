@@ -73,10 +73,21 @@ function cacheKey(url: string): string {
   }
 }
 
+export { botAssetAvatar, isAllowedSameOriginMediaPath, sanitizeWorkspaceAvatarUrl } from '../domain/media-path';
+
 export function resolveMediaUrl(url: string, origin: string): string {
   if (url.startsWith('https://')) return url;
   if (url.startsWith('/')) return `${origin.replace(/\/$/, '')}${url}`;
   throw new Error('Invalid media url');
+}
+
+export async function localMediaText(url: string): Promise<string> {
+  const api = client;
+  if (!api) throw new Error('Media client unavailable');
+  const response = await api.openMedia(url.startsWith('/') ? url : resolveMediaUrl(url, api.origin));
+  const text = await response.text();
+  if (!text) throw new Error('Empty media');
+  return text;
 }
 
 export async function localMediaUri(url: string): Promise<string> {

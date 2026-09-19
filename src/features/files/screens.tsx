@@ -38,7 +38,7 @@ export function FilesScreen({ runtime, transfers }: { runtime: Runtime; transfer
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader title="文件" subtitle="文件库上传不会自动发到某个会话" includeTopInset />
       <ScrollView contentContainerStyle={styles.content}>
-        <Input accessibilityLabel="查找已加载的文件" placeholder="查找已加载的文件" value={query} onChangeText={setQuery} />
+        <Input accessibilityLabel="查找（范围由服务端决定）" placeholder="查找（范围由服务端决定）" value={query} onChangeText={setQuery} />
         <View style={styles.actions}>
           <Button title="搜索" secondary onPress={() => void refresh().catch(e => setError(errorText(e)))} />
           <Button title="上传文件" disabled={!permission || !!progress} onPress={() => void transfers.choose(key).then(task => task && run(task)).catch(e => setError(errorText(e)))} />

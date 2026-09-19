@@ -23,10 +23,13 @@ import {
   Label,
   PageState,
   SegmentedControl,
+  SettingGroup,
   SettingRow,
   SwitchRow,
   styles,
 } from '../../ui/components';
+import { Bell, Info, LogOut, MessageSquare, Palette, RefreshCw, Smile, UserRound } from 'lucide-react-native';
+import { catalogPacks } from '../../domain/emote-catalog';
 import { useTheme, type AppearanceMode } from '../../ui/theme';
 import { WorkbenchScreen } from '../workbench/WorkbenchScreen';
 
@@ -86,18 +89,24 @@ function AccountHomeScreen({ runtime, open }: { runtime: Runtime; open: (name: E
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader title="我的" subtitle={bootstrap?.auth.currentUser.displayName} includeTopInset />
-      <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
-        <SettingRow title="个人资料" detail="显示名与查找可见性" onPress={() => open('Profile')} />
-        <SettingRow title="外观与阅读" detail="浅色、深色或跟随系统，仅本机" onPress={() => open('Appearance')} />
-        <SettingRow title="聊天偏好" detail="自动折叠、发送方式和表情点击发送" onPress={() => open('ChatPreferences')} />
-        <SettingRow title="通知" detail="系统权限与本地通知说明" onPress={() => open('Notifications')} />
-        <SettingRow title="空间信息" detail={bootstrap?.space.name} onPress={() => open('Space')} />
-        <SettingRow title="关于与更新" detail={`版本 ${installed.appVersion}`} onPress={() => open('About')} />
-        {__DEV__ ? <SettingRow title="组件工作台" detail="仅开发构建" onPress={() => open('Workbench')} /> : null}
-        <View style={{ padding: 16, gap: 8 }}>
-          <Button title="重新连接" secondary onPress={() => void runtime.resume()} />
-          <Button title="退出登录" variant="danger" onPress={() => setConfirm(true)} />
-        </View>
+      <ScrollView contentContainerStyle={{ paddingBottom: 32, paddingTop: 12, gap: 20 }}>
+        <SettingGroup title="账号">
+          <SettingRow icon={<UserRound size={20} color={t.text} />} title="个人资料" detail="显示名与查找可见性" onPress={() => open('Profile')} />
+        </SettingGroup>
+        <SettingGroup title="偏好">
+          <SettingRow icon={<Palette size={20} color={t.text} />} title="外观与阅读" detail="浅色、深色或跟随系统，仅本机" onPress={() => open('Appearance')} />
+          <SettingRow icon={<Smile size={20} color={t.text} />} title="聊天偏好" detail="表情包、自动折叠和发送方式" onPress={() => open('ChatPreferences')} />
+          <SettingRow icon={<Bell size={20} color={t.text} />} title="通知" detail="系统权限与本地通知说明" onPress={() => open('Notifications')} />
+        </SettingGroup>
+        <SettingGroup title="空间">
+          <SettingRow icon={<MessageSquare size={20} color={t.text} />} title="空间信息" detail={bootstrap?.space.name} onPress={() => open('Space')} />
+          <SettingRow icon={<Info size={20} color={t.text} />} title="关于与更新" detail={`版本 ${installed.appVersion}`} onPress={() => open('About')} />
+          <SettingRow icon={<RefreshCw size={20} color={t.text} />} title="重新连接" detail="不修复实时通道，只重新拉取会话" onPress={() => void runtime.resume()} />
+          {__DEV__ ? <SettingRow title="组件工作台" detail="仅开发构建" onPress={() => open('Workbench')} /> : null}
+        </SettingGroup>
+        <SettingGroup title="危险" danger>
+          <SettingRow icon={<LogOut size={20} color={t.danger} />} title="退出登录" danger onPress={() => setConfirm(true)} />
+        </SettingGroup>
       </ScrollView>
       <Dialog
         visible={confirm}
@@ -299,6 +308,25 @@ export function ChatPreferencesScreen({ runtime }: { runtime: Runtime }) {
                 <SwitchRow title="折叠长消息" value={draft.autoHideMessageTypes.includes('long')} onValueChange={() => toggleType('long')} />
               </>
             ) : null}
+            <Label muted>聊天时显示的内置表情包，至少保留一个。自定义收藏和表情合集始终可用。</Label>
+            {((draft.availablePacks?.length ? draft.availablePacks : catalogPacks().map(pack => ({ id: pack.id, label: pack.label, defaultEnabled: pack.defaultEnabled }))).map(pack => {
+              const enabled = (draft.enabledPackIds ?? catalogPacks().filter(item => item.defaultEnabled !== false).map(item => item.id)).includes(pack.id);
+              const only = enabled && (draft.enabledPackIds?.length ?? 1) <= (draft.minimumEnabled ?? 1);
+              return (
+                <SwitchRow
+                  key={pack.id}
+                  title={pack.label}
+                  value={enabled}
+                  onValueChange={() => {
+                    const current = draft.enabledPackIds ?? catalogPacks().filter(item => item.defaultEnabled !== false).map(item => item.id);
+                    const next = enabled ? current.filter(id => id !== pack.id) : [...current, pack.id];
+                    if (next.length < (draft.minimumEnabled ?? 1) || only) return;
+                    save({ enabledPackIds: next }, { ...draft, enabledPackIds: next });
+                  }}
+                />
+              );
+            }))}
+            <RecallReasonField runtime={runtime} />
             <InlineFeedback text={feedback} tone={tone} />
             {tone === 'danger' ? (
               <Button
@@ -309,6 +337,7 @@ export function ChatPreferencesScreen({ runtime }: { runtime: Runtime }) {
                   replyAutoMention: draft.replyAutoMention,
                   autoHideMessages: draft.autoHideMessages,
                   autoHideMessageTypes: draft.autoHideMessageTypes,
+                  enabledPackIds: draft.enabledPackIds,
                 }, draft)}
               />
             ) : null}
@@ -316,6 +345,29 @@ export function ChatPreferencesScreen({ runtime }: { runtime: Runtime }) {
         ) : null}
       </PageState>
     </ScrollView>
+  );
+}
+
+function RecallReasonField({ runtime }: { runtime: Runtime }) {
+  const user = useWorkspace(s => s.bootstrap?.auth.currentUser);
+  const [value, setValue] = useState(user?.recallReason ?? '内容有误');
+  const [status, setStatus] = useState('');
+  return (
+    <View style={{ gap: 8 }}>
+      <Label muted>撤回原因会出现在聊天里，例如“你因{value || '...'}撤回了一条消息”。</Label>
+      <Input
+        accessibilityLabel="自定义撤回原因"
+        maxLength={16}
+        value={value}
+        onChangeText={setValue}
+        onBlur={() => {
+          const next = value.trim() || '内容有误';
+          setValue(next);
+          void runtime.updateProfile({ recallReason: next }).then(() => setStatus('已保存撤回原因')).catch(error => setStatus(errorText(error)));
+        }}
+      />
+      {status ? <Label muted>{status}</Label> : null}
+    </View>
   );
 }
 
@@ -338,6 +390,7 @@ function AppearanceScreen({ mode, setMode }: { mode: AppearanceMode; setMode: (m
         }}
       />
       <Label muted>当前为{t.mode === 'dark' ? '深色' : '浅色'}界面。切换不重建草稿或未发送消息。</Label>
+      <Label muted>减少动态跟随系统可访问设置。本页没有单独开关，也不会同步到其他设备。</Label>
     </ScrollView>
   );
 }
