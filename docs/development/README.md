@@ -10,6 +10,7 @@
 | [代码规范](CODE_STANDARDS.md) | TypeScript、React Native、异步、协议解析、错误处理 |
 | [UI/UX 规范](UI_UX_STANDARDS.md) | 视觉 token、导航、组件、触控、无障碍和页面状态 |
 | [DL Android 体验改造](../design/mobile-experience-redesign/README.md) | 当前包的体验缺口、跨端一致与原生适配、布局／视觉／聊天改造目标及验收账本 |
+| [2026-09-19 整体评估与迭代计划](../design/mobile-experience-redesign/ASSESSMENT-2026-09-19.md) | PR #11 与真实测试机的证据、契约／数据／交互缺口、I0–I3 顺序和验收门槛 |
 | [R0 设计确认](../design/mobile-experience-redesign/R0.md) | Token 映射、能力对照、手机流程、开放依赖；R1 开工条件 |
 | [R3 验收证据](../design/mobile-experience-redesign/R3.md) | 本机已跑命令、自动化覆盖与未验证项；不能代替真机／跨端通过 |
 | [安全与数据](SECURITY_AND_DATA.md) | Workspace 信任边界、凭证、缓存、本地通知、日志和隐私 |
