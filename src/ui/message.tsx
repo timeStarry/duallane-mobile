@@ -7,9 +7,12 @@ import type { Attachment, Message } from '../domain/contracts';
 import { messageActions } from '../domain/message-actions';
 import type { MessageGroupPosition } from '../domain/message-grouping';
 import { recalledNotice } from '../domain/recall';
+import { visibleAuthorName } from '../domain/author-name';
 import { useWorkspace } from '../domain/store';
 import { copyText } from '../platform/clipboard';
 import type { Runtime } from '../data/runtime';
+
+const emptyMembers: Array<{ id: string; displayName: string }> = [];
 import { Avatar } from './chrome';
 import { Button, InlineFeedback, Label, ObjectActionSheet } from './primitives';
 import { MessageContent, ReactionGlyph } from './MessageContent';
@@ -54,6 +57,12 @@ export function MessageRow({
   const t = useTheme();
   const userId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const conversation = useWorkspace(s => s.conversations[message.conversationId]);
+  const directory = useWorkspace(s => s.bootstrap?.members);
+  const authorName = visibleAuthorName(
+    message,
+    conversation?.members.length ? conversation.members : directory ?? emptyMembers,
+    conversation?.type === 'direct' && (message.kind === 'bot' || message.authorKind === 'bot') ? conversation.displayTitle : '',
+  );
   const own = message.authorId === userId;
   const system = message.kind === 'system' || message.authorKind === 'system';
   const [sheet, setSheet] = useState(false);
@@ -90,7 +99,7 @@ export function MessageRow({
       {showUnread ? <Text style={{ textAlign: 'center', color: t.shared, fontSize: t.type.meta, paddingVertical: 8 }}>以下为未读消息</Text> : null}
       <GestureDetector gesture={longPress}>
       <Pressable
-        accessibilityLabel={`${message.authorName}，${message.plainText}`}
+        accessibilityLabel={`${authorName}，${message.plainText}`}
         accessibilityActions={system ? undefined : [{ name: 'more', label: '更多' }, { name: 'reply', label: '回复' }]}
         onAccessibilityAction={event => {
           if (event.nativeEvent.actionName === 'more') setSheet(true);
@@ -104,10 +113,10 @@ export function MessageRow({
           <Text style={{ color: t.muted, fontSize: t.type.meta, textAlign: 'center' }}>{message.plainText}</Text>
         ) : (
           <View style={{ flexDirection: 'row', maxWidth: '80%', alignItems: 'flex-end', gap: 8 }}>
-            {own ? null : grouped ? <View style={{ width: t.list.chatAvatar }} /> : <Avatar name={message.authorName} uri={message.authorAvatarUrl || conversation?.members.find(member => member.id === message.authorId)?.avatarUrl} id={message.authorId ?? message.authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={t.list.chatAvatar} />}
+            {own ? null : grouped ? <View style={{ width: t.list.chatAvatar }} /> : <Avatar name={authorName} uri={message.authorAvatarUrl || conversation?.members.find(member => member.id === message.authorId)?.avatarUrl} id={message.authorId ?? authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={t.list.chatAvatar} />}
             <View style={{ flex: 1 }}>
               {grouped ? null : (
-                <Text style={{ color: t.muted, fontSize: t.type.timestamp, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${message.authorName} · Bot` : message.authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                <Text style={{ color: t.muted, fontSize: t.type.timestamp, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${authorName} · Bot` : authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
               )}
               <View style={{ maxWidth: '100%', padding: 12, backgroundColor: own ? t.sharedSoft : t.surface, alignSelf: own ? 'flex-end' : 'flex-start', ...radiusStyle }}>
           {message.replyToMessageId ? (
@@ -190,7 +199,7 @@ export function MessageRow({
       </GestureDetector>
       <ObjectActionSheet
         visible={sheet}
-        title={`${message.authorName}的消息`}
+        title={`${authorName}的消息`}
         detail={message.plainText.slice(0, 80)}
         onRequestClose={() => setSheet(false)}
         actions={actions.map(action => ({

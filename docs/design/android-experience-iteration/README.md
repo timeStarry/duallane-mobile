@@ -446,7 +446,7 @@ ComposerPanelHost     高度 = panelHeight（键盘可见时必须 0）
 - 未读分隔文案：「以下为未读消息」。
 - 隐藏 run：「已隐藏 N 条」+ 恢复。恢复 = `Promise.all` 对每个 id `hide(id, false)`（现有逐条 API）；部分失败一条 `InlineFeedback`，已成功的保持恢复。Jest 覆盖：中间隐藏、未读在末尾、与 Web 向量对齐。
 
-新消息：近底跟到底，180ms 只作用于新 id；不近底「有新消息」。reduce-motion 时 `animated: false`。Android transcript 为 inverted，data[0] 是最新；`scrollToOffset(0)` 才是底部。只有用户拖动才取消钉住，进会话 / IME / 详情返回不得弹出「回到最新」，也不得在进会话时 `onEndReached` 先去拉更早页。
+新消息：近底跟到底，180ms 只作用于新 id；不近底「有新消息」。reduce-motion 时 `animated: false`。首页不足一页（`< 50`）时用完整时间线从上往下铺，不 inverted、不显示「加载更早消息」。仍有更早页时 inverted，data[0] 是最新，`scrollToOffset(0)` 才是底部。只有用户拖动才取消钉住，进会话 / IME / 详情返回不得弹出「回到最新」，也不得在进会话时 `onEndReached` 先去拉更早页。回声 `echo.release` 卡片展示版本、摘要和条目，作者用成员显示名，不用 `__duallane_echo__` 这类内部句柄。
 
 #### Composer 面板内容
 

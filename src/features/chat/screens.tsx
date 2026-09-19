@@ -13,7 +13,7 @@ import { conversationIdentity } from '../../ui/chrome';
 import { groupHiddenWorkspaceMessages } from '../../domain/hidden-messages';
 import { formatMessageDayLabel, getMessageDayKey, getMessageGroupPositions, workspaceUnreadIndex } from '../../domain/message-grouping';
 import { composerEmotePacks } from '../../domain/emote-catalog';
-import { isPinnedToLatest, newestFirstTranscript, shouldLoadOlderHistory } from '../../domain/transcript-scroll';
+import { hasOlderMessages, isPinnedToLatest, newestFirstTranscript, shouldLoadOlderHistory, transcriptMode } from '../../domain/transcript-scroll';
 import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
 import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
 import { useChatIme } from '../../ui/useChatIme';
@@ -140,7 +140,7 @@ export function ChatScreen({
   const ime = useChatIme(insets.bottom, suggestions.length);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [hasOlder, setHasOlder] = useState(true);
+  const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
   const [progress, setProgress] = useState('');
   const [emotes, setEmotes] = useState<Emote[]>([]);
   const [library, setLibrary] = useState<EmoteLibrary | null>(null);
@@ -154,8 +154,8 @@ export function ChatScreen({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      if (target.kind === 'topic') await runtime.openTopic(target.id);
-      else await runtime.open(target.id);
+      const count = target.kind === 'topic' ? await runtime.openTopic(target.id) : await runtime.open(target.id);
+      setHasOlder(hasOlderMessages(count ?? 0));
     } catch (e) { setError(errorText(e)); }
     finally { setLoading(false); }
   }, [runtime, target]);
@@ -165,7 +165,7 @@ export function ChatScreen({
     draggingTranscript.current = false;
     historyReady.current = false;
     setNewMessages(false);
-    setHasOlder(true);
+    setHasOlder(hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
   }, [key]);
   useEffect(() => {
     void Promise.all([runtime.emotes(), runtime.emoteLibrary()]).then(([list, nextLibrary]) => {
@@ -183,22 +183,37 @@ export function ChatScreen({
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const identity = conversation ? conversationIdentity(conversation, selfId, members) : undefined;
   const lastId = messages.at(-1)?.id;
+  const mode = transcriptMode(hasOlder);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const scrollToLatest = useCallback((animated: boolean) => {
     pinToLatest.current = true;
     setNewMessages(false);
-    list.current?.scrollToOffset({ offset: 0, animated });
+    if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated });
+    else list.current?.scrollToEnd({ animated });
   }, []);
-  const applyUserOffset = (offsetY: number) => {
-    const pinned = isPinnedToLatest(offsetY);
+  const applyUserOffset = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const pinned = isPinnedToLatest({
+      mode: modeRef.current,
+      offsetY: contentOffset.y,
+      contentHeight: contentSize.height,
+      layoutHeight: layoutMeasurement.height,
+    });
     pinToLatest.current = pinned;
     setNewMessages(show => {
       const next = !pinned;
       return show === next ? show : next;
     });
   };
+  const pinIfNeeded = () => {
+    if (!pinToLatest.current) return;
+    if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated: false });
+    else list.current?.scrollToEnd({ animated: false });
+  };
   useEffect(() => {
     if (!lastId) return;
-    if (pinToLatest.current) list.current?.scrollToOffset({ offset: 0, animated: false });
+    if (pinToLatest.current) pinIfNeeded();
     else setNewMessages(true);
     if (pinToLatest.current && AppState.currentState === 'active') {
       const last = useWorkspace.getState().messages[key]?.at(-1);
@@ -234,6 +249,7 @@ export function ChatScreen({
   const groupPositions = getMessageGroupPositions(messages, unreadIndex);
   const displayItems = useMemo(() => groupHiddenWorkspaceMessages(messages), [messages]);
   const transcriptItems = useMemo(() => newestFirstTranscript(displayItems), [displayItems]);
+  const listItems = mode === 'history' ? transcriptItems : displayItems;
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader
@@ -262,10 +278,10 @@ export function ChatScreen({
         </View>
       ) : (
         <FlatList
-          key={key}
+          key={`${key}:${mode}`}
           ref={list}
-          inverted
-          data={transcriptItems}
+          inverted={mode === 'history'}
+          data={listItems}
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
           onScrollBeginDrag={() => {
@@ -274,26 +290,26 @@ export function ChatScreen({
           }}
           onScrollEndDrag={e => {
             draggingTranscript.current = false;
-            applyUserOffset(e.nativeEvent.contentOffset.y);
+            applyUserOffset(e);
           }}
           onMomentumScrollEnd={e => {
             draggingTranscript.current = false;
-            applyUserOffset(e.nativeEvent.contentOffset.y);
+            applyUserOffset(e);
           }}
           onScroll={e => {
             if (!draggingTranscript.current) return;
-            applyUserOffset(e.nativeEvent.contentOffset.y);
+            applyUserOffset(e);
           }}
           scrollEventThrottle={100}
-          onLayout={() => { if (pinToLatest.current) list.current?.scrollToOffset({ offset: 0, animated: false }); }}
-          onContentSizeChange={() => { if (pinToLatest.current) list.current?.scrollToOffset({ offset: 0, animated: false }); }}
+          onLayout={pinIfNeeded}
+          onContentSizeChange={pinIfNeeded}
           onEndReached={() => {
             if (!shouldLoadOlderHistory({ historyReady: historyReady.current, hasOlder, messageCount: messages.length })) return;
             const first = messages[0]?.id;
-            void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(count === 50)).catch(e => setError(errorText(e)));
+            void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e)));
           }}
           onEndReachedThreshold={0.2}
-          ListFooterComponent={hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(count === 50)).catch(e => setError(errorText(e))); }} /> : null}
+          ListFooterComponent={mode === 'history' && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e))); }} /> : null}
           ListEmptyComponent={!loading ? <EmptyState title="还没有消息" /> : null}
           renderItem={({ item }) => {
             if (item.kind === 'hidden') {
@@ -324,7 +340,7 @@ export function ChatScreen({
                 onReply={targetMessage => runtime.patchDraft(key, { replyToMessageId: targetMessage.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorId ? Array.from(new Set([...draft.mentionIds, targetMessage.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorName && !draft.text.includes(`@${targetMessage.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${targetMessage.authorName} ` : draft.text })}
                 onOpenTopic={onOpenTopic}
                 locate={id => {
-                  const at = transcriptItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
+                  const at = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
                   if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
                 }}
                 onPreview={onPreview}
