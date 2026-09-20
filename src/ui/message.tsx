@@ -14,7 +14,7 @@ import type { Runtime } from '../data/runtime';
 
 const emptyMembers: Array<{ id: string; displayName: string }> = [];
 import { Avatar } from './chrome';
-import { Button, InlineFeedback, Label, ObjectActionSheet } from './primitives';
+import { Button, Dialog, InlineFeedback, Label, ObjectActionSheet } from './primitives';
 import { MessageContent, ReactionGlyph } from './MessageContent';
 import { useTheme } from './theme';
 
@@ -68,6 +68,7 @@ export function MessageRow({
   const [sheet, setSheet] = useState(false);
   const [cluster, setCluster] = useState(false);
   const [reactOpen, setReactOpen] = useState(false);
+  const [confirmRecall, setConfirmRecall] = useState(false);
   const openCluster = () => { if (!system) setCluster(true); };
   const longPress = Gesture.LongPress().minDuration(450).maxDistance(10).onStart(() => { runOnJS(openCluster)(); });
   const grouped = groupPosition ? groupPosition === 'middle' || groupPosition === 'end' : previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
@@ -76,9 +77,11 @@ export function MessageRow({
   const inner = t.bubble.inner;
   const top = position === 'middle' || position === 'end' ? inner : outer;
   const bottom = position === 'middle' || position === 'start' ? inner : outer;
-  const radiusStyle = own
-    ? { borderTopLeftRadius: outer, borderTopRightRadius: top, borderBottomLeftRadius: outer, borderBottomRightRadius: bottom }
-    : { borderTopLeftRadius: top, borderTopRightRadius: outer, borderBottomLeftRadius: bottom, borderBottomRightRadius: outer };
+  const radiusStyle = position === 'middle'
+    ? { borderTopLeftRadius: inner, borderTopRightRadius: inner, borderBottomLeftRadius: inner, borderBottomRightRadius: inner }
+    : own
+      ? { borderTopLeftRadius: outer, borderTopRightRadius: top, borderBottomLeftRadius: outer, borderBottomRightRadius: bottom }
+      : { borderTopLeftRadius: top, borderTopRightRadius: outer, borderBottomLeftRadius: bottom, borderBottomRightRadius: outer };
   const reply = message.replyToMessageId ? useWorkspace.getState().messages[message.topicId ? `topic:${message.topicId}` : message.conversationId]?.find(item => item.id === message.replyToMessageId) : undefined;
   const actions = messageActions(message, { own, group: conversation?.type === 'group', canSend: !!conversation?.capabilities.canSendMessage || !!message.topicId });
   const recallText = recalledNotice(message);
@@ -105,6 +108,7 @@ export function MessageRow({
           if (event.nativeEvent.actionName === 'more') setSheet(true);
           if (event.nativeEvent.actionName === 'reply') onReply?.(message);
         }}
+        onPress={() => { if (cluster || reactOpen) { setCluster(false); setReactOpen(false); } }}
         onLongPress={() => openCluster()}
         delayLongPress={450}
         style={{ paddingHorizontal: 16, paddingVertical: grouped ? 2 : 6, alignItems: system ? 'center' : own ? 'flex-end' : 'flex-start' }}
@@ -156,7 +160,7 @@ export function MessageRow({
           </View>
         )}
         {cluster && !system ? (
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+          <View style={{ position: 'absolute', zIndex: 20, top: dayLabel ? 40 : 4, ...(own ? { right: 16 } : { left: 56 }), flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
             {actions.filter(action => action.id === 'reply' || action.id === 'copy').map(action => (
               <Pressable
                 key={action.id}
@@ -210,12 +214,23 @@ export function MessageRow({
           onPress: () => {
             if (action.id === 'copy') void copyText(message.plainText);
             if (action.id === 'reply') onReply?.(message);
-            if (action.id === 'recall' && runtime) void runtime.recall(message.id);
+            if (action.id === 'recall') setConfirmRecall(true);
             if (action.id === 'hide' && runtime) void runtime.hide(message.id, !message.hiddenByCurrentUser);
             if (action.id === 'pin' && runtime) void runtime.pin(message.conversationId, message.id, !!message.pin);
           },
         }))}
       />
+      <Dialog
+        visible={confirmRecall}
+        title="撤回这条消息？"
+        onRequestClose={() => setConfirmRecall(false)}
+        actions={[
+          { title: '取消', onPress: () => setConfirmRecall(false), variant: 'secondary' },
+          { title: '撤回', variant: 'danger', onPress: () => { setConfirmRecall(false); if (runtime) void runtime.recall(message.id); } },
+        ]}
+      >
+        <Label>撤回后所有人看到的是撤回说明，不能恢复原文。</Label>
+      </Dialog>
     </View>
   );
 }

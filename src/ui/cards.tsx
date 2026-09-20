@@ -15,6 +15,7 @@ type CardModel = {
   status: string;
   topicId: string;
   actions: string[];
+  revision?: number;
   release?: EchoReleaseView;
 };
 
@@ -64,6 +65,7 @@ export function WorkspaceCard({
         status: card.status && card.status !== 'active' ? card.status : '',
         topicId: stringValue(payload.topicId),
         actions: card.actions.filter(action => action === 'open_topic' || action === 'join_topic'),
+        revision: typeof card.revision === 'number' ? card.revision : undefined,
         release: cardType === 'echo.release' ? echoReleaseView(payload, title) : undefined,
       });
     }).catch(caught => { if (!cancelled) setError(errorText(caught)); });
@@ -89,7 +91,7 @@ export function WorkspaceCard({
           onPress={() => {
             if (!runtime) return;
             setBusy(action);
-            void runtime.cardAction(block.cardId, action, model.actions).then(() => { if (action === 'join_topic' && model.topicId) onOpenTopic?.(model.topicId); }).catch(caught => setError(errorText(caught))).finally(() => setBusy(''));
+            void runtime.cardAction(block.cardId, action, model.actions, model.revision).then(() => { if (action === 'join_topic' && model.topicId) onOpenTopic?.(model.topicId); }).catch(caught => setError(errorText(caught))).finally(() => setBusy(''));
           }}
         />
       ))}

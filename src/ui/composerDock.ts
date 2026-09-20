@@ -19,8 +19,17 @@ export function composerDock(input: {
   return { panelHeight: 0, dockBottom: input.navBarInset };
 }
 
-export function applyMentionSuggestions(suggestionCount: number, current: ComposerPanel): { dismissKeyboard: boolean; nextPanel: ComposerPanel } {
-  if (suggestionCount > 0) return { dismissKeyboard: true, nextPanel: 'mention' };
-  if (current === 'mention') return { dismissKeyboard: false, nextPanel: 'none' };
-  return { dismissKeyboard: false, nextPanel: current };
+export function applyMentionSuggestions(input: {
+  suggestionCount: number;
+  current: ComposerPanel;
+  mentionDismissed: boolean;
+}): { dismissKeyboard: boolean; nextPanel: ComposerPanel } {
+  if (input.suggestionCount > 0) {
+    if (input.mentionDismissed) {
+      return { dismissKeyboard: false, nextPanel: input.current === 'mention' ? 'none' : input.current };
+    }
+    return { dismissKeyboard: true, nextPanel: 'mention' };
+  }
+  if (input.current === 'mention') return { dismissKeyboard: false, nextPanel: 'none' };
+  return { dismissKeyboard: false, nextPanel: input.current };
 }

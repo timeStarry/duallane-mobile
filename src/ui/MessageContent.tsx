@@ -146,13 +146,13 @@ function MarkdownText({ text }: { text: string }) {
 function RichText({ text, markdown }: { text: string; markdown: boolean }) {
   const t = useTheme();
   const prepared = markdown ? prepareWorkspaceMarkdown(text) : { source: text.replace(/\r\n?/g, '\n'), plain: true };
-  const urls = prepared.plain ? [] : extractHttpUrls(prepared.source);
+  const urls = prepared.plain ? [] : extractHttpUrls(prepared.source).filter(url => !prepared.source.includes(`](${url}`));
   return (
     <View>
       {prepared.source.split('\n').map((line, index) => (
         <RichLine key={index} line={line} markdown={!prepared.plain} fontSize={t.type.body} color={t.text} linkColor={t.focus} />
       ))}
-      {urls.map(url => (
+      {urls.filter(url => !prepared.source.split('\n').some(line => line.trim() === url)).map(url => (
         <Text key={url} style={{ color: t.focus }} onPress={() => void Linking.openURL(url)}>{url}</Text>
       ))}
     </View>

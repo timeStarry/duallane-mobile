@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useWorkspace } from '../../domain/store';
 import { targetKey, type ChatTarget, type Draft, type Emote, type EmoteLibrary, type Message, type Topic } from '../../domain/contracts';
@@ -137,7 +137,8 @@ export function ChatScreen({
   const members = conversation?.members.length ? conversation.members : bootstrapMembers;
   const mentionQuery = activeMentionQuery(draft.text);
   const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
-  const ime = useChatIme(insets.bottom, suggestions.length);
+  const focused = useIsFocused();
+  const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
@@ -215,11 +216,11 @@ export function ChatScreen({
     if (!lastId) return;
     if (pinToLatest.current) pinIfNeeded();
     else setNewMessages(true);
-    if (pinToLatest.current && AppState.currentState === 'active') {
+    if (pinToLatest.current && focused && AppState.currentState === 'active') {
       const last = useWorkspace.getState().messages[key]?.at(-1);
       if (last && !last.status) void runtime.markRead(target.id, last.id, target.kind === 'topic').catch(() => undefined);
     }
-  }, [key, lastId, runtime, target.id, target.kind]);
+  }, [focused, key, lastId, runtime, target.id, target.kind]);
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
   const send = (existing?: Message) => {
@@ -402,7 +403,7 @@ export function ChatScreen({
                   disabled={!conversation?.capabilities.canUploadFile || !!progress}
                   onPress={() => {
                     const account = useWorkspace.getState().accountKey;
-                    void transfers.choose(account, target.kind === 'conversation' ? target.id : undefined).then(task => {
+                    void transfers.choose(account, conversation?.id).then(task => {
                       if (!task) return;
                       runtime.patchDraft(key, { pendingAttachment: { taskId: task.id, fileName: task.fileName, mimeType: task.mimeType, byteSize: task.byteSize } });
                       ime.closePanel();
@@ -411,7 +412,9 @@ export function ChatScreen({
                 />
               </View>
             ) : null}
-            {ime.panel === 'mention' ? suggestions.map(member => (
+            {ime.panel === 'mention' ? (
+            <ScrollView keyboardShouldPersistTaps="handled">
+            {suggestions.map(member => (
               <Pressable
                 key={member.id}
                 accessibilityRole="button"
@@ -425,7 +428,9 @@ export function ChatScreen({
               >
                 <Text style={{ color: t.text }}>{member.displayName}{member.kind === 'bot' ? ' · Bot' : ''}</Text>
               </Pressable>
-            )) : null}
+            ))}
+            </ScrollView>
+            ) : null}
           </View>
         </View>
       ) : <EmptyState title={target.kind === 'topic' ? '当前话题不可发送' : '当前会话不可发送消息'} />}

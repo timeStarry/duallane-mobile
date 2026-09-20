@@ -7,10 +7,12 @@ export function RemoteImage({
   uri,
   style,
   onError,
+  resizeMode,
 }: {
   uri: string;
   style?: StyleProp<ImageStyle>;
   onError?: () => void;
+  resizeMode?: 'cover' | 'contain' | 'stretch' | 'center';
 }) {
   const svg = /\.svg(\?|$)/i.test(uri);
   const [source, setSource] = useState<string | null>(!svg && (uri.startsWith('file:') || /^https:\/\/avatars\.githubusercontent\.com\//i.test(uri)) ? uri : null);
@@ -38,5 +40,5 @@ export function RemoteImage({
     const flat = StyleSheet.flatten(style) as { width?: number; height?: number } | undefined;
     return <SvgXml xml={source} width={flat?.width ?? 40} height={flat?.height ?? 40} />;
   }
-  return <Image source={{ uri: source }} style={style} onError={onError} accessibilityIgnoresInvertColors />;
+  return <Image source={{ uri: source }} style={style} resizeMode={resizeMode} onError={onError} accessibilityIgnoresInvertColors />;
 }

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bot } from 'lucide-react-native';
@@ -152,7 +152,6 @@ export function ConversationRow({
   onPress: () => void;
 }) {
   const t = useTheme();
-  const pressedId = useRef<string | null>(null);
   const identity = conversationIdentity(conversation, selfId, directory);
   const unread = conversation.unreadCount;
   const unreadText = unread > 0 ? `${Math.min(unread, 99)}${unread > 99 ? '+' : ''}条未读` : '无未读';
@@ -162,8 +161,7 @@ export function ConversationRow({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`打开${conversation.displayTitle}，${unreadText}${muted ? '，免打扰' : ''}`}
-      onPressIn={() => { pressedId.current = conversation.id; }}
-      onPress={() => { if (pressedId.current === conversation.id) onPress(); }}
+      onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
@@ -219,14 +217,12 @@ export function TopicRow({
   onPress: () => void;
 }) {
   const t = useTheme();
-  const pressedId = useRef<string | null>(null);
   const state = closed ? '已关闭' : joined ? '已加入' : '未加入';
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`打开话题${title}，属于${groupName}，${state}`}
-      onPressIn={() => { pressedId.current = id; }}
-      onPress={() => { if (pressedId.current === id) onPress(); }}
+      onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',

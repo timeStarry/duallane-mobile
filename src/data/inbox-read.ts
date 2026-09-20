@@ -10,9 +10,9 @@ export const topicReadResultSchema = z.object({
   }),
 });
 
-export async function markInboxRead(api: ApiClient, kind: 'conversation' | 'topic', id: string) {
+export async function markInboxRead(api: ApiClient, kind: 'conversation' | 'topic', id: string, messageId?: string) {
   if (kind === 'topic') {
-    return api.json(`/api/workspace/topics/${encodeURIComponent(id)}/read`, topicReadResultSchema, {}, 'POST');
+    return api.json(`/api/workspace/topics/${encodeURIComponent(id)}/read`, topicReadResultSchema, messageId ? { messageId } : {}, 'POST');
   }
-  return api.json(`/api/workspace/conversations/${encodeURIComponent(id)}/read`, z.object({ conversation: conversationSchema }), {}, 'POST');
+  return api.json(`/api/workspace/conversations/${encodeURIComponent(id)}/read`, z.object({ conversation: conversationSchema }), messageId ? { messageId } : {}, 'POST');
 }

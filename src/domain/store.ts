@@ -22,6 +22,8 @@ type State = {
   upsertTopic: (topic: Topic) => void;
   setMessages: (id: string, messages: Message[], older?: boolean) => void;
   upsertMessage: (message: Message, bucket?: string) => void;
+  patchMessage: (bucket: string, id: string, patch: Partial<Message>) => void;
+  pruneTopics: (allowedIds: Set<string>) => void;
   setDraft: (id: string, draft: Partial<Draft> | string) => void;
   setChatSettings: (settings: ChatSettings | null) => void;
   reset: () => void;
@@ -52,9 +54,21 @@ export const useWorkspace = create<State>(set => ({
   applyBootstrap: (b, accountKey) => set(s => {
     const sameAccount = s.accountKey === accountKey && s.bootstrap?.space.id === b.space.id;
     const conversations = Object.fromEntries((b.permissions.canReadConversations ? b.conversations : []).map(c => [c.id, c]));
-    const messages = sameAccount ? Object.fromEntries(Object.entries(s.messages).filter(([id]) => id.startsWith('topic:') || id in conversations)) : {};
-    const drafts = sameAccount ? Object.fromEntries(Object.entries(s.drafts).filter(([id]) => id.startsWith('topic:') || id in conversations)) : {};
-    const topics = sameAccount ? s.topics : {};
+    const messages = sameAccount ? Object.fromEntries(Object.entries(s.messages).filter(([id]) => {
+      if (id.startsWith('topic:')) {
+        const topic = s.topics[id.slice(6)];
+        return !!topic && topic.conversationId in conversations;
+      }
+      return id in conversations;
+    })) : {};
+    const drafts = sameAccount ? Object.fromEntries(Object.entries(s.drafts).filter(([id]) => {
+      if (id.startsWith('topic:')) {
+        const topic = s.topics[id.slice(6)];
+        return !!topic && topic.conversationId in conversations;
+      }
+      return id in conversations;
+    })) : {};
+    const topics = sameAccount ? Object.fromEntries(Object.entries(s.topics).filter(([, topic]) => topic.conversationId in conversations)) : {};
     return { bootstrap: b, accountKey, conversations, messages, drafts, topics, files: b.permissions.canDownload ? b.files : [], ready: true, error: '', cursor: b.eventCursor };
   }),
   setTopics: topics => set({ topics: Object.fromEntries(topics.map(topic => [topic.id, topic])) }),
@@ -63,6 +77,18 @@ export const useWorkspace = create<State>(set => ({
   upsertMessage: (m, bucket) => set(s => {
     const key = bucket ?? messageBucket(m);
     return { messages: { ...s.messages, [key]: mergeMessages(s.messages[key] ?? [], [m]) } };
+  }),
+  patchMessage: (bucket, id, patch) => set(s => ({
+    messages: {
+      ...s.messages,
+      [bucket]: (s.messages[bucket] ?? []).map(message => message.id === id ? { ...message, ...patch } : message),
+    },
+  })),
+  pruneTopics: allowedIds => set(s => {
+    const topics = Object.fromEntries(Object.entries(s.topics).filter(([id]) => allowedIds.has(id)));
+    const messages = Object.fromEntries(Object.entries(s.messages).filter(([id]) => !id.startsWith('topic:') || allowedIds.has(id.slice(6))));
+    const drafts = Object.fromEntries(Object.entries(s.drafts).filter(([id]) => !id.startsWith('topic:') || allowedIds.has(id.slice(6))));
+    return { topics, messages, drafts };
   }),
   setDraft: (id, draft) => set(s => {
     const current = s.drafts[id] ?? emptyDraft();

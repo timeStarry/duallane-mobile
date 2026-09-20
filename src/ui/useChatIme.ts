@@ -9,13 +9,19 @@ import {
 } from 'react-native-keyboard-controller';
 import { applyMentionSuggestions, clampImeHeight, composerDock, type ComposerPanel } from './composerDock';
 
-export function useChatIme(navBarInset: number, mentionCount = 0) {
+export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery = '') {
   const { setEnabled } = useKeyboardController();
   const keyboardVisible = useKeyboardState(state => state.isVisible);
   const imeBottom = useKeyboardState(state => state.height);
   const { height: screenHeight } = useWindowDimensions();
   const [panel, setPanel] = useState<ComposerPanel>('none');
+  const mentionDismissed = useRef(false);
+  const lastQuery = useRef(mentionQuery);
   const lastImeHeight = useRef(clampImeHeight(0, screenHeight));
+  if (mentionQuery !== lastQuery.current) {
+    lastQuery.current = mentionQuery;
+    mentionDismissed.current = false;
+  }
 
   useFocusEffect(useCallback(() => {
     setEnabled(true);
@@ -32,7 +38,7 @@ export function useChatIme(navBarInset: number, mentionCount = 0) {
   }, [imeBottom, screenHeight]);
 
   useEffect(() => {
-    const next = applyMentionSuggestions(mentionCount, panel);
+    const next = applyMentionSuggestions({ suggestionCount: mentionCount, current: panel, mentionDismissed: mentionDismissed.current });
     if (next.dismissKeyboard) Keyboard.dismiss();
     if (next.nextPanel !== panel) setPanel(next.nextPanel);
   }, [mentionCount, panel]);
@@ -40,6 +46,7 @@ export function useChatIme(navBarInset: number, mentionCount = 0) {
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (panel !== 'none') {
+        if (panel === 'mention') mentionDismissed.current = true;
         setPanel('none');
         return true;
       }
@@ -61,5 +68,14 @@ export function useChatIme(navBarInset: number, mentionCount = 0) {
     setPanel(current => (current === next ? 'none' : next));
   };
 
-  return { panel, dock, openPanel, closePanel: () => setPanel('none'), setPanel };
+  return {
+    panel,
+    dock,
+    openPanel,
+    closePanel: () => {
+      if (panel === 'mention') mentionDismissed.current = true;
+      setPanel('none');
+    },
+    setPanel,
+  };
 }

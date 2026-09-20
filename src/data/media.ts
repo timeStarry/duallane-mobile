@@ -1,4 +1,4 @@
-import { File, Paths } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
 import { z } from 'zod';
 import type { ApiClient } from './client';
@@ -8,10 +8,30 @@ import { catalogImage, customEmoteSrc, splitImageEmotes } from '../domain/emote-
 const memory = new Map<string, string>();
 const emotes = new Map<string, string>();
 let client: ApiClient | null = null;
+let mediaAccount = '';
 
 export function setMediaClient(next: ApiClient | null): void {
   client = next;
-  if (!next) memory.clear();
+  if (!next) {
+    memory.clear();
+    mediaAccount = '';
+  }
+}
+
+export function setMediaAccount(accountKey: string): void {
+  if (mediaAccount && mediaAccount !== accountKey) clearAccountPreviewCache(mediaAccount);
+  mediaAccount = accountKey;
+}
+
+export function clearAccountPreviewCache(accountKey: string): void {
+  memory.clear();
+  try {
+    if (!accountKey || !Paths.cache) return;
+    const dir = new Directory(Paths.cache, 'previews', accountKey);
+    if (dir.exists) dir.delete();
+  } catch {
+    /* Native FS is unavailable in unit tests. */
+  }
 }
 
 const PREVIEWABLE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp']);
@@ -45,8 +65,12 @@ export function splitCatalogEmotes(text: string): Array<{ text?: string; src?: s
 export async function attachmentPreviewUri(file: Attachment): Promise<string> {
   const api = client;
   if (!api) throw new Error('Media client unavailable');
-  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `preview:${file.id}`);
-  const cached = new File(Paths.cache, digest);
+  const account = mediaAccount;
+  if (!account) throw new Error('Media account unavailable');
+  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `preview:${api.origin}:${account}:${file.id}`);
+  const dir = new Directory(Paths.cache, 'previews', account);
+  dir.create({ intermediates: true, idempotent: true });
+  const cached = new File(dir, digest);
   if (cached.exists && cached.size > 0) return cached.uri;
   if (cached.exists) cached.delete();
   let response: Response;

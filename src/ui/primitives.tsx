@@ -401,9 +401,9 @@ export function ConnectionBanner({ connection }: { connection: string }) {
     <View
       accessibilityLiveRegion={categoryChanged ? 'polite' : 'none'}
       accessibilityLabel={text}
-      style={{ backgroundColor: t.warningSoft, paddingHorizontal: t.space.lg, paddingVertical: t.space.sm }}
+      style={{ backgroundColor: t.warningSoft, paddingHorizontal: t.space.lg, paddingVertical: 6 }}
     >
-      <Text style={{ color: t.warning, fontSize: t.type.control, lineHeight: 20 }}>{text}</Text>
+      <Text style={{ color: t.warning, fontSize: t.type.meta, lineHeight: 18 }} numberOfLines={1}>{text}</Text>
     </View>
   );
 }

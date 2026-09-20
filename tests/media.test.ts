@@ -3,7 +3,7 @@ import { composerEmotePacks, catalogImage, catalogUnicodeGlyph, enabledCatalogPa
 import { botAssetAvatar, isAllowedSameOriginMediaPath, sanitizeWorkspaceAvatarUrl } from '../src/domain/media-path';
 import { recalledNotice } from '../src/domain/recall';
 
-jest.mock('expo-file-system', () => ({ File: class {}, Paths: { cache: '' } }));
+jest.mock('expo-file-system', () => ({ File: class {}, Directory: class { exists = false; create() {} delete() {} }, Paths: { cache: '' } }));
 jest.mock('expo-crypto', () => ({ digestStringAsync: jest.fn(), CryptoDigestAlgorithm: { SHA256: 'SHA-256' } }));
 
 test('relative emote and avatar paths resolve against the API origin', () => {

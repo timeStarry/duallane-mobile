@@ -20,10 +20,15 @@ test('chat dock never stacks nav inset on ime height', () => {
 });
 
 test('mention suggestions dismiss the keyboard and close when the query is empty', () => {
-  expect(applyMentionSuggestions(2, 'none')).toEqual({ dismissKeyboard: true, nextPanel: 'mention' });
-  expect(applyMentionSuggestions(1, 'emoji')).toEqual({ dismissKeyboard: true, nextPanel: 'mention' });
-  expect(applyMentionSuggestions(0, 'mention')).toEqual({ dismissKeyboard: false, nextPanel: 'none' });
-  expect(applyMentionSuggestions(0, 'attach')).toEqual({ dismissKeyboard: false, nextPanel: 'attach' });
+  expect(applyMentionSuggestions({ suggestionCount: 2, current: 'none', mentionDismissed: false })).toEqual({ dismissKeyboard: true, nextPanel: 'mention' });
+  expect(applyMentionSuggestions({ suggestionCount: 1, current: 'emoji', mentionDismissed: false })).toEqual({ dismissKeyboard: true, nextPanel: 'mention' });
+  expect(applyMentionSuggestions({ suggestionCount: 0, current: 'mention', mentionDismissed: false })).toEqual({ dismissKeyboard: false, nextPanel: 'none' });
+  expect(applyMentionSuggestions({ suggestionCount: 0, current: 'attach', mentionDismissed: false })).toEqual({ dismissKeyboard: false, nextPanel: 'attach' });
+});
+
+test('closing mention suggestions does not reopen them until the query changes', () => {
+  expect(applyMentionSuggestions({ suggestionCount: 3, current: 'none', mentionDismissed: true })).toEqual({ dismissKeyboard: false, nextPanel: 'none' });
+  expect(applyMentionSuggestions({ suggestionCount: 3, current: 'emoji', mentionDismissed: true })).toEqual({ dismissKeyboard: false, nextPanel: 'emoji' });
 });
 
 test('last IME height is clamped between 260dp and half the screen', () => {
