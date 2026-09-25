@@ -9,7 +9,8 @@ import { cache } from '../platform/storage';
 import type { ApiClient } from './client';
 
 const bytesSchema = z.number().int().nonnegative().safe();
-const taskSchema = z.object({ id:z.string().uuid(), uri:z.string(), fileName:z.string(), mimeType:z.string(), byteSize:bytesSchema, uploadId:z.string().optional(), attachmentId:z.string().optional(), conversationId:z.string().optional(), complete:z.boolean().default(false) });
+const uploadVisibility = z.enum(['space', 'conversation', 'private_staging']);
+const taskSchema = z.object({ id:z.string().uuid(), uri:z.string(), fileName:z.string(), mimeType:z.string(), byteSize:bytesSchema, uploadId:z.string().optional(), attachmentId:z.string().optional(), conversationId:z.string().optional(), visibility:uploadVisibility.optional(), complete:z.boolean().default(false) });
 export type UploadTask = z.infer<typeof taskSchema>;
 const partSizeSchema = z.number().int().positive().max(4194304);
 const partCountSchema = z.number().int().nonnegative().max(10000);
@@ -75,7 +76,9 @@ export class Transfers {
       if (useWorkspace.getState().accountKey !== key || (accountEpochs.get(key) ?? 0) !== epoch) throw new Error('Account changed');
     };
   }
-  async choose(key:string, conversationId?:string) {
+  async choose(key:string, conversationId?:string, visibility?:z.infer<typeof uploadVisibility>) {
+    if (visibility === 'private_staging' && conversationId) throw new Error('Topic upload cannot use a conversation scope');
+    if (visibility === 'conversation' && !conversationId) throw new Error('Conversation upload requires a conversation');
     const assertAccount = this.guard(key);
     assertAccount();
     const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory:true, multiple:false });
@@ -91,7 +94,7 @@ export class Transfers {
       dir.create({ intermediates:true, idempotent:true });
       file = new File(dir, id);
       source.copy(file);
-      const task = taskSchema.parse({ id, uri:file.uri, fileName:asset.name, mimeType:asset.mimeType ?? 'application/octet-stream', byteSize:file.size, conversationId });
+      const task = taskSchema.parse({ id, uri:file.uri, fileName:asset.name, mimeType:asset.mimeType ?? 'application/octet-stream', byteSize:file.size, conversationId, visibility });
       this.save(key, task);
       return task;
     } catch (error) {
@@ -118,7 +121,8 @@ export class Transfers {
     try {
       if (!task.uploadId) {
         if (!file.exists || file.size !== task.byteSize) throw new Error('File unavailable');
-        const r = await api.json('/api/workspace/files/uploads/reserve', reservation, { fileName:task.fileName, mimeType:task.mimeType, byteSize:task.byteSize, visibility:task.conversationId ? 'conversation' : 'space', conversationId:task.conversationId });
+        const visibility = task.visibility ?? (task.conversationId ? 'conversation' : 'space');
+        const r = await api.json('/api/workspace/files/uploads/reserve', reservation, { fileName:task.fileName, mimeType:task.mimeType, byteSize:task.byteSize, visibility, ...(task.conversationId ? { conversationId:task.conversationId } : {}) });
         assertAccount();
         task = { ...task, uploadId:r.id, attachmentId:r.attachment.id, fileName:r.attachment.fileName, mimeType:r.attachment.mimeType };
         this.save(key, task);

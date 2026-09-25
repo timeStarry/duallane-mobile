@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { MapPin, Megaphone } from 'lucide-react-native';
 import type { Block } from '../domain/contracts';
 import { echoKindLabel, echoReleaseView, type EchoReleaseView } from '../domain/echo-release';
@@ -17,7 +17,29 @@ type CardModel = {
   actions: string[];
   revision?: number;
   release?: EchoReleaseView;
+  payload: Record<string, unknown>;
 };
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function voteOptions(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const option = item as Record<string, unknown>;
+    return typeof option.id === 'string' && typeof option.label === 'string' ? [{ id: option.id, label: option.label }] : [];
+  });
+}
+
+function registeredCardActions(cardType: string, actions: string[], status?: string) {
+  if (status && status !== 'active') return [];
+  const allowed = cardType === 'echo.solicitation' ? ['vote']
+    : cardType === 'echo.request' || cardType === 'echo.request-status' ? ['collect', 'start', 'implement']
+      : ['open_topic', 'join_topic'];
+  return actions.filter(action => allowed.includes(action));
+}
 
 export function WorkspaceCard({
   block,
@@ -36,9 +58,11 @@ export function WorkspaceCard({
     status: '',
     topicId: '',
     actions: [],
+    payload: {},
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
   useEffect(() => {
     if (!runtime) return;
     let cancelled = false;
@@ -53,27 +77,45 @@ export function WorkspaceCard({
           status: '此卡片暂不支持交互',
           topicId: '',
           actions: [],
+          payload: {},
         });
         return;
       }
       const payload = card.payload ?? {};
       const title = stringValue(payload.title) || card.fallbackText || block.fallbackText;
+      setSelectedOptionIds(stringArray(payload.selectedOptionIds));
       setModel({
         cardType,
         title,
         summary: stringValue(payload.summary) || stringValue(payload.description) || stringValue(payload.descriptionPreview) || stringValue(payload.messagePreview),
         status: card.status && card.status !== 'active' ? card.status : '',
         topicId: stringValue(payload.topicId),
-        actions: card.actions.filter(action => action === 'open_topic' || action === 'join_topic'),
+        actions: registeredCardActions(cardType, card.actions, card.status),
         revision: typeof card.revision === 'number' ? card.revision : undefined,
         release: cardType === 'echo.release' ? echoReleaseView(payload, title) : undefined,
+        payload,
       });
     }).catch(caught => { if (!cancelled) setError(errorText(caught)); });
     return () => { cancelled = true; };
   }, [block.cardId, block.cardType, block.fallbackText, runtime]);
   if (model.release) return <EchoReleaseCard view={model.release} status={model.status} error={error} />;
   const kind = echoKindLabel(model.cardType);
-  const open = model.topicId ? () => onOpenTopic?.(model.topicId) : undefined;
+  const open = model.topicId && model.actions.includes('open_topic') ? () => onOpenTopic?.(model.topicId) : undefined;
+  const options = model.cardType === 'echo.solicitation' ? voteOptions(model.payload.options) : [];
+  const multiple = model.payload.choiceMode === 'multiple';
+  const state = stringValue(model.payload.status) || stringValue(model.payload.state);
+  const requirementAction = state === 'pending_review' ? 'collect' : state === 'planned' ? 'start' : state === 'in_progress' ? 'implement' : '';
+  const actionTitle: Record<string, string> = { join_topic: '加入话题', collect: '转为正式需求', start: '开始处理', implement: '标记已交付' };
+  const execute = (action: string, input: Record<string, unknown> = {}) => {
+    if (!runtime || busy) return;
+    setError('');
+    setBusy(action);
+    void runtime.cardAction(block.cardId, action, model.actions, model.revision, input).then(() => runtime.resolveCard(block.cardId)).then(card => {
+      if (action === 'join_topic' && model.topicId) onOpenTopic?.(model.topicId);
+      setModel(current => ({ ...current, actions: registeredCardActions(current.cardType, card.actions, card.status), revision: card.revision, payload: card.payload ?? current.payload, status: card.status && card.status !== 'active' ? card.status : '' }));
+      setSelectedOptionIds(stringArray(card.payload?.selectedOptionIds));
+    }).catch(caught => setError(errorText(caught))).finally(() => setBusy(''));
+  };
   return (
     <View accessible accessibilityLabel={[kind, model.title, model.summary].filter(Boolean).join(' ')} style={{ gap: 8, padding: 8, borderRadius: t.radius.control, backgroundColor: t.soft }}>
       {kind ? <Label muted>{kind}</Label> : null}
@@ -82,17 +124,27 @@ export function WorkspaceCard({
       {model.status ? <Label muted>{model.status}</Label> : null}
       {error ? <Label muted>{error}</Label> : null}
       {open ? <Button title="打开话题" secondary onPress={open} /> : null}
-      {model.actions.filter(action => action !== 'open_topic').map(action => (
+      {model.actions.includes('vote') && options.length ? (
+        <View style={{ gap: 8 }}>
+          <Label muted>{stringValue(model.payload.question) || '选择投票选项'}</Label>
+          {options.map(option => {
+            const selected = selectedOptionIds.includes(option.id);
+            return (
+              <Pressable key={option.id} accessibilityRole={multiple ? 'checkbox' : 'radio'} accessibilityLabel={option.label} accessibilityState={{ checked: selected }} onPress={() => setSelectedOptionIds(current => multiple ? selected ? current.filter(id => id !== option.id) : [...current, option.id] : [option.id])} style={{ minHeight: t.hit, padding: 10, borderRadius: t.radius.control, backgroundColor: selected ? t.sharedSoft : t.surface, justifyContent: 'center' }}>
+                <Text style={{ color: t.text }}>{selected ? '✓ ' : ''}{option.label}</Text>
+              </Pressable>
+            );
+          })}
+          <Button title="提交投票" secondary disabled={!!busy || !selectedOptionIds.length} onPress={() => execute('vote', { optionIds: selectedOptionIds })} />
+        </View>
+      ) : null}
+      {model.actions.filter(action => action === 'join_topic' || action === requirementAction).map(action => (
         <Button
           key={action}
-          title={action === 'join_topic' ? '加入话题' : action}
+          title={actionTitle[action] ?? action}
           secondary
           disabled={!!busy}
-          onPress={() => {
-            if (!runtime) return;
-            setBusy(action);
-            void runtime.cardAction(block.cardId, action, model.actions, model.revision).then(() => { if (action === 'join_topic' && model.topicId) onOpenTopic?.(model.topicId); }).catch(caught => setError(errorText(caught))).finally(() => setBusy(''));
-          }}
+          onPress={() => execute(action)}
         />
       ))}
     </View>

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import * as Crypto from 'expo-crypto';
 import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import { Transfers, clearAccountFiles, uploadStatusSchema, type UploadTask } from '../src/data/transfers';
 import { useWorkspace } from '../src/domain/store';
@@ -33,7 +34,7 @@ jest.mock('expo-file-system', () => {
       };
     }
   }
-  return { File:MockFile, Directory:class { create() {} }, Paths:{ document:{ uri:'file:///document' }, cache:{ uri:'file:///cache' } } };
+  return { File:MockFile, Directory:class { uri:string; constructor(parent:{uri:string},name:string){this.uri=`${parent.uri}/${name}`;} create() {} }, Paths:{ document:{ uri:'file:///document' }, cache:{ uri:'file:///cache' } } };
 });
 jest.mock('expo-document-picker', () => ({ getDocumentAsync:jest.fn() }));
 jest.mock('expo-sharing', () => ({ shareAsync:jest.fn().mockResolvedValue(undefined) }));
@@ -49,7 +50,7 @@ function saveTask(value:UploadTask = task) {
   mockDisk.set(value.uri, new Uint8Array(value.byteSize));
 }
 function apiWith(responses:unknown[]) {
-  const json = jest.fn(async (_path:string, schema:z.ZodType) => schema.parse(responses.shift()));
+  const json = jest.fn(async (_path:string, schema:z.ZodType, _body?:unknown) => schema.parse(responses.shift()));
   const raw = jest.fn().mockResolvedValue({ ok:true });
   return { api:{ json, raw } as unknown as ApiClient, json, raw };
 }
@@ -57,8 +58,26 @@ const reserved = { id:'up1', attachment, upload:{ partSize:4194304, partCount:1 
 const status = { uploadId:'up1', mode:'single', partSize:4194304, partCount:1, parts:[] };
 beforeEach(() => {
   mockDisk.clear(); mockCache.clear();
+  jest.mocked(DocumentPicker.getDocumentAsync).mockReset();
   useWorkspace.getState().reset(); useWorkspace.setState({ accountKey:key });
   jest.mocked(Crypto.digest).mockImplementation(async () => new Uint8Array(32).buffer);
+});
+
+test('topic upload reserves private staging without a parent conversation scope', async () => {
+  const picked='file:///cache/topic.txt';
+  mockDisk.set(picked,new Uint8Array([1,2,3]));
+  jest.mocked(DocumentPicker.getDocumentAsync).mockResolvedValue({ canceled:false, assets:[{ uri:picked, name:'topic.txt', mimeType:'text/plain', size:3, lastModified:0 }] });
+  const transfers=new Transfers();
+  const chosen=await transfers.choose(key,undefined,'private_staging');
+  expect(chosen).toMatchObject({ visibility:'private_staging', conversationId:undefined });
+  const { api,json }=apiWith([reserved,status,{ attachment }]);
+  await transfers.run(api,key,chosen!,jest.fn());
+  expect(json.mock.calls.find(([path])=>path.endsWith('/reserve'))?.[2]).toEqual({ fileName:'topic.txt',mimeType:'text/plain',byteSize:3,visibility:'private_staging' });
+});
+
+test('topic private staging cannot accidentally inherit the parent conversation', async () => {
+  await expect(new Transfers().choose(key,'group-1','private_staging')).rejects.toThrow('Topic upload cannot use a conversation scope');
+  expect(DocumentPicker.getDocumentAsync).not.toHaveBeenCalled();
 });
 
 test('deployed Go upload status parses existing parts and skips their retransmission', async () => {

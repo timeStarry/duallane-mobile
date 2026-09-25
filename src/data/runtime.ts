@@ -4,9 +4,9 @@ import * as WebBrowser from 'expo-web-browser';
 import { z } from 'zod';
 import { ApiClient, ApiError, errorDiagnostic, errorText } from './client';
 import { hideResultSchema, reactionResultSchema, topicCreatedRef } from '../domain/command-results';
-import { setMediaAccount, setMediaClient, clearAccountPreviewCache } from './media';
+import { setMediaAccount, setMediaClient, clearAccountPreviewCache, rememberEmotes } from './media';
 import { topicReadResultSchema } from './inbox-read';
-import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteLibrarySchema, emoteListSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
+import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteCollectionSchema, emoteLibrarySchema, emoteListSchema, emoteSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
 import { composeBlocks } from '../domain/compose';
 import { assertAllowedCardAction } from '../domain/actions';
 import { clearAccountFiles } from './transfers';
@@ -19,6 +19,15 @@ import { config, installed, redirectUri, validateOrigin } from '../platform/conf
 import { clearNotifications, showMessageNotification } from '../platform/notifications';
 
 const NativeWebSocket: new (url:string, protocols?:string[], options?:{headers:Record<string,string>}) => WebSocket = WebSocket;
+const emoteShareSchema=z.object({
+  id:z.string().min(1),name:z.string(),itemCount:z.number().int().nonnegative(),
+  revokedAt:z.string().nullish(),
+  sharedBy:z.object({id:z.string(),displayName:z.string()}),
+  originalCreator:z.object({id:z.string(),displayName:z.string()}),
+  canSubscribeToSourceChanges:z.boolean().default(false),
+  items:z.array(emoteSchema),
+});
+export type EmoteShare=z.infer<typeof emoteShareSchema>;
 export class Runtime {
   api:ApiClient|null=null;
   private epoch=0;
@@ -29,6 +38,7 @@ export class Runtime {
   private refreshTimer:ReturnType<typeof setTimeout>|null=null;
   private attempts=0;
   private inFlight=new Set<string>();
+  private refreshingConversations=new Set<string>();
   private notified=new Set<string>();
   private queue:Promise<void>=Promise.resolve();
   private syncing:Promise<void>|null=null;
@@ -125,7 +135,7 @@ export class Runtime {
   async topicMessages(id:string,before?:string){const epoch=this.epoch;const bucket=`topic:${id}`;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/messages?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&m.topicId===id);if(this.current(epoch)){useWorkspace.getState().setMessages(bucket,messages,!!before);cache.set(`${useWorkspace.getState().accountKey}:messages:${bucket}`,useWorkspace.getState().messages[bucket]);}return messages.length;}
   async open(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}));if(!this.current(epoch))return;useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));return this.messages(id);}
   async openTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}`,z.object({topic:topicSchema}));if(!this.current(epoch))return;useWorkspace.getState().upsertTopic(result.topic);if(result.topic.joined)return this.topicMessages(id);}
-  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];upload?:()=>Promise<Attachment|null>;syncToGroup?:boolean;}){
+  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;}){
     const s=useWorkspace.getState();const topicId=options?.topicId??existing?.topicId;const conversationId=existing?.conversationId??id;
     const topic=topicId?s.topics[topicId]:undefined;
     const canSend=topicId?!!topic&&topic.joined&&topic.status==='open':!!s.conversations[conversationId]?.capabilities.canSendMessage;
@@ -135,23 +145,26 @@ export class Runtime {
     const replyTo=options?.replyToMessageId===undefined?existing?.replyToMessageId??null:options.replyToMessageId;
     const mentionIds=options?.mentionIds??[];
     let fileId=attachmentId??existing?.attachments[0]?.id;
+    const uploadTaskId=options?.uploadTaskId??existing?.pendingUploadTaskId;
+    const syncToGroup=existing?.pendingSyncToGroup??options?.syncToGroup??false;
     let blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,fileId);
-    if(!blocks.length&&!options?.upload)return;
+    if(!blocks.length&&!options?.upload&&!uploadTaskId)return;
     let pending:Message=existing??{id:clientMessageId,conversationId,topicId,authorId:s.bootstrap.auth.currentUser.id,authorName:s.bootstrap.auth.currentUser.displayName,kind:'user',clientMessageId,createdAt:new Date().toISOString(),plainText:text,replyToMessageId:replyTo,hiddenByCurrentUser:false,attachments:[],reactions:[],blocks,fallback:false};
+    pending={...pending,pendingUploadTaskId:uploadTaskId,pendingSyncToGroup:topicId?syncToGroup:undefined};
     this.inFlight.add(clientMessageId);s.upsertMessage({...pending,status:'sending'});if(!existing)this.patchDraft(topicId?`topic:${topicId}`:conversationId,{text:'',mentionIds:[],replyToMessageId:undefined,pendingAttachment:undefined});const epoch=this.epoch;
     try{
-      if(options?.upload){
+      if(uploadTaskId&&!fileId&&!options?.upload)throw new Error('Upload unavailable');
+      if(options?.upload&&!fileId){
         const file=await options.upload();
         if(!this.current(epoch))return;
-        if(file){
-          fileId=file.id;
-          blocks=composeBlocks(text,members,mentionIds,file.id);
-          pending={...pending,attachments:[file],blocks,plainText:text||file.fileName};
-          useWorkspace.getState().upsertMessage({...pending,status:'sending'});
-        }
+        if(!file)throw new Error('Upload paused');
+        fileId=file.id;
+        blocks=existing?.blocks.length?[...existing.blocks.filter(block=>block.type!=='attachment'),{type:'attachment',attachmentId:file.id}]:composeBlocks(text,members,mentionIds,file.id);
+        pending={...pending,attachments:[file],blocks,plainText:text||file.fileName};
+        useWorkspace.getState().upsertMessage({...pending,status:'sending'});
       }
       if(!blocks.length)throw new Error('Cannot send');
-      const body={clientMessageId,content:{format:'duallane.message+json;v=1',blocks},replyToMessageId:replyTo,...(topicId?{syncToGroup:!!options?.syncToGroup}:{conversationId})};
+      const body={clientMessageId,content:{format:'duallane.message+json;v=1',blocks},replyToMessageId:replyTo,...(topicId?{syncToGroup}:{conversationId})};
       const path=topicId?`/api/workspace/topics/${encodeURIComponent(topicId)}/messages`:'/api/workspace/messages';
       const r=await this.requireApi().json(path,z.object({message:z.unknown()}).passthrough(),body);const parsed=parseMessage('message' in r?r.message:r);if(!parsed)throw new Error('Invalid message');if(this.current(epoch))useWorkspace.getState().upsertMessage(parsed);}
     catch(error){if(this.current(epoch))useWorkspace.getState().upsertMessage({...pending,status:'failed',error:errorText(error)});throw error;}finally{this.inFlight.delete(clientMessageId);}
@@ -232,10 +245,26 @@ export class Runtime {
   }
   async emotes(){return this.requireApi().json('/api/workspace/me/emotes',emoteListSchema);}
   async emoteLibrary(){return this.requireApi().json('/api/workspace/me/emote-library',emoteLibrarySchema);}
+  async emoteShare(shareId:string){
+    const result=await this.requireApi().json(`/api/workspace/emote-collection-shares/${encodeURIComponent(shareId)}`,z.object({share:emoteShareSchema}));
+    return result.share;
+  }
+  async importEmoteShare(shareId:string,subscribeToSourceChanges=false){
+    const result=await this.requireApi().json(`/api/workspace/emote-collection-shares/${encodeURIComponent(shareId)}/import`,z.object({
+      collection:emoteCollectionSchema.nullish(),items:z.array(emoteSchema).default([]),
+    }),{asCollection:true,subscribeToSourceChanges});
+    if(result.collection)rememberEmotes(result.collection.items);
+    return result;
+  }
+  async favoriteMessageEmote(messageId:string,attachmentId:string){
+    const result=await this.requireApi().json('/api/workspace/me/emotes/favorite',z.object({emote:emoteSchema}),{messageId,attachmentId});
+    rememberEmotes([result.emote]);
+    return result.emote;
+  }
   async resolveCard(cardId:string){const result=await this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}`,z.object({card:cardResolutionSchema}));return result.card;}
-  async cardAction(cardId:string,actionId:string,allowed:string[]=[],revision?:number){
+  async cardAction(cardId:string,actionId:string,allowed:string[]=[],revision?:number,input:Record<string,unknown>={}){
     assertAllowedCardAction(actionId,allowed);
-    return this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}/actions`,z.object({action:z.unknown()}).passthrough(),{actionId,clientActionId:Crypto.randomUUID(),expectedRevision:revision,input:{}});
+    return this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}/actions`,z.object({action:z.unknown()}).passthrough(),{actionId,clientActionId:Crypto.randomUUID(),expectedRevision:revision,input});
   }
   async remark(userId:string,value:string){await this.requireApi().json(`/api/workspace/members/${encodeURIComponent(userId)}/remark`,z.unknown(),{remark:value},'PUT');await this.bootstrap();}
   async clearRemark(userId:string){await this.requireApi().json(`/api/workspace/members/${encodeURIComponent(userId)}/remark`,z.unknown(),undefined,'DELETE');await this.bootstrap();}
@@ -245,22 +274,51 @@ export class Runtime {
     for(const [bucket,list] of entries){if(list.some(item=>item.id===id))return bucket;}
     return undefined;
   }
+  private refreshConversation(id:string){
+    if(this.refreshingConversations.has(id))return;
+    this.refreshingConversations.add(id);
+    const epoch=this.epoch;
+    void this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}))
+      .then(result=>{if(this.current(epoch))useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));})
+      .catch(()=>undefined)
+      .finally(()=>this.refreshingConversations.delete(id));
+  }
   private async applyEvent(event:WorkspaceEvent,replay:boolean){const s=useWorkspace.getState();if(!s.bootstrap||event.spaceId!==s.bootstrap.space.id)return;
     if(event.type==='topic.message.created'){
       const ref=topicCreatedRef(event.payload);
       const parsed=parseMessage(event.payload.message);
-      if(parsed){
+      if(parsed&&(parsed.topicId||ref.topicId)){
         s.upsertMessage(parsed,`topic:${parsed.topicId??ref.topicId}`);
+        await this.listTopics().catch(()=>undefined);
         await this.notifyIfNeeded(parsed,replay,true);
         return;
       }
-      if(ref.topicId){await this.topicMessages(ref.topicId).catch(()=>undefined);return;}
+      if(ref.topicId){
+        const epoch=this.epoch;
+        await Promise.all([this.listTopics().catch(()=>undefined),this.topicMessages(ref.topicId).catch(()=>undefined)]);
+        if(!this.current(epoch))return;
+        const created=useWorkspace.getState().messages[`topic:${ref.topicId}`]?.find(item=>item.id===ref.topicMessageId);
+        if(created)await this.notifyIfNeeded(created,replay,true);
+        return;
+      }
     }
     const message=parseMessage(event.payload.message);
     if(message){
       s.upsertMessage(message);
-      const conversation=s.conversations[message.conversationId];
-      if(conversation&&!message.topicId)useWorkspace.setState(v=>({conversations:{...v.conversations,[conversation.id]:{...conversation,lastMessagePlainText:message.plainText,lastActivityAt:message.createdAt}}}));
+      if(!message.topicId){
+        const current=s.conversations[message.conversationId];
+        const raw=event.payload.conversation;
+        const projection=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Record<string,unknown>:null;
+        const merged=projection&&projection.id===message.conversationId?conversationSchema.safeParse({
+          ...current,...projection,
+          capabilities:projection.capabilities??current?.capabilities,
+          members:projection.members??current?.members,
+          lastMessagePlainText:projection.lastMessagePlainText??message.plainText,
+        }):null;
+        if(merged?.success)useWorkspace.setState(v=>({conversations:{...v.conversations,[message.conversationId]:merged.data}}));
+        else if(current)useWorkspace.setState(v=>({conversations:{...v.conversations,[message.conversationId]:{...current,lastMessagePlainText:message.plainText,lastActivityAt:message.createdAt}}}));
+        if(projection&&!projection.capabilities)this.refreshConversation(message.conversationId);
+      }
       await this.notifyIfNeeded(message,replay,event.type==='message.created');
       return;
     }

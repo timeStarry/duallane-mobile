@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { z } from 'zod';
 import { useWorkspace } from '../../domain/store';
-import { targetKey, type ChatTarget, type Draft, type Emote, type EmoteLibrary, type Message, type Topic } from '../../domain/contracts';
+import { attachmentSchema, parseMessage, targetKey, type Attachment, type ChatTarget, type Draft, type Emote, type EmoteLibrary, type Message, type Topic } from '../../domain/contracts';
 import { activeMentionQuery, mentionCandidates } from '../../domain/compose';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
@@ -25,6 +26,7 @@ import {
   ConversationRow,
   Dialog,
   EmptyState,
+  FileRow,
   IconButton,
   SettingGroup,
   SettingRow,
@@ -115,6 +117,7 @@ export function ChatScreen({
   details,
   onOpenTopic,
   onPreview,
+  focusMessageId,
 }: {
   target: ChatTarget;
   runtime: Runtime;
@@ -122,6 +125,7 @@ export function ChatScreen({
   details: () => void;
   onOpenTopic?: (topicId: string) => void;
   onPreview?: (file: import('../../domain/contracts').Attachment) => void;
+  focusMessageId?: string;
 }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
@@ -152,6 +156,7 @@ export function ChatScreen({
   const draggingTranscript = useRef(false);
   const historyReady = useRef(false);
   const [newMessages, setNewMessages] = useState(false);
+  const [resolvedFocusId, setResolvedFocusId] = useState<string>();
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -224,21 +229,24 @@ export function ChatScreen({
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
   const send = (existing?: Message) => {
+    const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
+    if (!existing && !latest.text.trim() && !latest.pendingAttachment) return;
     setError('');
     pinToLatest.current = true;
     setNewMessages(false);
-    const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
-    const pending = existing ? undefined : latest.pendingAttachment;
-    const task = pending ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === pending.taskId) : undefined;
+    const uploadTaskId = existing?.pendingUploadTaskId ?? latest.pendingAttachment?.taskId;
+    const task = uploadTaskId ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === uploadTaskId) : undefined;
+    const needsUpload = !!uploadTaskId && !existing?.attachments[0];
     void runtime.send(target.kind === 'conversation' ? target.id : target.conversationId, existing?.plainText ?? latest.text, existing, existing?.attachments[0]?.id, {
       topicId: target.kind === 'topic' ? target.id : undefined,
       replyToMessageId: existing?.replyToMessageId ?? latest.replyToMessageId,
       mentionIds: latest.mentionIds,
-      syncToGroup: target.kind === 'topic' && syncToGroup,
-      upload: task ? () => {
+      syncToGroup: target.kind === 'topic' && (existing?.pendingSyncToGroup ?? syncToGroup),
+      uploadTaskId,
+      upload: needsUpload ? () => {
         const api = runtime.api;
         const account = useWorkspace.getState().accountKey;
-        if (!api) return Promise.resolve(null);
+        if (!api || !task) return Promise.reject(new Error('Upload unavailable'));
         setProgress('上传中');
         return transfers.run(api, account, task, n => setProgress(`上传 ${Math.round(n * 100)}%`)).finally(() => setProgress(''));
       } : undefined,
@@ -251,6 +259,37 @@ export function ChatScreen({
   const displayItems = useMemo(() => groupHiddenWorkspaceMessages(messages), [messages]);
   const transcriptItems = useMemo(() => newestFirstTranscript(displayItems), [displayItems]);
   const listItems = mode === 'history' ? transcriptItems : displayItems;
+  useEffect(() => {
+    if (!focusMessageId || loading) return;
+    let cancelled = false;
+    const locate = async () => {
+      if (!useWorkspace.getState().messages[key]?.some(message => message.id === focusMessageId)) {
+        const api = runtime.api;
+        if (!api) return;
+        const path = target.kind === 'topic'
+          ? `/api/workspace/topics/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(focusMessageId)}&limit=50`
+          : `/api/workspace/conversations/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(focusMessageId)}&limit=50`;
+        const response = await api.json(path, z.object({ messages: z.array(z.unknown()) }));
+        if (cancelled) return;
+        const found = response.messages.map(parseMessage).filter((message): message is Message => !!message && (target.kind === 'topic' ? message.topicId === target.id : message.conversationId === target.id && !message.topicId));
+        useWorkspace.getState().setMessages(key, found, true);
+      }
+      if (!cancelled) setResolvedFocusId(focusMessageId);
+    };
+    void locate().catch(error => { if (!cancelled) setError(errorText(error)); });
+    return () => { cancelled = true; };
+  }, [focusMessageId, key, loading, runtime, target.id, target.kind]);
+  useEffect(() => {
+    if (!resolvedFocusId) return;
+    const index = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === resolvedFocusId);
+    if (index < 0) return;
+    const frame = requestAnimationFrame(() => {
+      pinToLatest.current = false;
+      list.current?.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
+      setResolvedFocusId(undefined);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [listItems, resolvedFocusId]);
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader
@@ -310,6 +349,7 @@ export function ChatScreen({
             void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e)));
           }}
           onEndReachedThreshold={0.2}
+          onScrollToIndexFailed={event => list.current?.scrollToOffset({ offset: Math.max(0, event.averageItemLength * event.index), animated: false })}
           ListFooterComponent={mode === 'history' && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e))); }} /> : null}
           ListEmptyComponent={!loading ? <EmptyState title="还没有消息" /> : null}
           renderItem={({ item }) => {
@@ -371,7 +411,12 @@ export function ChatScreen({
             reply={reply ? { author: reply.authorName, preview: reply.hiddenByCurrentUser ? '已隐藏的消息' : reply.recalledAt ? '已撤回的消息' : reply.plainText } : undefined}
             onClearReply={() => runtime.patchDraft(key, { replyToMessageId: undefined })}
             attachmentName={draft.pendingAttachment?.fileName}
-            onClearAttachment={() => runtime.patchDraft(key, { pendingAttachment: undefined })}
+            onClearAttachment={() => {
+              const attachment = useWorkspace.getState().drafts[key]?.pendingAttachment;
+              runtime.patchDraft(key, { pendingAttachment: undefined });
+              const task = attachment && transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === attachment.taskId);
+              if (task && runtime.api) void transfers.cancel(runtime.api, useWorkspace.getState().accountKey, task).catch(e => setError(errorText(e)));
+            }}
             onEmote={() => ime.openPanel('emoji')}
             onAttach={() => ime.openPanel('attach')}
           />
@@ -403,8 +448,11 @@ export function ChatScreen({
                   disabled={!conversation?.capabilities.canUploadFile || !!progress}
                   onPress={() => {
                     const account = useWorkspace.getState().accountKey;
-                    void transfers.choose(account, conversation?.id).then(task => {
+                    void transfers.choose(account, target.kind === 'topic' ? undefined : conversation?.id, target.kind === 'topic' ? 'private_staging' : undefined).then(task => {
                       if (!task) return;
+                      const previous = useWorkspace.getState().drafts[key]?.pendingAttachment;
+                      const previousTask = previous && transfers.tasks(account).find(item => item.id === previous.taskId);
+                      if (previousTask && runtime.api) void transfers.cancel(runtime.api, account, previousTask).catch(e => setError(errorText(e)));
                       runtime.patchDraft(key, { pendingAttachment: { taskId: task.id, fileName: task.fileName, mimeType: task.mimeType, byteSize: task.byteSize } });
                       ime.closePanel();
                     }).catch(e => setError(errorText(e)));
@@ -438,13 +486,44 @@ export function ChatScreen({
   );
 }
 
-export function DetailsScreen({ id, runtime, kind = 'conversation', onCreateTopic }: { id: string; runtime: Runtime; kind?: 'conversation' | 'topic'; onCreateTopic?: (topic: Topic) => void; onOpenTopic?: (topic: Topic) => void }) {
+export function DetailsScreen({ id, runtime, kind = 'conversation', onCreateTopic, onOpenTopic, onOpenPinnedMessage, onOpenFile, onDownloadFile }: { id: string; runtime: Runtime; kind?: 'conversation' | 'topic'; onCreateTopic?: (topic: Topic) => void; onOpenTopic?: (topic: Topic) => void; onOpenPinnedMessage?: (messageId: string) => void; onOpenFile?: (file: Attachment) => void; onDownloadFile?: (file: Attachment) => void }) {
   const conversation = useWorkspace(s => s.conversations[id]);
   const topic = useWorkspace(s => s.topics[id]);
+  const topics = useWorkspace(s => s.topics);
+  const focused = useIsFocused();
   const t = useTheme();
   const [error, setError] = useState('');
   const [title, setTitle] = useState('');
   const [leave, setLeave] = useState(false);
+  const [pins, setPins] = useState<Message[]>([]);
+  const [files, setFiles] = useState<Attachment[]>([]);
+  useEffect(() => {
+    if (!focused || kind !== 'conversation' || conversation?.type !== 'group') return;
+    let cancelled = false;
+    const load = async () => {
+      const api = runtime.api;
+      if (!api) return;
+      const results = await Promise.allSettled([
+        api.json(`/api/workspace/groups/${encodeURIComponent(id)}/pins`, z.object({ pins: z.array(z.object({ message: z.unknown() })) })),
+        runtime.listTopics(id),
+      ]);
+      if (cancelled) return;
+      if (results[0].status === 'fulfilled') setPins(results[0].value.pins.map(pin => parseMessage(pin.message)).filter((message): message is Message => !!message && message.conversationId === id));
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed?.status === 'rejected') setError(errorText(failed.reason));
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [conversation?.type, focused, id, kind, runtime]);
+  useEffect(() => {
+    if (!focused || kind !== 'conversation' || !conversation?.id) return;
+    let cancelled = false;
+    const api = runtime.api;
+    if (api) void api.json(`/api/workspace/files?scope=conversation&conversationId=${encodeURIComponent(id)}&limit=50`, z.object({ files: z.array(attachmentSchema) }))
+      .then(result => { if (!cancelled) setFiles(result.files); })
+      .catch(error => { if (!cancelled) setError(errorText(error)); });
+    return () => { cancelled = true; };
+  }, [conversation?.id, focused, id, kind, runtime]);
   const level = (kind === 'topic' ? topic?.notificationLevel : conversation?.notificationLevel) ?? 'muted';
   return (
     <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={{ paddingVertical: 16, gap: 20 }}>
@@ -471,10 +550,28 @@ export function DetailsScreen({ id, runtime, kind = 'conversation', onCreateTopi
       {kind === 'conversation' && conversation?.type === 'group' ? (
         <SettingGroup title="话题">
           <View style={{ padding: 16, gap: 12 }}>
+            {Object.values(topics).filter(item => item.conversationId === id).map(item => (
+              <SettingRow key={item.id} title={item.title} detail={`${item.joined ? '已加入' : '未加入'} · ${item.status === 'open' ? '进行中' : '已关闭'}`} onPress={() => onOpenTopic?.(item)} />
+            ))}
             <Input accessibilityLabel="话题标题" placeholder="话题标题" value={title} onChangeText={setTitle} />
             <Button title="创建话题" disabled={!title.trim()} onPress={() => void runtime.createTopic(id, title.trim()).then(topic => { setTitle(''); onCreateTopic?.(topic); }).catch(e => setError(errorText(e)))} />
             <Button title="刷新本群话题" secondary onPress={() => void runtime.listTopics(id).catch(e => setError(errorText(e)))} />
           </View>
+        </SettingGroup>
+      ) : null}
+      {kind === 'conversation' && conversation?.type === 'group' ? (
+        <SettingGroup title="常驻消息">
+          {pins.length ? pins.map(message => (
+            <SettingRow key={message.id} title={message.recalledAt ? '已撤回的消息' : message.plainText || '附件消息'} detail={`${message.authorName} · ${new Date(message.createdAt).toLocaleString()}`} onPress={() => onOpenPinnedMessage?.(message.id)} />
+          )) : <View style={{ padding: 16 }}><Label muted>暂无常驻消息</Label></View>}
+        </SettingGroup>
+      ) : null}
+      {kind === 'conversation' && conversation ? (
+        <SettingGroup title="会话文件">
+          {files.length ? files.map(file => <View key={file.id}>
+            <FileRow file={file} download={() => onDownloadFile?.(file)} />
+            {file.status === 'available' && file.capabilities.canDownload && file.mimeType.startsWith('image/') ? <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}><Button title="预览图片" secondary onPress={() => onOpenFile?.(file)} /></View> : null}
+          </View>) : <View style={{ padding: 16 }}><Label muted>暂无会话文件</Label></View>}
         </SettingGroup>
       ) : null}
       {kind === 'topic' && topic?.joined ? (

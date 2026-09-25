@@ -171,7 +171,7 @@ const baseMessage = z.object({
   version: z.number().optional(),
 });
 export type Block = z.infer<typeof blockSchema>;
-export type Message = Omit<z.infer<typeof baseMessage>, 'content'> & { blocks: Block[]; fallback: boolean; status?: 'sending'|'failed'; error?: string };
+export type Message = Omit<z.infer<typeof baseMessage>, 'content'> & { blocks: Block[]; fallback: boolean; status?: 'sending'|'failed'; error?: string; pendingUploadTaskId?: string; pendingSyncToGroup?: boolean };
 export function parseMessage(input: unknown): Message | null {
   const result = baseMessage.safeParse(input);
   if (!result.success) return null;
