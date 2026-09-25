@@ -14,12 +14,16 @@ export function setMediaClient(next: ApiClient | null): void {
   client = next;
   if (!next) {
     memory.clear();
+    emotes.clear();
     mediaAccount = '';
   }
 }
 
 export function setMediaAccount(accountKey: string): void {
-  if (mediaAccount && mediaAccount !== accountKey) clearAccountPreviewCache(mediaAccount);
+  if (mediaAccount && mediaAccount !== accountKey) {
+    clearAccountPreviewCache(mediaAccount);
+    emotes.clear();
+  }
   mediaAccount = accountKey;
 }
 
