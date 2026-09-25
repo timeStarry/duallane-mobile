@@ -41,3 +41,18 @@ test('expired cards do not expose their old actions', async () => {
   await waitFor(() => expect(view.getByText('需求投票')).toBeTruthy());
   expect(view.queryByRole('button', { name: '提交投票' })).toBeNull();
 });
+
+test('unknown Echo card types cannot inherit topic or voting actions', async () => {
+  const runtime = {
+    resolveCard: jest.fn().mockResolvedValue({
+      block: { cardType: 'echo.future', schemaVersion: 1, fallbackText: '尚未支持' },
+      status: 'active', revision: 1, actions: ['open_topic', 'join_topic', 'vote'],
+      payload: { title: '未来卡片', topicId: 'topic-1', options: [{ id: 'opt-1', label: '选项' }] },
+    }),
+  } as unknown as Runtime;
+  const view = render(<WorkspaceCard block={{ ...block, cardType: 'echo.future' }} runtime={runtime} />);
+  await waitFor(() => expect(view.getByText('此卡片暂不支持交互')).toBeTruthy());
+  expect(view.queryByRole('button', { name: '打开话题' })).toBeNull();
+  expect(view.queryByRole('button', { name: '加入话题' })).toBeNull();
+  expect(view.queryByRole('button', { name: '提交投票' })).toBeNull();
+});

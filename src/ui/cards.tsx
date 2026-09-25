@@ -37,7 +37,8 @@ function registeredCardActions(cardType: string, actions: string[], status?: str
   if (status && status !== 'active') return [];
   const allowed = cardType === 'echo.solicitation' ? ['vote']
     : cardType === 'echo.request' || cardType === 'echo.request-status' ? ['collect', 'start', 'implement']
-      : ['open_topic', 'join_topic'];
+      : cardType === 'workspace.topic-created' || cardType === 'workspace.topic-message-synced' ? ['open_topic', 'join_topic']
+        : [];
   return actions.filter(action => allowed.includes(action));
 }
 
@@ -117,7 +118,7 @@ export function WorkspaceCard({
     }).catch(caught => setError(errorText(caught))).finally(() => setBusy(''));
   };
   return (
-    <View accessible accessibilityLabel={[kind, model.title, model.summary].filter(Boolean).join(' ')} style={{ gap: 8, padding: 8, borderRadius: t.radius.control, backgroundColor: t.soft }}>
+    <View style={{ gap: 8, padding: 8, borderRadius: t.radius.control, backgroundColor: t.soft }}>
       {kind ? <Label muted>{kind}</Label> : null}
       <Text style={{ color: t.text, fontWeight: '600' }}>{model.title}</Text>
       {model.summary ? <Text style={{ color: t.text, fontSize: t.type.body }}>{model.summary}</Text> : null}
@@ -188,8 +189,11 @@ function EchoReleaseCard({ view, status, error }: { view: EchoReleaseView; statu
 }
 
 function isSupported(type: string, version?: number) {
-  const key = `${type}@${version ?? 1}`;
-  return key === 'workspace.topic-created@1' || key === 'workspace.topic-message-synced@1' || type.startsWith('echo.');
+  return version === 1 && (
+    type === 'workspace.topic-created' || type === 'workspace.topic-message-synced' ||
+    type === 'echo.solicitation' || type === 'echo.request' || type === 'echo.request-status' ||
+    type === 'echo.request-list' || type === 'echo.release'
+  );
 }
 
 function stringValue(value: unknown) {
