@@ -15,6 +15,7 @@
 | [2026-09-19 整体评估与迭代计划](../design/mobile-experience-redesign/ASSESSMENT-2026-09-19.md) | PR #11 与真机证据、契约／数据／交互缺口、I0–I3 顺序和验收门槛 |
 | [R0 设计确认](../design/mobile-experience-redesign/R0.md) | Token 映射、能力对照、手机流程、开放依赖；R1 开工条件 |
 | [R3 验收证据](../design/mobile-experience-redesign/R3.md) | 本机已跑命令、自动化覆盖与未验证项；不能代替真机／跨端通过 |
+| [R4 聊天补全与实测](../design/mobile-experience-redesign/R4.md) | 当前补全范围、APK 构建与真机验证记录及剩余边界 |
 | [安全与数据](SECURITY_AND_DATA.md) | Workspace 信任边界、凭证、缓存、本地通知、日志和隐私 |
 | [测试与发布](TESTING_AND_RELEASE.md) | Android 构建、版本、OTA、本地通知 验收、灰度、回滚 |
 
