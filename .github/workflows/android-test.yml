@@ -20,6 +20,8 @@ jobs:
     env:
       APP_ENV: test
       CI: '1'
+      DUALLANE_APP_VERSION: '0.2.0'
+      DUALLANE_ANDROID_VERSION_CODE: '2'
       EXPO_PUBLIC_API_ORIGIN: ${{ vars.DUALLANE_API_ORIGIN }}
     steps:
       - uses: actions/checkout@v4
@@ -137,6 +139,8 @@ jobs:
           android = '{http://schemas.android.com/apk/res/android}'
           app = root.find('application')
           assert root.attrib['package'] == 'com.timestarry.duallane'
+          assert root.attrib[android + 'versionCode'] == os.environ['DUALLANE_ANDROID_VERSION_CODE']
+          assert root.attrib[android + 'versionName'] == os.environ['DUALLANE_APP_VERSION']
           assert app.attrib[android + 'allowBackup'] == 'false'
           assert app.attrib.get(android + 'debuggable', 'false') == 'false'
           assert app.attrib.get(android + 'usesCleartextTraffic', 'false') == 'false'
