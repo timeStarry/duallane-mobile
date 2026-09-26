@@ -1,8 +1,13 @@
 import Constants from 'expo-constants';
+import { NativeModules } from 'react-native';
 import { z } from 'zod';
 const configSchema=z.object({environment:z.enum(['development','test','production']),apiOrigin:z.string(),channel:z.literal('internal')});
 export const config=configSchema.parse(Constants.expoConfig?.extra);
-export const installed={appVersion:Constants.nativeAppVersion ?? '0.1.0',versionCode:Number(Constants.nativeBuildVersion ?? 1)};
+type BuildInfo = { appVersion: string; versionCode: number };
+export function installedVersion(native: BuildInfo | undefined, expoVersion?: string | null, expoCode?: string | null): BuildInfo {
+  return { appVersion: native?.appVersion ?? expoVersion ?? '0.1.0', versionCode: native?.versionCode ?? Number(expoCode ?? 1) };
+}
+export const installed=installedVersion(NativeModules.DualLaneBuildInfo as BuildInfo | undefined, Constants.nativeAppVersion, Constants.nativeBuildVersion);
 export const redirectUri='com.timestarry.duallane://oauth';
 export function validateOrigin(value:string):string { const u=new URL(value); if(u.protocol!=='https:'||u.username||u.password||u.pathname!=='/'||u.search||u.hash) throw new Error('请输入 HTTPS 服务地址，不含路径'); return u.origin; }
 // Invitations are entered by the user and forwarded only to their own HTTPS service.

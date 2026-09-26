@@ -20,7 +20,7 @@ class SaveFileModule(private val context: ReactApplicationContext) : ReactContex
   private var pending: PendingSave? = null
 
   private val listener = object : BaseActivityEventListener() {
-    override fun onActivityResult(activity: Activity?, requestCode: Int, resultCode: Int, data: Intent?) {
+    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
       if (requestCode != REQUEST_CODE) return
       val save = synchronized(this@SaveFileModule) {
         pending.also { pending = null }
@@ -63,7 +63,7 @@ class SaveFileModule(private val context: ReactApplicationContext) : ReactContex
       promise.reject("E_INVALID_FILE", "Only a downloaded cache file may be saved")
       return
     }
-    val activity = currentActivity ?: run {
+    val activity = context.currentActivity ?: run {
       promise.reject("E_NO_ACTIVITY", "No activity is available to save the file")
       return
     }
@@ -104,7 +104,16 @@ class SaveFileModule(private val context: ReactApplicationContext) : ReactContex
 
 class SaveFilePackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
-    listOf(SaveFileModule(reactContext))
+    listOf(SaveFileModule(reactContext), DeviceBuildModule(reactContext))
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> = emptyList()
+}
+
+class DeviceBuildModule(context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
+  override fun getName() = "DualLaneBuildInfo"
+
+  override fun getConstants(): Map<String, Any> = mapOf(
+    "appVersion" to BuildConfig.VERSION_NAME,
+    "versionCode" to BuildConfig.VERSION_CODE,
+  )
 }
