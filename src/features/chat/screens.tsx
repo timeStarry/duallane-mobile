@@ -143,7 +143,7 @@ export function ChatScreen({
   const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
   const focused = useIsFocused();
   const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => useWorkspace.getState().messages[key] === undefined);
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
   const [progress, setProgress] = useState('');
@@ -157,15 +157,20 @@ export function ChatScreen({
   const historyReady = useRef(false);
   const [newMessages, setNewMessages] = useState(false);
   const [resolvedFocusId, setResolvedFocusId] = useState<string>();
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const count = target.kind === 'topic' ? await runtime.openTopic(target.id) : await runtime.open(target.id);
-      setHasOlder(hasOlderMessages(count ?? 0));
-    } catch (e) { setError(errorText(e)); }
-    finally { setLoading(false); }
-  }, [runtime, target]);
-  useEffect(() => { void load(); }, [load]);
+  const targetId = target.id;
+  const targetKind = target.kind;
+  useEffect(() => {
+    let active = true;
+    setLoading(useWorkspace.getState().messages[key] === undefined);
+    void (async () => {
+      try {
+        const count = targetKind === 'topic' ? await runtime.openTopic(targetId) : await runtime.open(targetId);
+        if (active) setHasOlder(hasOlderMessages(count ?? 0));
+      } catch (e) { if (active) setError(errorText(e)); }
+      finally { if (active) setLoading(false); }
+    })();
+    return () => { active = false; };
+  }, [runtime, targetId, targetKind, key]);
   useEffect(() => {
     pinToLatest.current = true;
     draggingTranscript.current = false;
