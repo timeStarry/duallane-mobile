@@ -3,6 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/react-native';
 import { EllipsisVertical } from 'lucide-react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { LoginScreen, MessageRow } from '../src/features/screens';
+import { Avatar } from '../src/ui/chrome';
 import { parseMessage } from '../src/domain/contracts';
 import { config } from '../src/platform/config';
 import { Runtime } from '../src/data/runtime';
@@ -25,6 +26,12 @@ beforeEach(()=>{config.apiOrigin='';});
 test('chat attachments expose an authorized download action',()=>{
   const download=jest.fn();const view=renderMessage(<MessageRow message={parseMessage(message)!} retry={jest.fn()} download={download}/>);
   fireEvent.press(view.getByRole('button',{name:'保存到设备'}));expect(download).toHaveBeenCalledWith(file);
+});
+test('SVG avatars keep a single centered visual while image avatars retain their fallback',()=>{
+  const svg=renderMessage(<Avatar name="回声" uri="/assets/echo-avatar.svg" id="echo" shape="bot"/>);
+  expect(svg.queryByText('回')).toBeNull();
+  const png=renderMessage(<Avatar name="信标" uri="/assets/beacon-avatar.png" id="beacon" shape="bot"/>);
+  expect(png.getByText('信')).toBeTruthy();
 });
 test('message controls keep attachment taps separate and expose a complete TalkBack summary',()=>{
   const download=jest.fn();
