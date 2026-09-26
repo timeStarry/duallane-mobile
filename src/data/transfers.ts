@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { attachmentSchema, type Attachment } from '../domain/contracts';
 import { useWorkspace } from '../domain/store';
 import { cache } from '../platform/storage';
+import { saveFileToDevice } from '../platform/save-file';
 import type { ApiClient } from './client';
 
 const bytesSchema = z.number().int().nonnegative().safe();
@@ -193,7 +194,7 @@ export class Transfers {
     cache.set(`${key}:uploads`, this.tasks(key).filter(v => v.id !== task.id));
     this.paused.delete(task.id);
   }
-  async download(api:ApiClient, key:string, attachment:Attachment) {
+  async download(api:ApiClient, key:string, attachment:Attachment, action:'save'|'share' = 'save') {
     const assertAccount = this.guard(key);
     assertAccount();
     const res = await api.json(`/api/workspace/files/${encodeURIComponent(attachment.id)}/downloads/reserve`, z.object({ id:z.string().min(1) }), {});
@@ -204,12 +205,15 @@ export class Transfers {
     const readers = downloadReaders.get(key) ?? new Set<ReadableStreamDefaultReader<Uint8Array>>();
     readers.add(reader);
     downloadReaders.set(key, readers);
-    const file = new File(Paths.cache, `${Crypto.randomUUID()}-${attachment.fileName.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-100)}`);
+    const directory = new Directory(Paths.cache, Crypto.randomUUID());
+    const name = attachment.fileName.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-100);
+    const file = new File(directory, name && name !== '.' && name !== '..' ? name : 'download');
     const files = transientFiles.get(key) ?? new Set<File>();
     files.add(file);
     transientFiles.set(key, files);
     try {
       assertAccount();
+      directory.create();
       file.create();
       const handle = file.open();
       let size = 0;
@@ -225,7 +229,8 @@ export class Transfers {
       } finally { handle.close(); }
       if (size !== attachment.byteSize) throw new Error('Incomplete download');
       assertAccount();
-      await Sharing.shareAsync(file.uri, { mimeType:attachment.mimeType, dialogTitle:'保存文件' });
+      if (action === 'share') await Sharing.shareAsync(file.uri, { mimeType:attachment.mimeType, dialogTitle:'分享文件' });
+      else await saveFileToDevice(file.uri, attachment.fileName, attachment.mimeType);
     } finally {
       await reader.cancel().catch(() => undefined);
       readers.delete(reader);
@@ -233,6 +238,7 @@ export class Transfers {
       files.delete(file);
       if (!files.size) transientFiles.delete(key);
       removeFile(file);
+      if (directory.exists) directory.delete();
     }
   }
 }

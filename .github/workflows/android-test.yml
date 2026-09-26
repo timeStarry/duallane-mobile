@@ -20,8 +20,8 @@ jobs:
     env:
       APP_ENV: test
       CI: '1'
-      DUALLANE_APP_VERSION: '0.2.0'
-      DUALLANE_ANDROID_VERSION_CODE: '2'
+      DUALLANE_APP_VERSION: '0.2.1'
+      DUALLANE_ANDROID_VERSION_CODE: '3'
       EXPO_PUBLIC_API_ORIGIN: ${{ vars.DUALLANE_API_ORIGIN }}
     steps:
       - uses: actions/checkout@v4

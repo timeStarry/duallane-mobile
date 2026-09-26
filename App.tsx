@@ -163,7 +163,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                 onClose={() => nav.goBack()}
                 onDownload={() => {
                   const api = runtime.api;
-                  if (api && route.params.canDownload) void transfers.download(api, useWorkspace.getState().accountKey, { id: route.params.id, fileName: route.params.fileName, mimeType: route.params.mimeType, byteSize: route.params.byteSize, status: route.params.status, capabilities: { canDownload: true } }).catch(() => undefined);
+                  if (api && route.params.canDownload) void transfers.download(api, useWorkspace.getState().accountKey, { id: route.params.id, fileName: route.params.fileName, mimeType: route.params.mimeType, byteSize: route.params.byteSize, status: route.params.status, capabilities: { canDownload: true } }, 'share').catch(() => undefined);
                 }}
               />
             )}

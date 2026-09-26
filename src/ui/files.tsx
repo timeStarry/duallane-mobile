@@ -18,7 +18,7 @@ export function FileRow({ file, download }: { file: Attachment; download: () => 
     <View style={[fileStyles.row, { borderColor: t.line }]}>
       <Text style={{ color: t.text, fontSize: t.type.body }} numberOfLines={2}>{file.fileName}</Text>
       <Label muted>{formatBytes(file.byteSize)} · {fileStatus(file)}</Label>
-      <Button title="下载并保存" secondary disabled={!file.capabilities.canDownload} onPress={download} />
+      <Button title="保存到设备" secondary disabled={!file.capabilities.canDownload} onPress={download} />
     </View>
   );
 }

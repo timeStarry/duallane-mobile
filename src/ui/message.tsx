@@ -15,7 +15,10 @@ const emptyMembers: Array<{ id: string; displayName: string }> = [];
 import { Avatar } from './chrome';
 import { Button, Dialog, InlineFeedback, Label, ObjectActionSheet } from './primitives';
 import { MessageContent, ReactionGlyph } from './MessageContent';
+import { catalogUnicodeGlyph } from '../domain/emote-catalog';
 import { useTheme } from './theme';
+
+const quickReactions = ['emoji:thumbs-up', 'emoji:heart', 'emoji:smile'];
 
 function actionIcon(id: string, color: string) {
   if (id === 'reply') return <MessageSquare size={18} color={color} />;
@@ -83,6 +86,11 @@ export function MessageRow({
   const [reactOpen, setReactOpen] = useState(false);
   const [confirmRecall, setConfirmRecall] = useState(false);
   const [actionError, setActionError] = useState('');
+  const react = (emoteKey: string, remove: boolean) => {
+    if (!runtime) return;
+    setActionError('');
+    void runtime.react(message.id, emoteKey, remove).catch(error => setActionError(errorText(error)));
+  };
   const grouped = groupPosition ? groupPosition === 'middle' || groupPosition === 'end' : previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
   const position = groupPosition ?? (grouped ? 'end' : 'single');
   const outer = t.bubble.outer;
@@ -142,7 +150,7 @@ export function MessageRow({
                   key={reaction.emoteKey}
                   accessibilityRole="button"
                   accessibilityLabel={`${reaction.emoteKey} ${reaction.count}${reaction.reactedByCurrentUser ? '，已选择' : ''}`}
-                  onPress={() => runtime && void runtime.react(message.id, reaction.emoteKey, reaction.reactedByCurrentUser)}
+                  onPress={() => react(reaction.emoteKey, reaction.reactedByCurrentUser)}
                   style={{ paddingHorizontal: 8, minHeight: 32, borderRadius: 16, backgroundColor: reaction.reactedByCurrentUser ? t.sharedSoft : t.soft, justifyContent: 'center' }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
@@ -200,15 +208,15 @@ export function MessageRow({
         ) : null}
         {reactOpen && runtime ? (
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
-            {['👍', '❤️', '😄'].map(glyph => (
+            {quickReactions.map(emoteKey => (
               <Pressable
-                key={glyph}
+                key={emoteKey}
                 accessibilityRole="button"
-                accessibilityLabel={`反应 ${glyph}`}
-                onPress={() => { void runtime.react(message.id, glyph, false); setReactOpen(false); setCluster(false); }}
+                accessibilityLabel={`反应 ${catalogUnicodeGlyph(emoteKey) ?? emoteKey}`}
+                onPress={() => { react(emoteKey, false); setReactOpen(false); setCluster(false); }}
                 style={{ minWidth: 36, minHeight: 36, alignItems: 'center', justifyContent: 'center' }}
               >
-                <Text>{glyph}</Text>
+                <ReactionGlyph emoteKey={emoteKey} />
               </Pressable>
             ))}
           </View>

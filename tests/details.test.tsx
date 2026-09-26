@@ -40,7 +40,7 @@ test('group details expose authorized pins, topics, and conversation files with 
   expect(onOpenTopic).toHaveBeenCalledWith(topic);
   fireEvent.press(view.getByRole('button', { name: '预览图片' }));
   expect(onOpenFile).toHaveBeenCalledWith(file);
-  fireEvent.press(view.getByRole('button', { name: '下载并保存' }));
+  fireEvent.press(view.getByRole('button', { name: '保存到设备' }));
   expect(onDownloadFile).toHaveBeenCalledWith(file);
   expect(api.json).toHaveBeenCalledWith('/api/workspace/groups/g1/pins', expect.anything());
   expect(api.json).toHaveBeenCalledWith('/api/workspace/files?scope=conversation&conversationId=g1&limit=50', expect.anything());
