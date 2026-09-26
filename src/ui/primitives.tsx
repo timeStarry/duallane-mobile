@@ -3,12 +3,15 @@ import {
   ActivityIndicator,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
   type TextInputProps,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { connectionBannerText, connectionCategory } from './connection';
 import { useTheme } from './theme';
 
@@ -308,14 +311,17 @@ export function ObjectActionSheet({
   onRequestClose: () => void;
 }) {
   const t = useTheme();
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
   return (
     <Modal visible={visible} transparent animationType={t.motionMs('detail') ? 'slide' : 'none'} onRequestClose={onRequestClose}>
       <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(32,44,50,0.4)' }}>
         <Pressable accessibilityRole="button" accessibilityLabel="关闭动作" style={{ flex: 1 }} onPress={onRequestClose} />
-        <View style={{ backgroundColor: t.elevated, borderTopLeftRadius: t.radius.dialog, borderTopRightRadius: t.radius.dialog, padding: t.space.lg, gap: t.space.sm }}>
+        <View accessibilityViewIsModal style={{ maxHeight: Math.max(240, height - insets.top - t.space.md), backgroundColor: t.elevated, borderTopLeftRadius: t.radius.dialog, borderTopRightRadius: t.radius.dialog, paddingHorizontal: t.space.lg, paddingTop: t.space.lg, paddingBottom: Math.max(insets.bottom, t.space.lg), gap: t.space.sm }}>
           <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }}>{title}</Text>
-          {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted }}>{detail}</Text> : null}
-          {actions.map(action => (
+          {detail ? <Text numberOfLines={2} style={{ fontSize: t.type.meta, color: t.muted }}>{detail}</Text> : null}
+          <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: t.space.sm }} keyboardShouldPersistTaps="handled">
+            {actions.map(action => (
             <Pressable
               key={action.id}
               accessibilityRole="button"
@@ -340,7 +346,8 @@ export function ObjectActionSheet({
               {action.icon}
               <Text style={{ color: action.danger ? t.danger : t.text, fontSize: t.type.body, fontWeight: '500' }}>{action.title}</Text>
             </Pressable>
-          ))}
+            ))}
+          </ScrollView>
           <Button title="取消" variant="ghost" onPress={onRequestClose} />
         </View>
       </View>

@@ -20,7 +20,7 @@
 | 会话提醒 `all/mentions/muted` | `PATCH .../notification` | 已接（详情页） | 保留语义 |
 | 邮件／ntfy 渠道 | `/me/notifications`、email 路由 | 未接；移动端不改 ntfy | 范围外渠道管理；R1 不做邮件设置页 |
 | 设备会话列表／撤销 | 需确认当前契约 | 方案有目标，页面无入口 | 阻塞，见开放依赖 |
-| 表情库管理 | `/me/emotes*` | 未接 | R2 选择器先于管理工具 |
+| 表情库管理 | `/me/emotes*`、`/emote-collection-shares/*` | 已接消息图片收藏与授权合集预览／整套导入；排序、创建和分享管理仍未接 | 保留个人管理工具为独立范围 |
 | Bot 凭证与管理 | `/bots*` | 未接 | 范围外 |
 | 空间管理 | 角色、邀请、容量、保留 | 未接 | 范围外 |
 
@@ -29,20 +29,20 @@
 | 编号 | 能力 | Go | 当前移动端 | 本轮 |
 | --- | --- | --- | --- | --- |
 | MSG-01 | 结构化 blocks（text／mention／link／emoji／attachment） | 消息 DTO `content` | 按 block 渲染；未知仍 fallback；catalog 小表情 token 按 Web `emote-packs.json` 的 src 渲染 | R2 已接 |
-| MSG-02 | Markdown 安全子集 | Web `WorkspaceMarkdown` | 无 WebView；表格／HTML 纯文；Markdown 文本中的 `[bili:melon]` 等 token 仍拆成图片 | R2 已接 |
+| MSG-02 | Markdown 安全子集 | Web `WorkspaceMarkdown` | 原生显示标题、列表、引用、围栏代码、行内强调和安全 HTTP 链接；表格／HTML 仍为纯文；catalog token 仍拆成图片 | R4 扩展 |
 | MSG-03 | 回复 | 创建消息 `replyToMessageId` | 引用预览／取消／定位 | R2 已接 |
 | MSG-04 | @ 成员 | mention block | 候选与结构化 mention | R2 已接 |
-| MSG-05 | 表情与反应 | emote 路由；`POST/DELETE .../reactions` | 选择器插入 catalog token（不包 `:`）；反应显示 catalog 图／unicode | R2 已接 |
-| MSG-06 | 复制／撤回／隐藏／常驻 | recall、hidden、pins | 长按与更多；三者分开 | R2 已接 |
+| MSG-05 | 表情与反应 | emote 路由；`POST/DELETE .../reactions` | 选择器插入 catalog token（不包 `:`）；反应显示 catalog 图／unicode；可预览导入消息合集及收藏消息图片 | R4 扩展 |
+| MSG-06 | 复制／撤回／隐藏／常驻 | recall、hidden、pins | 显式消息动作与底部更多；三者分开；群详情列出可定位的常驻消息 | R4 扩展 |
 | MSG-07 | 历史、已读、未读分界 | messages + read | 分页、未读分界、引用定位 | R2 已接 |
 | MSG-08 | 草稿、失败重试、clientMessageId | 创建消息幂等 | 草稿含引用／附件／提及 | R2 已接 |
-| MSG-09 | 文件选择预览后发送 | 分片上传 | 选择≠发送；确认后上传 | R2 已接 |
+| MSG-09 | 文件选择预览后发送 | 分片上传 | 选择≠发送；确认后上传；话题附件使用私有暂存，失败重试保留上传任务与目标 | R4 修正 |
 | MSG-10 | 话题 | `topic_routes.go` 全套 | 列表、加入／退出、独立聊天 | R2 已接；不做关闭／归档管理 |
-| MSG-11 | 已注册卡片 | `/cards/{id}`、actions | 话题卡原生；未知不执行 | R2 已接 |
-| MSG-12 | 未读／通知一致 | 会话投影 + WS | 通知可带 topicId | R2 已接 |
+| MSG-11 | 已注册卡片 | `/cards/{id}`、actions | 话题卡与已知 Echo 投票／状态动作原生显示；未知类型和动作不执行 | R4 扩展 |
+| MSG-12 | 未读／通知一致 | 会话投影 + WS | 会话未读以服务端投影为准；话题事件刷新服务端话题投影和通知 | R4 修正 |
 
 `close`／`archive` 话题管理 API 存在，不等于移动端提供管理页。移动端只消费加入、退出、阅读、发送和状态展示。
 
 ## 3. 当前解析缺口
 
-[`parseMessage`](../../../src/domain/contracts.ts) 已纳入 `topicId`、`replyToMessageId`、`reactions`、`pin`、作者扩展字段，以及 `card`／`emote_collection`／`topic_reference` 已知 block。未知 block／kind 仍安全 fallback 到 `plainText`，不执行 payload。正文里的 catalog 小表情与 Web 相同：token 如 `[bili:melon]`、`[wechat:微笑]` 对照主仓 `apps/web/shared/emote-packs.json` 快照解析为 `/emotes/...` 同源静态图，不按 id 猜 `.png` 文件名。未知 token 保持原文。表情包管理工具仍未接。
+[`parseMessage`](../../../src/domain/contracts.ts) 已纳入 `topicId`、`replyToMessageId`、`reactions`、`pin`、作者扩展字段，以及 `card`／`emote_collection`／`topic_reference` 已知 block。未知 block／kind 仍安全 fallback 到 `plainText`，不执行 payload。正文里的 catalog 小表情与 Web 相同：token 如 `[bili:melon]`、`[wechat:微笑]` 对照主仓 `apps/web/shared/emote-packs.json` 快照解析为 `/emotes/...` 同源静态图，不按 id 猜 `.png` 文件名。未知 token 保持原文。自定义合集创建、分享和排序工具仍未接；本轮验证见 [R4 记录](R4.md)。

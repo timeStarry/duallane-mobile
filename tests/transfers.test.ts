@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import * as Crypto from 'expo-crypto';
 import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
+import { saveFileToDevice } from '../src/platform/save-file';
 import { Transfers, clearAccountFiles, uploadStatusSchema, type UploadTask } from '../src/data/transfers';
 import { useWorkspace } from '../src/domain/store';
 import { attachmentSchema } from '../src/domain/contracts';
@@ -9,6 +11,7 @@ import { cache } from '../src/platform/storage';
 import type { ApiClient } from '../src/data/client';
 
 const mockDisk = new Map<string,Uint8Array>();
+const mockDirs = new Set<string>();
 const mockCache = new Map<string,unknown>();
 jest.mock('../src/platform/storage', () => ({ cache:{
   get:(key:string) => mockCache.get(key),
@@ -33,10 +36,11 @@ jest.mock('expo-file-system', () => {
       };
     }
   }
-  return { File:MockFile, Directory:class { create() {} }, Paths:{ document:{ uri:'file:///document' }, cache:{ uri:'file:///cache' } } };
+  return { File:MockFile, Directory:class { uri:string; constructor(parent:{uri:string},name:string){this.uri=`${parent.uri}/${name}`;} get exists(){return mockDirs.has(this.uri);} create(){mockDirs.add(this.uri);} delete(){mockDirs.delete(this.uri);} }, Paths:{ document:{ uri:'file:///document' }, cache:{ uri:'file:///cache' } } };
 });
 jest.mock('expo-document-picker', () => ({ getDocumentAsync:jest.fn() }));
 jest.mock('expo-sharing', () => ({ shareAsync:jest.fn().mockResolvedValue(undefined) }));
+jest.mock('../src/platform/save-file', () => ({ saveFileToDevice:jest.fn().mockResolvedValue(true) }));
 jest.mock('expo-crypto', () => ({ randomUUID:() => '11111111-1111-4111-8111-111111111111', CryptoDigestAlgorithm:{ SHA256:'SHA256' }, digest:jest.fn().mockImplementation(async () => new Uint8Array(32).buffer) }));
 
 const key = 'https://workspace.test:user';
@@ -49,16 +53,34 @@ function saveTask(value:UploadTask = task) {
   mockDisk.set(value.uri, new Uint8Array(value.byteSize));
 }
 function apiWith(responses:unknown[]) {
-  const json = jest.fn(async (_path:string, schema:z.ZodType) => schema.parse(responses.shift()));
+  const json = jest.fn(async (_path:string, schema:z.ZodType, _body?:unknown) => schema.parse(responses.shift()));
   const raw = jest.fn().mockResolvedValue({ ok:true });
   return { api:{ json, raw } as unknown as ApiClient, json, raw };
 }
 const reserved = { id:'up1', attachment, upload:{ partSize:4194304, partCount:1 } };
 const status = { uploadId:'up1', mode:'single', partSize:4194304, partCount:1, parts:[] };
 beforeEach(() => {
-  mockDisk.clear(); mockCache.clear();
+  mockDisk.clear(); mockDirs.clear(); mockCache.clear();
+  jest.mocked(DocumentPicker.getDocumentAsync).mockReset();
   useWorkspace.getState().reset(); useWorkspace.setState({ accountKey:key });
   jest.mocked(Crypto.digest).mockImplementation(async () => new Uint8Array(32).buffer);
+});
+
+test('topic upload reserves private staging without a parent conversation scope', async () => {
+  const picked='file:///cache/topic.txt';
+  mockDisk.set(picked,new Uint8Array([1,2,3]));
+  jest.mocked(DocumentPicker.getDocumentAsync).mockResolvedValue({ canceled:false, assets:[{ uri:picked, name:'topic.txt', mimeType:'text/plain', size:3, lastModified:0 }] });
+  const transfers=new Transfers();
+  const chosen=await transfers.choose(key,undefined,'private_staging');
+  expect(chosen).toMatchObject({ visibility:'private_staging', conversationId:undefined });
+  const { api,json }=apiWith([reserved,status,{ attachment }]);
+  await transfers.run(api,key,chosen!,jest.fn());
+  expect(json.mock.calls.find(([path])=>path.endsWith('/reserve'))?.[2]).toEqual({ fileName:'topic.txt',mimeType:'text/plain',byteSize:3,visibility:'private_staging' });
+});
+
+test('topic private staging cannot accidentally inherit the parent conversation', async () => {
+  await expect(new Transfers().choose(key,'group-1','private_staging')).rejects.toThrow('Topic upload cannot use a conversation scope');
+  expect(DocumentPicker.getDocumentAsync).not.toHaveBeenCalled();
 });
 
 test('deployed Go upload status parses existing parts and skips their retransmission', async () => {
@@ -151,21 +173,49 @@ function downloadApi(chunks:Uint8Array[]) {
   return { api, raw, json, reader, arrayBuffer };
 }
 
-test('download reserves quota and streams file chunks without loading the entire body', async () => {
+test('download reserves quota, streams file chunks and opens Android save with the original name', async () => {
   const { api, raw, arrayBuffer, reader } = downloadApi([new Uint8Array([1]), new Uint8Array([2, 3])]);
-  jest.mocked(Sharing.shareAsync).mockImplementationOnce(async uri => { expect(new File(uri).size).toBe(3); });
+  jest.mocked(saveFileToDevice).mockImplementationOnce(async (uri, name) => {
+    expect(new File(uri).size).toBe(3);
+    expect(name).toBe('example.bin');
+    return true;
+  });
   await new Transfers().download(api, key, attachment);
   expect(raw).toHaveBeenCalledWith('/api/workspace/files/a1/download?downloadId=download1');
   expect(arrayBuffer).not.toHaveBeenCalled();
   expect(reader.cancel).toHaveBeenCalled();
   expect(mockDisk.size).toBe(0);
+  expect(mockDirs.size).toBe(0);
+  expect(Sharing.shareAsync).not.toHaveBeenCalled();
 });
 
-test.each([[new Uint8Array([1])], [new Uint8Array([1, 2, 3, 4])]])('truncated and oversized downloads cannot be shared and partial content is removed', async chunk => {
+test('canceling Android save does not claim success or retain a cache file', async () => {
+  const { api } = downloadApi([new Uint8Array([1, 2, 3])]);
+  jest.mocked(saveFileToDevice).mockResolvedValueOnce(false);
+  await new Transfers().download(api, key, attachment);
+  expect(mockDisk.size).toBe(0);
+  expect(mockDirs.size).toBe(0);
+});
+
+test('sharing preserves the file name without a random prefix', async () => {
+  const { api } = downloadApi([new Uint8Array([1, 2, 3])]);
+  jest.mocked(Sharing.shareAsync).mockImplementationOnce(async uri => {
+    expect(uri).toMatch(/\/example\.bin$/);
+    expect(new File(uri).size).toBe(3);
+  });
+  await new Transfers().download(api, key, attachment, 'share');
+  expect(saveFileToDevice).not.toHaveBeenCalled();
+  expect(mockDisk.size).toBe(0);
+  expect(mockDirs.size).toBe(0);
+});
+
+test.each([[new Uint8Array([1])], [new Uint8Array([1, 2, 3, 4])]])('truncated and oversized downloads cannot be saved and partial content is removed', async chunk => {
   const { api } = downloadApi([chunk]);
   await expect(new Transfers().download(api, key, attachment)).rejects.toThrow();
+  expect(saveFileToDevice).not.toHaveBeenCalled();
   expect(Sharing.shareAsync).not.toHaveBeenCalled();
   expect(mockDisk.size).toBe(0);
+  expect(mockDirs.size).toBe(0);
 });
 
 test('a stalled download times out, cancels its stream and deletes partial content', async () => {
@@ -179,7 +229,7 @@ test('a stalled download times out, cancels its stream and deletes partial conte
     await jest.advanceTimersByTimeAsync(30001);
     await rejected;
     expect(reader.cancel).toHaveBeenCalled();
-    expect(Sharing.shareAsync).not.toHaveBeenCalled();
+    expect(saveFileToDevice).not.toHaveBeenCalled();
     expect(mockDisk.size).toBe(0);
   } finally { jest.useRealTimers(); }
 });
@@ -196,7 +246,7 @@ test('receiving chunks renews the download timeout instead of imposing a total d
     const downloaded = new Transfers().download(api, key, attachment);
     await jest.advanceTimersByTimeAsync(75001);
     await downloaded;
-    expect(Sharing.shareAsync).toHaveBeenCalledTimes(1);
+    expect(saveFileToDevice).toHaveBeenCalledTimes(1);
     expect(mockDisk.size).toBe(0);
   } finally { jest.useRealTimers(); }
 });

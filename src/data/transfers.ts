@@ -6,10 +6,12 @@ import { z } from 'zod';
 import { attachmentSchema, type Attachment } from '../domain/contracts';
 import { useWorkspace } from '../domain/store';
 import { cache } from '../platform/storage';
+import { saveFileToDevice } from '../platform/save-file';
 import type { ApiClient } from './client';
 
 const bytesSchema = z.number().int().nonnegative().safe();
-const taskSchema = z.object({ id:z.string().uuid(), uri:z.string(), fileName:z.string(), mimeType:z.string(), byteSize:bytesSchema, uploadId:z.string().optional(), attachmentId:z.string().optional(), conversationId:z.string().optional(), complete:z.boolean().default(false) });
+const uploadVisibility = z.enum(['space', 'conversation', 'private_staging']);
+const taskSchema = z.object({ id:z.string().uuid(), uri:z.string(), fileName:z.string(), mimeType:z.string(), byteSize:bytesSchema, uploadId:z.string().optional(), attachmentId:z.string().optional(), conversationId:z.string().optional(), visibility:uploadVisibility.optional(), complete:z.boolean().default(false) });
 export type UploadTask = z.infer<typeof taskSchema>;
 const partSizeSchema = z.number().int().positive().max(4194304);
 const partCountSchema = z.number().int().nonnegative().max(10000);
@@ -75,7 +77,9 @@ export class Transfers {
       if (useWorkspace.getState().accountKey !== key || (accountEpochs.get(key) ?? 0) !== epoch) throw new Error('Account changed');
     };
   }
-  async choose(key:string, conversationId?:string) {
+  async choose(key:string, conversationId?:string, visibility?:z.infer<typeof uploadVisibility>) {
+    if (visibility === 'private_staging' && conversationId) throw new Error('Topic upload cannot use a conversation scope');
+    if (visibility === 'conversation' && !conversationId) throw new Error('Conversation upload requires a conversation');
     const assertAccount = this.guard(key);
     assertAccount();
     const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory:true, multiple:false });
@@ -91,7 +95,7 @@ export class Transfers {
       dir.create({ intermediates:true, idempotent:true });
       file = new File(dir, id);
       source.copy(file);
-      const task = taskSchema.parse({ id, uri:file.uri, fileName:asset.name, mimeType:asset.mimeType ?? 'application/octet-stream', byteSize:file.size, conversationId });
+      const task = taskSchema.parse({ id, uri:file.uri, fileName:asset.name, mimeType:asset.mimeType ?? 'application/octet-stream', byteSize:file.size, conversationId, visibility });
       this.save(key, task);
       return task;
     } catch (error) {
@@ -118,7 +122,8 @@ export class Transfers {
     try {
       if (!task.uploadId) {
         if (!file.exists || file.size !== task.byteSize) throw new Error('File unavailable');
-        const r = await api.json('/api/workspace/files/uploads/reserve', reservation, { fileName:task.fileName, mimeType:task.mimeType, byteSize:task.byteSize, visibility:task.conversationId ? 'conversation' : 'space', conversationId:task.conversationId });
+        const visibility = task.visibility ?? (task.conversationId ? 'conversation' : 'space');
+        const r = await api.json('/api/workspace/files/uploads/reserve', reservation, { fileName:task.fileName, mimeType:task.mimeType, byteSize:task.byteSize, visibility, ...(task.conversationId ? { conversationId:task.conversationId } : {}) });
         assertAccount();
         task = { ...task, uploadId:r.id, attachmentId:r.attachment.id, fileName:r.attachment.fileName, mimeType:r.attachment.mimeType };
         this.save(key, task);
@@ -189,7 +194,7 @@ export class Transfers {
     cache.set(`${key}:uploads`, this.tasks(key).filter(v => v.id !== task.id));
     this.paused.delete(task.id);
   }
-  async download(api:ApiClient, key:string, attachment:Attachment) {
+  async download(api:ApiClient, key:string, attachment:Attachment, action:'save'|'share' = 'save') {
     const assertAccount = this.guard(key);
     assertAccount();
     const res = await api.json(`/api/workspace/files/${encodeURIComponent(attachment.id)}/downloads/reserve`, z.object({ id:z.string().min(1) }), {});
@@ -200,12 +205,15 @@ export class Transfers {
     const readers = downloadReaders.get(key) ?? new Set<ReadableStreamDefaultReader<Uint8Array>>();
     readers.add(reader);
     downloadReaders.set(key, readers);
-    const file = new File(Paths.cache, `${Crypto.randomUUID()}-${attachment.fileName.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-100)}`);
+    const directory = new Directory(Paths.cache, Crypto.randomUUID());
+    const name = attachment.fileName.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-100);
+    const file = new File(directory, name && name !== '.' && name !== '..' ? name : 'download');
     const files = transientFiles.get(key) ?? new Set<File>();
     files.add(file);
     transientFiles.set(key, files);
     try {
       assertAccount();
+      directory.create();
       file.create();
       const handle = file.open();
       let size = 0;
@@ -221,7 +229,8 @@ export class Transfers {
       } finally { handle.close(); }
       if (size !== attachment.byteSize) throw new Error('Incomplete download');
       assertAccount();
-      await Sharing.shareAsync(file.uri, { mimeType:attachment.mimeType, dialogTitle:'保存文件' });
+      if (action === 'share') await Sharing.shareAsync(file.uri, { mimeType:attachment.mimeType, dialogTitle:'分享文件' });
+      else await saveFileToDevice(file.uri, attachment.fileName, attachment.mimeType);
     } finally {
       await reader.cancel().catch(() => undefined);
       readers.delete(reader);
@@ -229,6 +238,7 @@ export class Transfers {
       files.delete(file);
       if (!files.size) transientFiles.delete(key);
       removeFile(file);
+      if (directory.exists) directory.delete();
     }
   }
 }

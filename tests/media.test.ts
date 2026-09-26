@@ -1,4 +1,4 @@
-import { emoteSource, isPreviewableImage, resolveMediaUrl, splitCatalogEmotes } from '../src/data/media';
+import { emoteSource, isPreviewableImage, rememberEmotes, resolveMediaUrl, setMediaAccount, setMediaClient, splitCatalogEmotes } from '../src/data/media';
 import { composerEmotePacks, catalogImage, catalogUnicodeGlyph, enabledCatalogPacks, splitImageEmotes } from '../src/domain/emote-catalog';
 import { botAssetAvatar, isAllowedSameOriginMediaPath, sanitizeWorkspaceAvatarUrl } from '../src/domain/media-path';
 import { recalledNotice } from '../src/domain/recall';
@@ -14,6 +14,17 @@ test('relative emote and avatar paths resolve against the API origin', () => {
 
 test('custom emoji shortcodes map to the authorized content path', () => {
   expect(emoteSource('custom:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')).toBe('/api/workspace/emotes/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/content');
+});
+
+test('personal emote mappings are discarded when the account changes or logs out', () => {
+  setMediaAccount('account-a');
+  rememberEmotes([{ id: 'private', kind: 'image', label: 'private', token: ':private:', src: '/api/workspace/emotes/private/content' }]);
+  expect(emoteSource(':private:')).toBe('/api/workspace/emotes/private/content');
+  setMediaAccount('account-b');
+  expect(emoteSource(':private:')).toBeUndefined();
+  rememberEmotes([{ id: 'private', kind: 'image', label: 'private', token: ':private:', src: '/api/workspace/emotes/private/content' }]);
+  setMediaClient(null);
+  expect(emoteSource(':private:')).toBeUndefined();
 });
 
 test('catalog emote tokens use the web catalog src instead of guessing filenames', () => {

@@ -14,7 +14,14 @@ export function composerDock(input: {
   lastImeHeight: number;
   navBarInset: number;
 }): { panelHeight: number; dockBottom: number } {
-  if (input.keyboardVisible) return { panelHeight: 0, dockBottom: input.imeBottom };
+  if (input.keyboardVisible) {
+    // Suggestions stay in the chat layout above the IME. Emoji and attachment
+    // panels still replace the IME, so neither may consume space while it is up.
+    const panelHeight = input.panel === 'mention'
+      ? Math.min(180, Math.max(96, Math.round(input.lastImeHeight * 0.6)))
+      : 0;
+    return { panelHeight, dockBottom: input.imeBottom };
+  }
   if (input.panel !== 'none') return { panelHeight: input.lastImeHeight, dockBottom: 0 };
   return { panelHeight: 0, dockBottom: input.navBarInset };
 }
@@ -23,13 +30,13 @@ export function applyMentionSuggestions(input: {
   suggestionCount: number;
   current: ComposerPanel;
   mentionDismissed: boolean;
-}): { dismissKeyboard: boolean; nextPanel: ComposerPanel } {
+}): { nextPanel: ComposerPanel } {
   if (input.suggestionCount > 0) {
     if (input.mentionDismissed) {
-      return { dismissKeyboard: false, nextPanel: input.current === 'mention' ? 'none' : input.current };
+      return { nextPanel: input.current === 'mention' ? 'none' : input.current };
     }
-    return { dismissKeyboard: true, nextPanel: 'mention' };
+    return { nextPanel: 'mention' };
   }
-  if (input.current === 'mention') return { dismissKeyboard: false, nextPanel: 'none' };
-  return { dismissKeyboard: false, nextPanel: input.current };
+  if (input.current === 'mention') return { nextPanel: 'none' };
+  return { nextPanel: input.current };
 }

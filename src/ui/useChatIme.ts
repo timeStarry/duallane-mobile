@@ -39,9 +39,8 @@ export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery =
 
   useEffect(() => {
     const next = applyMentionSuggestions({ suggestionCount: mentionCount, current: panel, mentionDismissed: mentionDismissed.current });
-    if (next.dismissKeyboard) Keyboard.dismiss();
     if (next.nextPanel !== panel) setPanel(next.nextPanel);
-  }, [mentionCount, panel]);
+  }, [mentionCount, mentionQuery, panel]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -64,6 +63,9 @@ export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery =
   });
 
   const openPanel = (next: ComposerPanel) => {
+    // An explicit emoji/attachment choice takes precedence over the current
+    // @ query until the user edits that query again.
+    if (next !== 'mention') mentionDismissed.current = true;
     Keyboard.dismiss();
     setPanel(current => (current === next ? 'none' : next));
   };
