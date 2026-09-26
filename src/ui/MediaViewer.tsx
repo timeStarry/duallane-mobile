@@ -41,7 +41,7 @@ export function MediaViewer({
         </Pressable>
       </View>
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        {failed ? <Text style={{ color: '#fff', textAlign: 'center' }}>图片无法加载</Text> : uri ? <RemoteImage uri={uri} resizeMode="contain" style={{ width: '100%', height: '80%' }} /> : <Text style={{ color: '#fff', textAlign: 'center' }}>加载中…</Text>}
+        {failed ? <Text style={{ color: '#fff', textAlign: 'center' }}>图片无法加载</Text> : uri ? <RemoteImage uri={uri} resizeMode="contain" style={{ width: '100%', height: '80%' }} onError={() => setFailed(true)} /> : <Text style={{ color: '#fff', textAlign: 'center' }}>加载中…</Text>}
       </View>
       <View style={{ padding: 16, paddingBottom: Math.max(insets.bottom, 16), backgroundColor: t.elevated, gap: 8 }}>
         {failed ? <Button title="重试" secondary onPress={load} /> : null}

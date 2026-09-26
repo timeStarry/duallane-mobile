@@ -102,11 +102,10 @@ export function Avatar({
     >
       {emoji ? (
         <Text style={{ fontSize: size * 0.52 }}>{emoji}</Text>
-      ) : showImage ? (
-        <RemoteImage uri={safeUri} style={{ width: size, height: size }} onError={() => setImageFailed(true)} />
       ) : (
         <Text style={{ color: t.text, fontWeight: '600', fontSize: size * 0.38 }}>{letter}</Text>
       )}
+      {showImage ? <RemoteImage uri={safeUri} style={{ position: 'absolute', left: 0, top: 0, width: size, height: size }} showLoadingIndicator={false} onError={() => setImageFailed(true)} /> : null}
       {shape === 'bot' ? (
         <View
           style={{

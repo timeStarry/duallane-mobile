@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { Copy, Ellipsis, EyeOff, MessageSquare, Pin, Smile, SmilePlus, Undo2 } from 'lucide-react-native';
+import { Copy, EllipsisVertical, EyeOff, MessageSquare, Pin, Smile, SmilePlus, Undo2 } from 'lucide-react-native';
 import type { Attachment, Message } from '../domain/contracts';
 import { messageActions } from '../domain/message-actions';
 import type { MessageGroupPosition } from '../domain/message-grouping';
@@ -174,10 +174,11 @@ export function MessageRow({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`消息操作，${messageAccessibilityLabel(message, authorName)}`}
+              accessibilityHint="点按查看更多消息操作"
               onPress={() => { setCluster(open => !open); setReactOpen(false); }}
               style={({ pressed }) => ({ minWidth: t.hit, minHeight: t.hit, borderRadius: t.radius.control, alignItems: 'center', justifyContent: 'center', opacity: pressed ? t.pressedOpacity : 1 })}
             >
-              <Ellipsis size={18} color={t.muted} />
+              <EllipsisVertical size={18} color={t.muted} />
             </Pressable>
           </View>
         )}
@@ -202,7 +203,7 @@ export function MessageRow({
               <Smile size={18} color={t.text} />
             </Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel="更多" onPress={() => { setCluster(false); setSheet(true); }} style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: 24, backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }}>
-              <Ellipsis size={18} color={t.text} />
+              <EllipsisVertical size={18} color={t.text} />
             </Pressable>
           </View>
         ) : null}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import { EllipsisVertical } from 'lucide-react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { LoginScreen, MessageRow } from '../src/features/screens';
 import { parseMessage } from '../src/domain/contracts';
@@ -29,6 +30,8 @@ test('message controls keep attachment taps separate and expose a complete TalkB
   const download=jest.fn();
   const view=renderMessage(<MessageRow message={parseMessage(message)!} retry={jest.fn()} download={download}/>);
   const menu=view.getByRole('button',{name:/消息操作，Test/});
+  expect(menu.props.accessibilityHint).toBe('点按查看更多消息操作');
+  expect(menu.findAllByType(EllipsisVertical)).toHaveLength(1);
   expect(menu.props.accessibilityLabel).toContain('1个附件');
   expect(menu.props.accessibilityLabel).toContain('2026');
   fireEvent.press(view.getByRole('button',{name:'保存到设备'}));
