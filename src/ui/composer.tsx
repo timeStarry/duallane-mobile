@@ -1,8 +1,8 @@
 import React from 'react';
 import { Text, TextInput, View } from 'react-native';
-import { Paperclip, Send, Smile } from 'lucide-react-native';
+import { Plus, Send, Smile, X } from 'lucide-react-native';
 import { AttachmentPreview } from './files';
-import { Button, IconButton } from './primitives';
+import { IconButton } from './primitives';
 import { useTheme } from './theme';
 
 export function ReplyPreview({
@@ -16,10 +16,13 @@ export function ReplyPreview({
 }) {
   const t = useTheme();
   return (
-    <View style={{ backgroundColor: t.soft, borderRadius: t.radius.control, padding: t.space.sm, gap: 2 }}>
-      <Text style={{ color: t.shared, fontSize: t.type.meta, fontWeight: '600' }}>回复 {author}</Text>
-      <Text style={{ color: t.muted, fontSize: t.type.control }} numberOfLines={2}>{preview}</Text>
-      {onClear ? <Button title="取消回复" variant="ghost" onPress={onClear} /> : null}
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm, backgroundColor: t.soft, borderRadius: t.radius.control, padding: t.space.sm }}>
+      <View style={{ width: 3, alignSelf: 'stretch', backgroundColor: t.shared, borderRadius: 2 }} />
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text style={{ color: t.shared, fontSize: t.type.meta, fontWeight: '600' }}>回复 {author}</Text>
+        <Text style={{ color: t.muted, fontSize: t.type.control }} numberOfLines={2}>{preview}</Text>
+      </View>
+      {onClear ? <IconButton label="取消回复" onPress={onClear}><X color={t.muted} size={18} /></IconButton> : null}
     </View>
   );
 }
@@ -54,18 +57,13 @@ export function Composer({
   const t = useTheme();
   const maxHeight = t.type.bodyLine * 6;
   return (
-    <View style={{ padding: t.space.md, gap: t.space.sm, borderTopWidth: 1, borderTopColor: t.line, backgroundColor: t.bg }}>
+    <View style={{ padding: t.space.md, gap: t.space.sm, backgroundColor: 'transparent' }}>
       {reply ? <ReplyPreview author={reply.author} preview={reply.preview} onClear={onClearReply} /> : null}
       {attachmentName ? <AttachmentPreview name={attachmentName} onRemove={onClearAttachment} /> : null}
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: t.space.sm }}>
         {onAttach ? (
-          <IconButton label="添加文件" onPress={onAttach} disabled={attachDisabled}>
-            <Paperclip color={attachDisabled ? t.control : t.shared} size={22} />
-          </IconButton>
-        ) : null}
-        {onEmote ? (
-          <IconButton label="表情" onPress={onEmote}>
-            <Smile color={t.shared} size={22} />
+          <IconButton label="添加" onPress={onAttach} disabled={attachDisabled}>
+            <Plus color={attachDisabled ? t.control : t.shared} size={22} />
           </IconButton>
         ) : null}
         <TextInput
@@ -91,6 +89,11 @@ export function Composer({
             lineHeight: t.type.bodyLine,
           }}
         />
+        {onEmote ? (
+          <IconButton label="表情" onPress={onEmote}>
+            <Smile color={t.shared} size={22} />
+          </IconButton>
+        ) : null}
         <View style={{ flexShrink: 0 }}>
           <IconButton label="发送" onPress={onSend} disabled={sendDisabled}>
             <View

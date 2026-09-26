@@ -55,8 +55,8 @@ Pressed 透明度 0.72，disabled 0.4。Selected 列表行混合 `shared` 约 18
 | 次要按钮 | `soft` / `text` | 同命中区 |
 | 危险按钮 | `dangerSoft` / `danger` | 同命中区，不使用 `shared` |
 | 输入 | `surface` + `line`，聚焦 `focus` | 圆角 16，正文 16sp |
-| 本人消息 | `sharedSoft` | 气泡圆角 16，最大宽度约 80% |
-| 他人消息 | `surface` | 同左对齐 |
-| 列表行 | `bg` 上直接排行，底部分隔 `line` | 最小高度 64，左右 16 |
+| 本人消息 | `sharedSoft` | 气泡圆角 `bubble.outer` 16，组内邻边 `bubble.inner` 0，最大宽度约 80% |
+| 他人消息 | `surface` | 同左对齐 messenger 气泡 |
+| 列表行 | `bg` 上直接排行，底部分隔 `line` | 最小高度 `list.rowMin` 72，左右 16，头像 48 |
 | AppHeader | `surface`，底边 `line` | 标题 20sp，含状态栏 inset |
 | Dialog | `elevated`，遮罩 40% `text` | 圆角 20，左右边距 24 |

@@ -3,12 +3,14 @@ import { AppState, BackHandler, Modal, View } from 'react-native';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { MessageCircle, Files, Users, UserRound } from 'lucide-react-native';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { z } from 'zod';
 import * as Notifications from 'expo-notifications';
 import { ThemeProvider, useTheme, type AppearanceMode } from './src/ui/theme';
-import { Loading, Notice } from './src/ui/components';
+import { DualLaneTabBar, Loading, Notice } from './src/ui/components';
+import { MediaViewer } from './src/ui/MediaViewer';
 import { Runtime } from './src/data/runtime';
 import { Transfers } from './src/data/transfers';
 import { useWorkspace } from './src/domain/store';
@@ -20,7 +22,7 @@ import { cache } from './src/platform/storage';
 import { notificationTarget } from './src/platform/notifications';
 import { errorText } from './src/data/client';
 
-type RootParams = { Workspace: undefined; Chat: { id: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' } };
+type RootParams = { Workspace: undefined; Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' }; Media: { id: string; fileName: string; mimeType: string; byteSize: number; status: string; canDownload: boolean } };
 type TabsParams = { 聊天: undefined; 文件: undefined; 成员: undefined; 我的: undefined };
 const Stack = createNativeStackNavigator<RootParams>();
 const Tabs = createBottomTabNavigator<TabsParams>();
@@ -29,11 +31,15 @@ const navigation = createNavigationContainerRef<RootParams>();
 export default function App() {
   const [mode, setMode] = useState(z.enum(['system', 'light', 'dark']).catch('system').parse(cache.get('appearance')));
   return (
-    <SafeAreaProvider>
-      <ThemeProvider mode={mode}>
-        <Application mode={mode} setMode={setMode} />
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider mode={mode}>
+          <KeyboardProvider enabled={false} preserveEdgeToEdge statusBarTranslucent navigationBarTranslucent>
+            <Application mode={mode} setMode={setMode} />
+          </KeyboardProvider>
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -94,16 +100,8 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
 
   const tabs = ({ navigation: nav }: NativeStackScreenProps<RootParams, 'Workspace'>) => (
     <Tabs.Navigator
-      screenOptions={({ route }) => ({
-        headerShown: false,
-        tabBarActiveTintColor: t.shared,
-        tabBarInactiveTintColor: t.muted,
-        tabBarStyle: { backgroundColor: t.surface, borderTopColor: t.line },
-        tabBarIcon: ({ color, size }) => {
-          const Icon = { 聊天: MessageCircle, 文件: Files, 成员: Users, 我的: UserRound }[route.name];
-          return <Icon color={color} size={size} />;
-        },
-      })}
+      tabBar={props => <DualLaneTabBar {...props} />}
+      screenOptions={{ headerShown: false }}
     >
       <Tabs.Screen name="聊天">{() => <ConversationsScreen runtime={runtime} open={id => nav.navigate('Chat', { id })} openTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })} />}</Tabs.Screen>
       <Tabs.Screen name="文件">{() => <FilesScreen runtime={runtime} transfers={transfers} />}</Tabs.Screen>
@@ -130,10 +128,11 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
           }}
         >
           <Stack.Screen name="Workspace" options={{ headerShown: false }}>{tabs}</Stack.Screen>
-          <Stack.Screen name="Chat" options={{ title: '会话' }}>
+          <Stack.Screen name="Chat" options={{ headerShown: false }}>
             {({ route, navigation: nav }) => (
               <ChatScreen
                 target={{ kind: 'conversation', id: route.params.id }}
+                focusMessageId={route.params.focusMessageId}
                 runtime={runtime}
                 transfers={transfers}
                 details={() => nav.navigate('Details', { id: route.params.id, kind: 'conversation' })}
@@ -141,10 +140,11 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                   const topic = useWorkspace.getState().topics[topicId];
                   nav.navigate('Topic', { id: topicId, conversationId: topic?.conversationId ?? route.params.id });
                 }}
+                onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload })}
               />
             )}
           </Stack.Screen>
-          <Stack.Screen name="Topic" options={{ title: '话题' }}>
+          <Stack.Screen name="Topic" options={{ headerShown: false }}>
             {({ route, navigation: nav }) => (
               <ChatScreen
                 target={{ kind: 'topic', id: route.params.id, conversationId: route.params.conversationId }}
@@ -152,6 +152,19 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                 transfers={transfers}
                 details={() => nav.navigate('Details', { id: route.params.id, kind: 'topic' })}
                 onOpenTopic={topicId => nav.navigate('Topic', { id: topicId, conversationId: route.params.conversationId })}
+                onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload })}
+              />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Media" options={{ headerShown: false }}>
+            {({ route, navigation: nav }) => (
+              <MediaViewer
+                file={{ id: route.params.id, fileName: route.params.fileName, mimeType: route.params.mimeType, byteSize: route.params.byteSize, status: route.params.status, capabilities: { canDownload: route.params.canDownload } }}
+                onClose={() => nav.goBack()}
+                onDownload={() => {
+                  const api = runtime.api;
+                  if (api && route.params.canDownload) void transfers.download(api, useWorkspace.getState().accountKey, { id: route.params.id, fileName: route.params.fileName, mimeType: route.params.mimeType, byteSize: route.params.byteSize, status: route.params.status, capabilities: { canDownload: true } }, 'share').catch(() => undefined);
+                }}
               />
             )}
           </Stack.Screen>
@@ -163,6 +176,12 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                 runtime={runtime}
                 onCreateTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })}
                 onOpenTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })}
+                onOpenPinnedMessage={messageId => nav.popTo('Chat', { id: route.params.id, focusMessageId: messageId })}
+                onOpenFile={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload })}
+                onDownloadFile={file => {
+                  const api = runtime.api;
+                  if (api && file.capabilities.canDownload) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(error => useWorkspace.setState({ error: errorText(error) }));
+                }}
               />
             )}
           </Stack.Screen>

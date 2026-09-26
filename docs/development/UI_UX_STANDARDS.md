@@ -1,7 +1,7 @@
 # 移动端 UI/UX 规范
 
-下一轮体验改造以 [DL Android 体验改造要求](../design/mobile-experience-redesign/README.md)
-及其 [验收账本](../design/mobile-experience-redesign/ACCEPTANCE.md) 为目标规格。
+当前体验迭代以 [Android 体验全面迭代](../design/android-experience-iteration/README.md) 为准；
+[R1/R2 改造要求](../design/mobile-experience-redesign/README.md) 与 [验收账本](../design/mobile-experience-redesign/ACCEPTANCE.md) 仍是前一轮规格，账本判定保持未运行。
 下文保留原始移动基线；其中最小页面、组件和聊天覆盖不再代表本次改造完成标准。
 跨端统一对象、动作、状态与品牌语言，导航、手势、键盘和系统文件操作按 Android 适配。
 

@@ -3,49 +3,64 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bot } from 'lucide-react-native';
 import type { Conversation, Member } from '../domain/contracts';
+import { botAssetAvatar, sanitizeWorkspaceAvatarUrl } from '../domain/media-path';
 import { RemoteImage } from './RemoteImage';
 import { formatListTime, stableTone } from './format';
+import { UnreadBadge } from './primitives';
 import { useTheme } from './theme';
 
 export function AppHeader({
   title,
   subtitle,
+  leading,
+  trailing,
   right,
   includeTopInset = false,
+  banner,
+  identity,
 }: {
   title: string;
   subtitle?: string;
+  leading?: React.ReactNode;
+  trailing?: React.ReactNode;
   right?: React.ReactNode;
   includeTopInset?: boolean;
+  banner?: React.ReactNode;
+  identity?: { name: string; id: string; uri?: string | null; shape?: 'person' | 'group' | 'bot'; emoji?: string | null };
 }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   return (
-    <View
-      style={{
-        paddingTop: includeTopInset ? insets.top + t.space.sm : t.space.sm,
-        paddingHorizontal: t.space.lg,
-        paddingBottom: t.space.sm,
-        minHeight: includeTopInset ? insets.top + 56 : 52,
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: t.surface,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: t.line,
-        gap: t.space.sm,
-      }}
-    >
-      <View style={{ flex: 1 }}>
-        <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }} numberOfLines={1}>
-          {title}
-        </Text>
-        {subtitle ? (
-          <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }} numberOfLines={1}>
-            {subtitle}
+    <View>
+      <View
+        style={{
+          paddingTop: includeTopInset ? insets.top + t.space.sm : t.space.sm,
+          paddingHorizontal: t.space.lg,
+          paddingBottom: t.space.sm,
+          minHeight: includeTopInset ? insets.top + 56 : 52,
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: t.surface,
+          borderBottomWidth: banner ? 0 : StyleSheet.hairlineWidth,
+          borderBottomColor: t.line,
+          gap: t.space.sm,
+        }}
+      >
+        {leading}
+        {identity ? <Avatar name={identity.name} uri={identity.uri} id={identity.id} shape={identity.shape} emoji={identity.emoji} size={t.list.chatAvatar} /> : null}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }} numberOfLines={1}>
+            {title}
           </Text>
-        ) : null}
+          {subtitle ? (
+            <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }} numberOfLines={1}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        {trailing ?? right}
       </View>
-      {right}
+      {banner}
     </View>
   );
 }
@@ -70,7 +85,9 @@ export function Avatar({
   const backgroundColor = stableTone(id) === 0 ? t.avatarA : t.avatarB;
   const radius = shape === 'person' ? size / 2 : t.radius.entity;
   const letter = [...name.trim()].find(char => char.trim()) ?? '?';
-  const showImage = !!uri && !imageFailed && !emoji;
+  const safeUri = sanitizeWorkspaceAvatarUrl(uri) || botAssetAvatar(name) || '';
+  const showImage = !!safeUri && !imageFailed && !emoji;
+  const showInitial = !showImage || !/\.svg(\?|$)/i.test(safeUri);
   return (
     <View
       accessibilityIgnoresInvertColors
@@ -86,11 +103,10 @@ export function Avatar({
     >
       {emoji ? (
         <Text style={{ fontSize: size * 0.52 }}>{emoji}</Text>
-      ) : showImage ? (
-        <RemoteImage uri={uri} style={{ width: size, height: size }} onError={() => setImageFailed(true)} />
-      ) : (
+      ) : showInitial ? (
         <Text style={{ color: t.text, fontWeight: '600', fontSize: size * 0.38 }}>{letter}</Text>
-      )}
+      ) : null}
+      {showImage ? <RemoteImage uri={safeUri} style={{ position: 'absolute', left: 0, top: 0, width: size, height: size }} showLoadingIndicator={false} onError={() => setImageFailed(true)} /> : null}
       {shape === 'bot' ? (
         <View
           style={{
@@ -119,7 +135,7 @@ export function conversationIdentity(conversation: Conversation, selfId?: string
     shape: (other?.kind ?? listed?.kind) === 'bot' ? ('bot' as const) : ('person' as const),
     name: other?.displayName ?? listed?.displayName ?? conversation.displayTitle,
     id: other?.id ?? listed?.id ?? conversation.id,
-    uri: other?.avatarUrl ?? listed?.avatarUrl,
+    uri: sanitizeWorkspaceAvatarUrl(other?.avatarUrl ?? listed?.avatarUrl) || botAssetAvatar(other?.displayName ?? listed?.displayName ?? conversation.displayTitle),
     emoji: undefined as string | undefined,
   };
 }
@@ -152,14 +168,14 @@ export function ConversationRow({
         gap: t.space.md,
         paddingHorizontal: t.space.lg,
         paddingVertical: t.space.md,
-        minHeight: 64,
+        minHeight: t.list.rowMin,
         backgroundColor: t.bg,
         opacity: pressed ? t.pressedOpacity : 1,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: t.line,
       })}
     >
-      <Avatar name={identity.name} uri={identity.uri} id={identity.id} shape={identity.shape} emoji={identity.emoji} />
+      <Avatar name={identity.name} uri={identity.uri} id={identity.id} shape={identity.shape} emoji={identity.emoji} size={t.list.avatar} />
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
           <Text style={{ flex: 1, fontSize: 16, fontWeight: '600', color: t.text }} numberOfLines={1}>
@@ -172,11 +188,7 @@ export function ConversationRow({
             {preview}
           </Text>
           {muted ? <Text style={{ fontSize: t.type.timestamp, color: t.muted }}>免打扰</Text> : null}
-          {unread > 0 ? (
-            <View style={{ backgroundColor: t.shared, borderRadius: 10, minWidth: 20, paddingHorizontal: 6, paddingVertical: 2, alignItems: 'center' }}>
-              <Text style={{ color: t.onShared, fontSize: t.type.timestamp, fontWeight: '700' }}>{Math.min(unread, 99)}{unread > 99 ? '+' : ''}</Text>
-            </View>
-          ) : null}
+          <UnreadBadge count={unread} />
         </View>
       </View>
     </Pressable>
@@ -184,20 +196,24 @@ export function ConversationRow({
 }
 
 export function TopicRow({
+  id,
   title,
   groupName,
   preview,
   joined,
   closed,
   unreadCount,
+  groupEmoji,
   onPress,
 }: {
+  id: string;
   title: string;
   groupName: string;
   preview: string;
   joined: boolean;
   closed: boolean;
   unreadCount: number;
+  groupEmoji?: string | null;
   onPress: () => void;
 }) {
   const t = useTheme();
@@ -208,19 +224,25 @@ export function TopicRow({
       accessibilityLabel={`打开话题${title}，属于${groupName}，${state}`}
       onPress={onPress}
       style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: t.space.md,
         paddingHorizontal: t.space.lg,
         paddingVertical: t.space.md,
-        minHeight: 64,
+        minHeight: t.list.rowMin,
         backgroundColor: t.bg,
         opacity: pressed ? t.pressedOpacity : 1,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: t.line,
-        gap: 2,
       })}
     >
-      <Text style={{ fontSize: 16, fontWeight: '600', color: t.text }} numberOfLines={1}>{title}</Text>
-      <Text style={{ fontSize: t.type.meta, color: t.muted }} numberOfLines={1}>{groupName} · {state}{unreadCount > 0 ? ` · ${unreadCount}条未读` : ''}</Text>
-      <Text style={{ fontSize: t.type.control, color: t.muted }} numberOfLines={1}>{preview}</Text>
+      <Avatar name={groupName} id={id} shape="group" emoji={groupEmoji} size={t.list.avatar} />
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text style={{ fontSize: 16, fontWeight: '600', color: t.text }} numberOfLines={1}>{title}</Text>
+        <Text style={{ fontSize: t.type.meta, color: t.muted }} numberOfLines={1}>{groupName} · {state}{unreadCount > 0 ? ` · ${unreadCount}条未读` : ''}</Text>
+        <Text style={{ fontSize: t.type.control, color: t.muted }} numberOfLines={1}>{preview}</Text>
+      </View>
+      <UnreadBadge count={unreadCount} />
     </Pressable>
   );
 }

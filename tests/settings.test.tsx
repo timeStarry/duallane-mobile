@@ -65,7 +65,11 @@ test('account home includes chat preferences and still omits device sessions', (
     </NavigationContainer>,
   ));
   expect(view.getByText('聊天偏好')).toBeTruthy();
+  expect(view.getByText('账号')).toBeTruthy();
+  expect(view.getByText('偏好')).toBeTruthy();
   expect(view.queryByText('设备会话')).toBeNull();
+  fireEvent.press(view.getByText('外观与阅读'));
+  expect(view.getByText('减少动态跟随系统可访问设置。本页没有单独开关，也不会同步到其他设备。')).toBeTruthy();
 });
 
 test('profile save sends nickname and keeps the input after a failure', async () => {
@@ -107,7 +111,7 @@ test('composer keeps send reachable and does not send on IME confirm', () => {
   fireEvent(view.getByLabelText('消息'), 'submitEditing');
   expect(onSend).not.toHaveBeenCalled();
   expect(view.getByLabelText('发送')).toBeTruthy();
-  expect(view.getByLabelText('添加文件')).toBeTruthy();
+  expect(view.getByLabelText('添加')).toBeTruthy();
   fireEvent.press(view.getByLabelText('发送'));
   expect(onSend).toHaveBeenCalledTimes(1);
 });

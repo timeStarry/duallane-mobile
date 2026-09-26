@@ -24,13 +24,19 @@ test('missing fallback text and unknown message kind are safe and readable', () 
   expect(parseMessage({ ...message, kind:'future', content:{ blocks:[] } })?.plainText).toBe('此消息暂不支持，请更新应用后查看');
 });
 
-test('recalled and hidden DTOs cannot retain original text or attachments', () => {
-  for (const visibility of [{ recalledAt:'2026-09-16T01:00:00Z' }, { hiddenByCurrentUser:true }]) {
-    const parsed = parseMessage({ ...message, ...visibility, content, plainText:'old body' });
-    expect(parsed?.plainText).toBe('消息已不可用');
-    expect(parsed?.blocks).toEqual([]);
-    expect(parsed?.attachments).toEqual([]);
-  }
+test('recalled DTOs keep the server notice and drop original attachments', () => {
+  const parsed = parseMessage({ ...message, recalledAt:'2026-09-16T01:00:00Z', recallReason:'内容有误', content, plainText:'Member因内容有误撤回了一条消息' });
+  expect(parsed?.plainText).toBe('Member因内容有误撤回了一条消息');
+  expect(parsed?.blocks).toEqual([]);
+  expect(parsed?.attachments).toEqual([]);
+  expect(JSON.stringify(parsed)).not.toContain('safe summary');
+});
+
+test('hidden DTOs cannot retain original text or attachments', () => {
+  const parsed = parseMessage({ ...message, hiddenByCurrentUser:true, content, plainText:'old body' });
+  expect(parsed?.plainText).toBe('消息已不可用');
+  expect(parsed?.blocks).toEqual([]);
+  expect(parsed?.attachments).toEqual([]);
 });
 
 test('permission-filtered paginated replay only advances high water after the last page', () => {

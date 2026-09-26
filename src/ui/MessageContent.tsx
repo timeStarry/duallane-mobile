@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Linking, Pressable, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, Text, View, type TextStyle } from 'react-native';
 import type { Attachment, Block, Message } from '../domain/contracts';
 import { catalogImage, catalogUnicodeGlyph } from '../domain/emote-catalog';
 import { hiddenTypes } from '../domain/hide';
-import { extractHttpUrls, prepareWorkspaceMarkdown, safeHttpUrl } from '../domain/markdown';
+import { parseMarkdownBlocks, prepareWorkspaceMarkdown, safeHttpUrl, type MarkdownInline } from '../domain/markdown';
 import { useWorkspace } from '../domain/store';
 import { FileRow } from './files';
 import { Label } from './primitives';
@@ -11,15 +11,18 @@ import { useTheme } from './theme';
 import { WorkspaceCard } from './cards';
 import { attachmentPreviewUri, emoteSource, isPreviewableImage, splitCatalogEmotes } from '../data/media';
 import { RemoteImage } from './RemoteImage';
+import { EmoteCollectionShare } from './EmoteCollectionShare';
 
 export function MessageContent({
   message,
   download,
+  onPreview,
   onOpenTopic,
   runtime,
 }: {
   message: Message;
   download: (file: Attachment) => void;
+  onPreview?: (file: Attachment) => void;
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
 }) {
@@ -45,7 +48,7 @@ export function MessageContent({
   return (
     <View style={{ gap: 6 }}>
       {message.blocks.map((block, index) => (
-        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onOpenTopic={onOpenTopic} runtime={runtime} />
+        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} />
       ))}
     </View>
   );
@@ -55,12 +58,14 @@ function BlockView({
   block,
   attachments,
   download,
+  onPreview,
   onOpenTopic,
   runtime,
 }: {
   block: Block;
   attachments: Attachment[];
   download: (file: Attachment) => void;
+  onPreview?: (file: Attachment) => void;
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
 }) {
@@ -77,11 +82,11 @@ function BlockView({
   if (block.type === 'attachment') {
     const file = attachments.find(item => item.id === block.attachmentId);
     if (!file) return <Label muted>附件不可用</Label>;
-    if (isPreviewableImage(file)) return <AttachmentImage file={file} download={download} />;
+    if (isPreviewableImage(file)) return <AttachmentImage file={file} download={download} onPreview={onPreview} />;
     return <FileRow file={file} download={() => download(file)} />;
   }
   if (block.type === 'card') return <WorkspaceCard block={block} runtime={runtime} onOpenTopic={onOpenTopic} />;
-  if (block.type === 'emote_collection') return <Label>{block.share?.revokedAt ? '表情合集已失效' : `表情合集 ${block.share?.name ?? ''}`}</Label>;
+  if (block.type === 'emote_collection') return <EmoteCollectionShare shareId={block.shareId} summary={block.share} runtime={runtime} />;
   if (block.type === 'topic_reference') {
     return (
       <Pressable accessibilityRole="button" accessibilityLabel={`打开话题${block.title}`} onPress={() => onOpenTopic?.(block.topicId)}>
@@ -95,9 +100,9 @@ function BlockView({
 export function EmoteImage({ uri, token, size }: { uri: string; token: string; size: number }) {
   const [failed, setFailed] = useState(false);
   const fail = useCallback(() => setFailed(true), []);
-  if (failed) return <Text>{token}</Text>;
+  if (failed) return <View style={{ width: size, height: size }} />;
   return (
-    <View accessible accessibilityRole="image" accessibilityLabel={token}>
+    <View accessible accessibilityRole="image" accessibilityLabel={token.startsWith('[custom:') ? '自定义表情' : token}>
       <RemoteImage uri={uri} style={{ width: size, height: size }} onError={fail} />
     </View>
   );
@@ -118,18 +123,18 @@ function EmoteView({ shortcode }: { shortcode: string }) {
   return <Text style={{ fontSize: 28 }}>{shortcode.startsWith('custom:') || shortcode.startsWith('[') ? (shortcode.startsWith('[') ? shortcode : `[${shortcode}]`) : `:${shortcode}:`}</Text>;
 }
 
-function AttachmentImage({ file, download }: { file: Attachment; download: (file: Attachment) => void }) {
+function AttachmentImage({ file, download, onPreview }: { file: Attachment; download: (file: Attachment) => void; onPreview?: (file: Attachment) => void }) {
   const [uri, setUri] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let cancelled = false;
     void attachmentPreviewUri(file).then(value => { if (!cancelled) setUri(value); }).catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
-  }, [file.id, file.byteSize, file.fileName, file.mimeType]);
+  }, [file]);
   if (failed) return <FileRow file={file} download={() => download(file)} />;
   if (!uri) return <Label muted>图片加载中…</Label>;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`预览图片 ${file.fileName}`} onPress={() => download(file)}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`预览图片 ${file.fileName}`} onPress={() => (onPreview ?? download)(file)}>
       <RemoteImage uri={uri} style={{ width: 240, height: 180, borderRadius: 12 }} onError={() => setFailed(true)} />
     </Pressable>
   );
@@ -142,49 +147,60 @@ function MarkdownText({ text }: { text: string }) {
 function RichText({ text, markdown }: { text: string; markdown: boolean }) {
   const t = useTheme();
   const prepared = markdown ? prepareWorkspaceMarkdown(text) : { source: text.replace(/\r\n?/g, '\n'), plain: true };
-  const urls = prepared.plain ? [] : extractHttpUrls(prepared.source);
-  return (
-    <View>
-      {prepared.source.split('\n').map((line, index) => (
-        <RichLine key={index} line={line} markdown={!prepared.plain} fontSize={t.type.body} color={t.text} linkColor={t.focus} />
-      ))}
-      {urls.map(url => (
-        <Text key={url} style={{ color: t.focus }} onPress={() => void Linking.openURL(url)}>{url}</Text>
-      ))}
-    </View>
-  );
-}
-
-function RichLine({ line, markdown, fontSize, color, linkColor }: { line: string; markdown: boolean; fontSize: number; color: string; linkColor: string }) {
-  const parts = splitCatalogEmotes(line);
-  if (parts.length === 1 && parts[0]?.text !== undefined && !parts[0].src) {
-    return (
-      <Text selectable style={{ fontSize, lineHeight: fontSize + 6, color }}>
-        {markdown ? renderInline(parts[0].text, linkColor) : parts[0].text}
-      </Text>
-    );
+  if (prepared.plain) {
+    return <View>{prepared.source.split('\n').map((line, index) => <RichLine key={index} parts={[{ type: 'text', text: line }]} fontSize={t.type.body} color={t.text} linkColor={t.focus} />)}</View>;
   }
   return (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
-      {parts.map((part, index) => {
-        if (part.src) return <EmoteImage key={`${part.token}:${index}`} uri={part.src} token={part.token ?? ''} size={28} />;
+    <View style={{ gap: 8 }}>
+      {parseMarkdownBlocks(prepared.source).map((block, index) => {
+        if (block.type === 'rule') return <View key={index} style={{ height: 1, backgroundColor: t.line, marginVertical: 4 }} />;
+        if (block.type === 'code') return (
+          <ScrollView key={index} horizontal nestedScrollEnabled style={{ maxWidth: '100%', borderRadius: 8, backgroundColor: t.soft }} contentContainerStyle={{ padding: 10 }}>
+            <Text selectable style={{ color: t.text, fontFamily: 'monospace', fontSize: t.type.body - 2, lineHeight: t.type.body + 4 }}>{block.text}</Text>
+          </ScrollView>
+        );
+        if (block.type === 'heading') return <RichLine key={index} parts={block.content} fontSize={block.level <= 3 ? t.type.section : t.type.body} color={t.text} linkColor={t.focus} baseStyle={{ fontWeight: '700' }} />;
+        if (block.type === 'list') return (
+          <View key={index} style={{ gap: 4 }}>
+            {block.items.map((item, itemIndex) => (
+              <View key={itemIndex} style={{ flexDirection: 'row', alignItems: 'flex-start', paddingLeft: 4 }}>
+                <Text style={{ color: t.muted, fontSize: t.type.body, lineHeight: t.type.body + 6, width: 26 }}>{block.ordered ? `${block.start + itemIndex}.` : '•'}</Text>
+                <View style={{ flex: 1 }}><RichLine parts={item} fontSize={t.type.body} color={t.text} linkColor={t.focus} /></View>
+              </View>
+            ))}
+          </View>
+        );
         return (
-          <Text key={index} selectable style={{ fontSize, color }}>
-            {markdown ? renderInline(part.text ?? '', linkColor) : part.text}
-          </Text>
+          <View key={index} style={block.type === 'quote' ? { borderLeftWidth: 3, borderLeftColor: t.line, paddingLeft: 10 } : undefined}>
+            {block.lines.map((line, lineIndex) => <RichLine key={lineIndex} parts={line} fontSize={t.type.body} color={block.type === 'quote' ? t.muted : t.text} linkColor={t.focus} />)}
+          </View>
         );
       })}
     </View>
   );
 }
 
-function renderInline(line: string, linkColor: string) {
-  const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)]+\))/g);
-  return parts.map((part, index) => {
-    if (part.startsWith('**') && part.endsWith('**')) return <Text key={index} style={{ fontWeight: '700' }}>{part.slice(2, -2)}</Text>;
-    if (part.startsWith('`') && part.endsWith('`')) return <Text key={index} style={{ fontFamily: 'monospace' }}>{part.slice(1, -1)}</Text>;
-    const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
-    if (link) return <Text key={index} style={{ color: linkColor }} onPress={() => void Linking.openURL(link[2]!)}>{link[1]}</Text>;
-    return <Text key={index}>{part}</Text>;
+type InlineLeaf = { text: string; style: TextStyle; url?: string; allowEmotes: boolean };
+
+function flattenInline(parts: MarkdownInline[], style: TextStyle = {}, url?: string): InlineLeaf[] {
+  return parts.flatMap(part => {
+    if (part.type === 'text' || part.type === 'code') return [{ text: part.text, style: part.type === 'code' ? { ...style, fontFamily: 'monospace' } : style, url, allowEmotes: part.type !== 'code' }];
+    if (part.type === 'link') return flattenInline(part.children, style, part.url);
+    const next: TextStyle = part.type === 'strong' ? { ...style, fontWeight: '700' }
+      : part.type === 'emphasis' ? { ...style, fontStyle: 'italic' }
+        : { ...style, textDecorationLine: 'line-through' };
+    return flattenInline(part.children, next, url);
   });
+}
+
+function RichLine({ parts, fontSize, color, linkColor, baseStyle }: { parts: MarkdownInline[]; fontSize: number; color: string; linkColor: string; baseStyle?: TextStyle }) {
+  const leaves = flattenInline(parts, baseStyle);
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', minHeight: fontSize + 6 }}>
+      {leaves.flatMap((leaf, index) => (leaf.allowEmotes ? splitCatalogEmotes(leaf.text) : [{ text: leaf.text }]).map((part, partIndex) => {
+        if (part.src) return <EmoteImage key={`${index}:${partIndex}`} uri={part.src} token={part.token ?? ''} size={28} />;
+        return <Text key={`${index}:${partIndex}`} selectable accessibilityRole={leaf.url ? 'link' : undefined} style={{ fontSize, lineHeight: fontSize + 6, color: leaf.url ? linkColor : color, ...leaf.style }} onPress={leaf.url ? () => void Linking.openURL(leaf.url!) : undefined}>{part.text}</Text>;
+      }))}
+    </View>
+  );
 }

@@ -29,6 +29,27 @@ test('changing account drops messages, drafts and the previous account cursor', 
   expect(useWorkspace.getState().cursor).toBe(2);
 });
 
+test('pruneTopics drops leftover topic caches that are no longer listed', () => {
+  useWorkspace.getState().applyBootstrap(bootstrap, 'account');
+  useWorkspace.getState().upsertTopic({
+    id: 't1',
+    conversationId: 'c1',
+    title: 'Old',
+    status: 'open',
+    joined: true,
+    canJoin: false,
+    allowSyncToGroup: false,
+    participantCount: 0,
+    unreadCount: 0,
+    notificationLevel: 'all',
+    revision: 0,
+  });
+  useWorkspace.getState().setMessages('topic:t1', [message]);
+  useWorkspace.getState().pruneTopics(new Set());
+  expect(useWorkspace.getState().topics.t1).toBeUndefined();
+  expect(useWorkspace.getState().messages['topic:t1']).toBeUndefined();
+});
+
 test('membership loss removes locally loaded messages and drafts for the conversation', () => {
   useWorkspace.getState().applyBootstrap(bootstrap, 'account');
   useWorkspace.getState().upsertMessage(message);

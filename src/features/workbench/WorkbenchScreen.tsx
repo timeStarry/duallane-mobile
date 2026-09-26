@@ -18,13 +18,17 @@ import {
   ReplyPreview,
   SegmentedControl,
   Select,
+  CatalogEmoteGrid,
+  ConnectionBanner,
+  SettingGroup,
   SettingRow,
   SwitchRow,
   TopicRow,
   TransferItem,
   styles,
 } from '../../ui/components';
-import { MessageRow } from '../chat/screens';
+import { catalogPacks } from '../../domain/emote-catalog';
+import { MessageRow } from '../../ui/message';
 import { useTheme } from '../../ui/theme';
 
 export function WorkbenchScreen() {
@@ -35,6 +39,8 @@ export function WorkbenchScreen() {
   const [enabled, setEnabled] = useState(true);
   const [choice, setChoice] = useState<'compact' | 'comfortable'>('comfortable');
   const [draft, setDraft] = useState('合成输入，回车应换行而不是发送。');
+  const packs = catalogPacks();
+  const [packId, setPackId] = useState(packs[0]?.id ?? 'bili');
   return (
     <ScrollView style={[styles.page, { backgroundColor: t.bg }]} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
       <AppHeader title="组件工作台" subtitle="导入正式组件，合成数据" />
@@ -76,8 +82,14 @@ export function WorkbenchScreen() {
           onChange={setChoice}
         />
         <SwitchRow title="自动折叠长消息" detail="只影响自己的显示" value={enabled} onValueChange={setEnabled} />
-        <SettingRow title="外观与阅读" detail="跟随系统 · 仅本机" onPress={() => undefined} />
-        <SettingRow title="退出登录" danger onPress={() => undefined} />
+        <ConnectionBanner connection="实时未接通，已用 HTTP 同步" />
+        <SettingGroup title="偏好">
+          <SettingRow title="外观与阅读" detail="跟随系统 · 仅本机" onPress={() => undefined} />
+        </SettingGroup>
+        <SettingGroup title="危险" danger>
+          <SettingRow title="退出登录" danger onPress={() => undefined} />
+        </SettingGroup>
+        <CatalogEmoteGrid packs={packs.slice(0, 2)} selectedPackId={packId} onSelectPack={setPackId} onPick={() => undefined} />
         <Button title="打开消息动作" secondary onPress={() => setSheet(true)} />
       </View>
       <Text style={[styles.section, { color: t.text, paddingHorizontal: 16 }]}>会话行</Text>

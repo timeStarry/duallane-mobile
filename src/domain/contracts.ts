@@ -8,16 +8,26 @@ export const memberSchema = z.object({
   avatarUrl: z.string().nullish(),
   githubLogin: z.string().nullish(),
   nickname: z.string().nullish(),
+  remark: z.string().nullish(),
+  recallReason: z.string().nullish(),
   searchDiscoverable: z.boolean().optional(),
   roleLabel: z.string().optional(),
   capabilities: z.object({ canStartDirectConversation: z.boolean().default(false) }).default({ canStartDirectConversation: false }),
 });
 export const chatHideTypeSchema = z.enum(['image', 'emote', 'long']);
+export const catalogPackOptionSchema = z.object({
+  id: z.string(),
+  label: z.string().default(''),
+  defaultEnabled: z.boolean().optional(),
+});
 export const chatSettingsSchema = z.object({
   clickImageEmoteToSend: z.boolean(),
   replyAutoMention: z.boolean(),
   autoHideMessages: z.boolean(),
   autoHideMessageTypes: z.array(z.string()).transform(values => values.filter((value): value is z.infer<typeof chatHideTypeSchema> => value === 'image' || value === 'emote' || value === 'long')),
+  enabledPackIds: z.array(z.string()).optional(),
+  availablePacks: z.array(catalogPackOptionSchema).optional(),
+  minimumEnabled: z.number().optional(),
 });
 export const chatSettingsResponseSchema = z.object({ settings: chatSettingsSchema.passthrough() });
 export const profileResponseSchema = z.object({ user: memberSchema });
@@ -27,6 +37,7 @@ export type ChatSettingsPatch = {
   replyAutoMention?: boolean;
   autoHideMessages?: boolean;
   autoHideMessageTypes?: z.infer<typeof chatHideTypeSchema>[];
+  enabledPackIds?: string[];
 };
 export const conversationSchema = z.object({
   id,
@@ -75,6 +86,24 @@ export const emoteSchema = z.object({
   animated: z.boolean().optional(),
 });
 export const emoteListSchema = z.object({ items: z.array(emoteSchema).default([]) }).passthrough();
+export const emoteCollectionSchema = z.object({
+  id,
+  name: z.string(),
+  items: z.array(emoteSchema).default([]),
+  itemCount: z.number().optional(),
+}).passthrough();
+export const emoteLibrarySchema = z.object({
+  emotes: z.array(emoteSchema).default([]),
+  collections: z.array(emoteCollectionSchema).default([]),
+  entries: z.array(z.object({
+    id,
+    type: z.string(),
+    emote: emoteSchema.optional(),
+    collection: emoteCollectionSchema.optional(),
+  }).passthrough()).default([]),
+}).passthrough();
+export type EmoteCollection = z.infer<typeof emoteCollectionSchema>;
+export type EmoteLibrary = z.infer<typeof emoteLibrarySchema>;
 export const cardBlockSchema = z.object({ type: z.literal('card'), cardId: id, cardType: z.string(), schemaVersion: z.number().int(), fallbackText: z.string().default('') });
 export const cardResolutionSchema = z.object({
   type: z.string().optional(),
@@ -142,12 +171,15 @@ const baseMessage = z.object({
   version: z.number().optional(),
 });
 export type Block = z.infer<typeof blockSchema>;
-export type Message = Omit<z.infer<typeof baseMessage>, 'content'> & { blocks: Block[]; fallback: boolean; status?: 'sending'|'failed'; error?: string };
+export type Message = Omit<z.infer<typeof baseMessage>, 'content'> & { blocks: Block[]; fallback: boolean; status?: 'sending'|'failed'; error?: string; pendingUploadTaskId?: string; pendingSyncToGroup?: boolean };
 export function parseMessage(input: unknown): Message | null {
   const result = baseMessage.safeParse(input);
   if (!result.success) return null;
   const {content: rawContent, ...base} = result.data;
-  if (base.recalledAt || base.deletedAt || base.hiddenByCurrentUser) return { ...base, plainText: '消息已不可用', attachments: [], blocks: [], fallback: false };
+  if (base.recalledAt || base.deletedAt) {
+    return { ...base, attachments: [], blocks: [], fallback: false, plainText: base.plainText || (base.recalledAt ? `${base.authorName}因${base.recallReason?.trim() || '内容有误'}撤回了一条消息` : '消息已删除') };
+  }
+  if (base.hiddenByCurrentUser) return { ...base, plainText: '消息已不可用', attachments: [], blocks: [], fallback: false };
   const content = z.object({ format: z.literal('duallane.message+json;v=1'), blocks: z.array(blockSchema).max(1000), plainText: z.string().max(100000).optional() }).safeParse(rawContent);
   // Read the safe summary independently: an unknown block/format must not hide it.
   const summary = z.object({ plainText: z.string().max(100000) }).safeParse(rawContent);

@@ -3,8 +3,10 @@ import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import { z } from 'zod';
 import { ApiClient, ApiError, errorDiagnostic, errorText } from './client';
-import { setMediaClient } from './media';
-import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteListSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
+import { hideResultSchema, reactionResultSchema, topicCreatedRef } from '../domain/command-results';
+import { setMediaAccount, setMediaClient, clearAccountPreviewCache, rememberEmotes } from './media';
+import { topicReadResultSchema } from './inbox-read';
+import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteCollectionSchema, emoteLibrarySchema, emoteListSchema, emoteSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
 import { composeBlocks } from '../domain/compose';
 import { assertAllowedCardAction } from '../domain/actions';
 import { clearAccountFiles } from './transfers';
@@ -17,6 +19,15 @@ import { config, installed, redirectUri, validateOrigin } from '../platform/conf
 import { clearNotifications, showMessageNotification } from '../platform/notifications';
 
 const NativeWebSocket: new (url:string, protocols?:string[], options?:{headers:Record<string,string>}) => WebSocket = WebSocket;
+const emoteShareSchema=z.object({
+  id:z.string().min(1),name:z.string(),itemCount:z.number().int().nonnegative(),
+  revokedAt:z.string().nullish(),
+  sharedBy:z.object({id:z.string(),displayName:z.string()}),
+  originalCreator:z.object({id:z.string(),displayName:z.string()}),
+  canSubscribeToSourceChanges:z.boolean().default(false),
+  items:z.array(emoteSchema),
+});
+export type EmoteShare=z.infer<typeof emoteShareSchema>;
 export class Runtime {
   api:ApiClient|null=null;
   private epoch=0;
@@ -27,6 +38,7 @@ export class Runtime {
   private refreshTimer:ReturnType<typeof setTimeout>|null=null;
   private attempts=0;
   private inFlight=new Set<string>();
+  private refreshingConversations=new Set<string>();
   private notified=new Set<string>();
   private queue:Promise<void>=Promise.resolve();
   private syncing:Promise<void>|null=null;
@@ -46,7 +58,7 @@ export class Runtime {
       if(this.api!==api||epoch!==this.epoch)throw new Error('Stale session');
       await credentials.save({origin,refreshToken:session.refreshToken,userId:existing?.origin===origin?existing.userId:undefined});
     },()=>{if(this.api===api)void this.logout(false);},()=>this.api===api&&epoch===this.epoch&&!this.forced());
-    this.api=api;setMediaClient(api);return api;
+    this.api=api;setMediaClient(api);setMediaAccount(useWorkspace.getState().accountKey);return api;
   }
   start(){this.attach();if(this.starting)return this.starting;const task=this.restore();this.starting=task;void task.finally(()=>{if(this.starting===task)this.starting=null;});return task;}
   private async restore(){
@@ -58,7 +70,7 @@ export class Runtime {
       try{await api.refresh();if(!this.current(epoch))return;await this.bootstrap();this.connect();}catch(error){
         if(!this.current(epoch))return;
         if(error instanceof ApiError&&([401,403].includes(error.status)||error.code==='workspace.disabled')){await this.logout(false);useWorkspace.setState({error:errorText(error)});return;}
-        if(saved.userId){const key=`${saved.origin}:${saved.userId}`;const b=bootstrapSchema.safeParse(cache.get(`${key}:bootstrap`));if(b.success&&b.data.auth.currentUser.id===saved.userId){useWorkspace.getState().applyBootstrap(b.data,key);this.restoreLocal(key,true);useWorkspace.setState({connection:'离线缓存，恢复连接后同步'});}}
+        if(saved.userId){const key=`${saved.origin}:${saved.userId}`;const b=bootstrapSchema.safeParse(cache.get(`${key}:bootstrap`));if(b.success&&b.data.auth.currentUser.id===saved.userId){useWorkspace.getState().applyBootstrap(b.data,key);setMediaAccount(key);this.restoreLocal(key,true);useWorkspace.setState({connection:'离线缓存，恢复连接后同步'});}}
         this.scheduleRetry();
         throw error;
       }
@@ -110,7 +122,7 @@ export class Runtime {
     const key=`${api.origin}:${b.auth.currentUser.id}`;
     const previous=bootstrapSchema.safeParse(cache.get(`${key}:bootstrap`));
     if(previous.success)for(const conversation of previous.data.conversations)if(!b.permissions.canReadConversations||!b.conversations.some(item=>item.id===conversation.id))cache.remove(`${key}:messages:${conversation.id}`);
-    useWorkspace.getState().applyBootstrap(b,key);cache.set(`${key}:bootstrap`,b);this.restoreLocal(key);
+    useWorkspace.getState().applyBootstrap(b,key);setMediaAccount(key);cache.set(`${key}:bootstrap`,b);this.restoreLocal(key);
     if(api.session)await credentials.save({origin:api.origin,refreshToken:api.session.refreshToken,userId:b.auth.currentUser.id});
     if(!this.current(epoch))return;
     void this.chatSettings().then(result=>{if(this.current(epoch))useWorkspace.getState().setChatSettings(result.settings);}).catch(()=>undefined);
@@ -121,9 +133,9 @@ export class Runtime {
   patchDraft(id:string,patch:Partial<Draft>){useWorkspace.getState().setDraft(id,patch);const s=useWorkspace.getState();cache.set(`${s.accountKey}:drafts`,s.drafts);}
   async messages(id:string,before?:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/messages?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&m.conversationId===id&&!m.topicId);if(this.current(epoch)){useWorkspace.getState().setMessages(id,messages,!!before);cache.set(`${useWorkspace.getState().accountKey}:messages:${id}`,useWorkspace.getState().messages[id]);}return messages.length;}
   async topicMessages(id:string,before?:string){const epoch=this.epoch;const bucket=`topic:${id}`;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/messages?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&m.topicId===id);if(this.current(epoch)){useWorkspace.getState().setMessages(bucket,messages,!!before);cache.set(`${useWorkspace.getState().accountKey}:messages:${bucket}`,useWorkspace.getState().messages[bucket]);}return messages.length;}
-  async open(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}));if(!this.current(epoch))return;useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));await this.messages(id);}
-  async openTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}`,z.object({topic:topicSchema}));if(!this.current(epoch))return;useWorkspace.getState().upsertTopic(result.topic);if(result.topic.joined)await this.topicMessages(id);}
-  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];upload?:()=>Promise<Attachment|null>;syncToGroup?:boolean;}){
+  async open(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}));if(!this.current(epoch))return;useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));return this.messages(id);}
+  async openTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}`,z.object({topic:topicSchema}));if(!this.current(epoch))return;useWorkspace.getState().upsertTopic(result.topic);if(result.topic.joined)return this.topicMessages(id);}
+  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;}){
     const s=useWorkspace.getState();const topicId=options?.topicId??existing?.topicId;const conversationId=existing?.conversationId??id;
     const topic=topicId?s.topics[topicId]:undefined;
     const canSend=topicId?!!topic&&topic.joined&&topic.status==='open':!!s.conversations[conversationId]?.capabilities.canSendMessage;
@@ -132,31 +144,44 @@ export class Runtime {
     const members=s.conversations[conversationId]?.members??s.bootstrap.members;
     const replyTo=options?.replyToMessageId===undefined?existing?.replyToMessageId??null:options.replyToMessageId;
     const mentionIds=options?.mentionIds??[];
-    let blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,attachmentId);
-    if(!blocks.length&&!options?.upload)return;
-    const m:Message=existing??{id:clientMessageId,conversationId,topicId,authorId:s.bootstrap.auth.currentUser.id,authorName:s.bootstrap.auth.currentUser.displayName,kind:'user',clientMessageId,createdAt:new Date().toISOString(),plainText:text,replyToMessageId:replyTo,hiddenByCurrentUser:false,attachments:[],reactions:[],blocks,fallback:false};
-    this.inFlight.add(clientMessageId);s.upsertMessage({...m,status:'sending'});if(!existing)this.patchDraft(topicId?`topic:${topicId}`:conversationId,{text:'',mentionIds:[],replyToMessageId:undefined,pendingAttachment:undefined});const epoch=this.epoch;
+    let fileId=attachmentId??existing?.attachments[0]?.id;
+    const uploadTaskId=options?.uploadTaskId??existing?.pendingUploadTaskId;
+    const syncToGroup=existing?.pendingSyncToGroup??options?.syncToGroup??false;
+    let blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,fileId);
+    if(!blocks.length&&!options?.upload&&!uploadTaskId)return;
+    let pending:Message=existing??{id:clientMessageId,conversationId,topicId,authorId:s.bootstrap.auth.currentUser.id,authorName:s.bootstrap.auth.currentUser.displayName,kind:'user',clientMessageId,createdAt:new Date().toISOString(),plainText:text,replyToMessageId:replyTo,hiddenByCurrentUser:false,attachments:[],reactions:[],blocks,fallback:false};
+    pending={...pending,pendingUploadTaskId:uploadTaskId,pendingSyncToGroup:topicId?syncToGroup:undefined};
+    this.inFlight.add(clientMessageId);s.upsertMessage({...pending,status:'sending'});if(!existing)this.patchDraft(topicId?`topic:${topicId}`:conversationId,{text:'',mentionIds:[],replyToMessageId:undefined,pendingAttachment:undefined});const epoch=this.epoch;
     try{
-      if(options?.upload){const file=await options.upload();if(!this.current(epoch))return;if(file){attachmentId=file.id;blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,file.id);}}
+      if(uploadTaskId&&!fileId&&!options?.upload)throw new Error('Upload unavailable');
+      if(options?.upload&&!fileId){
+        const file=await options.upload();
+        if(!this.current(epoch))return;
+        if(!file)throw new Error('Upload paused');
+        fileId=file.id;
+        blocks=existing?.blocks.length?[...existing.blocks.filter(block=>block.type!=='attachment'),{type:'attachment',attachmentId:file.id}]:composeBlocks(text,members,mentionIds,file.id);
+        pending={...pending,attachments:[file],blocks,plainText:text||file.fileName};
+        useWorkspace.getState().upsertMessage({...pending,status:'sending'});
+      }
       if(!blocks.length)throw new Error('Cannot send');
-      const body={clientMessageId,content:{format:'duallane.message+json;v=1',blocks},replyToMessageId:replyTo,...(topicId?{syncToGroup:!!options?.syncToGroup}:{conversationId})};
+      const body={clientMessageId,content:{format:'duallane.message+json;v=1',blocks},replyToMessageId:replyTo,...(topicId?{syncToGroup}:{conversationId})};
       const path=topicId?`/api/workspace/topics/${encodeURIComponent(topicId)}/messages`:'/api/workspace/messages';
       const r=await this.requireApi().json(path,z.object({message:z.unknown()}).passthrough(),body);const parsed=parseMessage('message' in r?r.message:r);if(!parsed)throw new Error('Invalid message');if(this.current(epoch))useWorkspace.getState().upsertMessage(parsed);}
-    catch(error){if(this.current(epoch))useWorkspace.getState().upsertMessage({...m,status:'failed',error:errorText(error)});throw error;}finally{this.inFlight.delete(clientMessageId);}
+    catch(error){if(this.current(epoch))useWorkspace.getState().upsertMessage({...pending,status:'failed',error:errorText(error)});throw error;}finally{this.inFlight.delete(clientMessageId);}
   }
   isForced(){ return this.forced(); }
   async markRead(id:string,messageId:string,topic=false){
     if(!this.foreground)return;const epoch=this.epoch;
     if(topic){
-      const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/read`,z.object({topicId:z.string(),lastReadMessageId:z.string().nullish(),unreadCount:z.number().optional()}),{messageId});
-      if(this.current(epoch))useWorkspace.setState(s=>{const current=s.topics[id];return current?{topics:{...s.topics,[id]:{...current,lastReadMessageId:result.lastReadMessageId,unreadCount:result.unreadCount??0}}}:s;});
+      const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/read`,topicReadResultSchema,{messageId},'POST');
+      if(this.current(epoch))useWorkspace.setState(s=>{const current=s.topics[id];return current?{topics:{...s.topics,[id]:{...current,lastReadMessageId:result.read.lastReadMessageId,unreadCount:result.read.unreadCount??0}}}:s;});
       return;
     }
     const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/read`,z.object({conversation:conversationSchema}),{messageId});
     if(this.current(epoch))useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));
   }
   async notification(id:string,level:'all'|'mentions'|'muted'){await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/notification`,z.unknown(),{level},'PATCH');await this.bootstrap();}
-  async updateProfile(patch:{nickname?:string|null;searchDiscoverable?:boolean}){
+  async updateProfile(patch:{nickname?:string|null;searchDiscoverable?:boolean;recallReason?:string}){
     const epoch=this.epoch;
     const result=await this.requireApi().json('/api/workspace/me/profile',profileResponseSchema,patch,'PATCH');
     if(!this.current(epoch))throw new Error('Stale session');
@@ -182,7 +207,13 @@ export class Runtime {
     const epoch=this.epoch;
     const path=conversationId?`/api/workspace/conversations/${encodeURIComponent(conversationId)}/topics`:'/api/workspace/topics/mine';
     const result=await this.requireApi().json(path,z.object({topics:z.array(topicSchema)}));
-    if(this.current(epoch)){if(conversationId)useWorkspace.setState(s=>({topics:{...s.topics,...Object.fromEntries(result.topics.map(topic=>[topic.id,topic]))}}));else useWorkspace.getState().setTopics(result.topics);}
+    if(this.current(epoch)){
+      if(conversationId)useWorkspace.setState(s=>({topics:{...s.topics,...Object.fromEntries(result.topics.map(topic=>[topic.id,topic]))}}));
+      else {
+        useWorkspace.getState().setTopics(result.topics);
+        useWorkspace.getState().pruneTopics(new Set(result.topics.map(topic=>topic.id)));
+      }
+    }
     return result.topics;
   }
   async createTopic(conversationId:string,title:string,description=''){
@@ -195,12 +226,17 @@ export class Runtime {
   async joinTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/join`,z.object({topic:topicSchema}),{});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.getState().upsertTopic(result.topic);return result.topic;}
   async leaveTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/leave`,z.object({topic:topicSchema}),{});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.getState().upsertTopic(result.topic);useWorkspace.setState(s=>{const drafts={...s.drafts};delete drafts[`topic:${id}`];return {drafts};});return result.topic;}
   async topicNotification(id:string,level:'all'|'mentions'|'muted'){const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/notification`,z.object({topic:topicSchema}),{level},'PATCH');useWorkspace.getState().upsertTopic(result.topic);}
-  async recall(messageId:string){const r=await this.requireApi().json(`/api/workspace/messages/${encodeURIComponent(messageId)}/recall`,z.object({message:z.unknown()}));const parsed=parseMessage(r.message);if(parsed)useWorkspace.getState().upsertMessage(parsed);}
-  async hide(messageId:string,hidden:boolean){const r=await this.requireApi().json(`/api/workspace/messages/${encodeURIComponent(messageId)}/hidden`,z.object({message:z.unknown()}).passthrough(),hidden?{}:undefined,hidden?'PUT':'DELETE');const parsed=parseMessage('message' in r?r.message:r);if(parsed)useWorkspace.getState().upsertMessage(parsed);}
-  async react(messageId:string,emoteKey:string,remove=false){
+  async recall(messageId:string){const r=await this.requireApi().json(`/api/workspace/messages/${encodeURIComponent(messageId)}/recall`,z.object({message:z.unknown()}),{},'POST');const parsed=parseMessage(r.message);if(parsed)useWorkspace.getState().upsertMessage(parsed);}
+  async hide(messageId:string,hidden:boolean,bucket?:string){
+    const r=await this.requireApi().json(`/api/workspace/messages/${encodeURIComponent(messageId)}/hidden`,hideResultSchema,hidden?{}:undefined,hidden?'PUT':'DELETE');
+    const key=bucket??this.messageBucketById(r.messageId);
+    if(key)useWorkspace.getState().patchMessage(key,r.messageId,{hiddenByCurrentUser:r.hidden});
+  }
+  async react(messageId:string,emoteKey:string,remove=false,bucket?:string){
     const path=`/api/workspace/messages/${encodeURIComponent(messageId)}/reactions${remove?`/${encodeURIComponent(emoteKey)}`:''}`;
-    const r=await this.requireApi().json(path,z.object({message:z.unknown().optional(),reactions:z.unknown().optional()}).passthrough(),remove?undefined:{emoteKey},remove?'DELETE':'POST');
-    const parsed=parseMessage(r.message);if(parsed)useWorkspace.getState().upsertMessage(parsed);
+    const r=await this.requireApi().json(path,reactionResultSchema,remove?undefined:{emoteKey},remove?'DELETE':'POST');
+    const key=bucket??this.messageBucketById(r.messageId);
+    if(key)useWorkspace.getState().patchMessage(key,r.messageId,{reactions:r.reactions});
   }
   async pin(conversationId:string,messageId:string,remove=false){
     if(remove)await this.requireApi().json(`/api/workspace/groups/${encodeURIComponent(conversationId)}/pins/${encodeURIComponent(messageId)}`,z.unknown(),undefined,'DELETE');
@@ -208,27 +244,95 @@ export class Runtime {
     await this.open(conversationId);
   }
   async emotes(){return this.requireApi().json('/api/workspace/me/emotes',emoteListSchema);}
+  async emoteLibrary(){return this.requireApi().json('/api/workspace/me/emote-library',emoteLibrarySchema);}
+  async emoteShare(shareId:string){
+    const result=await this.requireApi().json(`/api/workspace/emote-collection-shares/${encodeURIComponent(shareId)}`,z.object({share:emoteShareSchema}));
+    return result.share;
+  }
+  async importEmoteShare(shareId:string,subscribeToSourceChanges=false){
+    const result=await this.requireApi().json(`/api/workspace/emote-collection-shares/${encodeURIComponent(shareId)}/import`,z.object({
+      collection:emoteCollectionSchema.nullish(),items:z.array(emoteSchema).default([]),
+    }),{asCollection:true,subscribeToSourceChanges});
+    if(result.collection)rememberEmotes(result.collection.items);
+    return result;
+  }
+  async favoriteMessageEmote(messageId:string,attachmentId:string){
+    const result=await this.requireApi().json('/api/workspace/me/emotes/favorite',z.object({emote:emoteSchema}),{messageId,attachmentId});
+    rememberEmotes([result.emote]);
+    return result.emote;
+  }
   async resolveCard(cardId:string){const result=await this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}`,z.object({card:cardResolutionSchema}));return result.card;}
-  async cardAction(cardId:string,actionId:string,allowed:string[]=[],revision?:number){
+  async cardAction(cardId:string,actionId:string,allowed:string[]=[],revision?:number,input:Record<string,unknown>={}){
     assertAllowedCardAction(actionId,allowed);
-    return this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}/actions`,z.object({action:z.unknown()}).passthrough(),{actionId,clientActionId:Crypto.randomUUID(),expectedRevision:revision,input:{}});
+    return this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}/actions`,z.object({action:z.unknown()}).passthrough(),{actionId,clientActionId:Crypto.randomUUID(),expectedRevision:revision,input});
   }
   async remark(userId:string,value:string){await this.requireApi().json(`/api/workspace/members/${encodeURIComponent(userId)}/remark`,z.unknown(),{remark:value},'PUT');await this.bootstrap();}
+  async clearRemark(userId:string){await this.requireApi().json(`/api/workspace/members/${encodeURIComponent(userId)}/remark`,z.unknown(),undefined,'DELETE');await this.bootstrap();}
   async direct(userId:string){const epoch=this.epoch;const r=await this.requireApi().json('/api/workspace/conversations',z.object({conversation:conversationSchema}),{type:'direct',memberIds:[userId]});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.setState(s=>({conversations:{...s.conversations,[r.conversation.id]:r.conversation}}));return r.conversation.id;}
+  private messageBucketById(id:string){
+    const entries=Object.entries(useWorkspace.getState().messages);
+    for(const [bucket,list] of entries){if(list.some(item=>item.id===id))return bucket;}
+    return undefined;
+  }
+  private refreshConversation(id:string){
+    if(this.refreshingConversations.has(id))return;
+    this.refreshingConversations.add(id);
+    const epoch=this.epoch;
+    void this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}))
+      .then(result=>{if(this.current(epoch))useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));})
+      .catch(()=>undefined)
+      .finally(()=>this.refreshingConversations.delete(id));
+  }
   private async applyEvent(event:WorkspaceEvent,replay:boolean){const s=useWorkspace.getState();if(!s.bootstrap||event.spaceId!==s.bootstrap.space.id)return;
+    if(event.type==='topic.message.created'){
+      const ref=topicCreatedRef(event.payload);
+      const parsed=parseMessage(event.payload.message);
+      if(parsed&&(parsed.topicId||ref.topicId)){
+        s.upsertMessage(parsed,`topic:${parsed.topicId??ref.topicId}`);
+        await this.listTopics().catch(()=>undefined);
+        await this.notifyIfNeeded(parsed,replay,true);
+        return;
+      }
+      if(ref.topicId){
+        const epoch=this.epoch;
+        await Promise.all([this.listTopics().catch(()=>undefined),this.topicMessages(ref.topicId).catch(()=>undefined)]);
+        if(!this.current(epoch))return;
+        const created=useWorkspace.getState().messages[`topic:${ref.topicId}`]?.find(item=>item.id===ref.topicMessageId);
+        if(created)await this.notifyIfNeeded(created,replay,true);
+        return;
+      }
+    }
     const message=parseMessage(event.payload.message);
     if(message){
       s.upsertMessage(message);
-      const conversation=s.conversations[message.conversationId];
-      if(conversation&&!message.topicId)useWorkspace.setState(v=>({conversations:{...v.conversations,[conversation.id]:{...conversation,lastMessagePlainText:message.plainText,lastActivityAt:message.createdAt}}}));
-      if(event.type==='message.created'&&shouldNotify({background:!this.foreground,replay,message,userId:s.bootstrap.auth.currentUser.id,conversation,topic:message.topicId?s.topics[message.topicId]:undefined})&&!this.notified.has(message.id)){
-        this.notified.add(message.id);if(this.notified.size>2000)this.notified.delete(this.notified.values().next().value??'');
-        await showMessageNotification({origin:this.requireApi().origin,userId:s.bootstrap.auth.currentUser.id,conversationId:message.conversationId,messageId:message.id,topicId:message.topicId});
+      if(!message.topicId){
+        const current=s.conversations[message.conversationId];
+        const raw=event.payload.conversation;
+        const projection=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Record<string,unknown>:null;
+        const merged=projection&&projection.id===message.conversationId?conversationSchema.safeParse({
+          ...current,...projection,
+          capabilities:projection.capabilities??current?.capabilities,
+          members:projection.members??current?.members,
+          lastMessagePlainText:projection.lastMessagePlainText??message.plainText,
+        }):null;
+        if(merged?.success)useWorkspace.setState(v=>({conversations:{...v.conversations,[message.conversationId]:merged.data}}));
+        else if(current)useWorkspace.setState(v=>({conversations:{...v.conversations,[message.conversationId]:{...current,lastMessagePlainText:message.plainText,lastActivityAt:message.createdAt}}}));
+        if(projection&&!projection.capabilities)this.refreshConversation(message.conversationId);
       }
+      await this.notifyIfNeeded(message,replay,event.type==='message.created');
       return;
     }
     if(event.type.startsWith('topic.'))await this.listTopics().catch(()=>undefined);
     else await this.bootstrap(true);
+  }
+  private async notifyIfNeeded(message:Message,replay:boolean,created:boolean){
+    const s=useWorkspace.getState();
+    if(!created||!s.bootstrap)return;
+    const conversation=s.conversations[message.conversationId];
+    const topic=message.topicId?s.topics[message.topicId]:undefined;
+    if(!shouldNotify({background:!this.foreground,replay,message,userId:s.bootstrap.auth.currentUser.id,conversation,topic})||this.notified.has(message.id))return;
+    this.notified.add(message.id);if(this.notified.size>2000)this.notified.delete(this.notified.values().next().value??'');
+    await showMessageNotification({origin:this.requireApi().origin,userId:s.bootstrap.auth.currentUser.id,conversationId:message.conversationId,messageId:message.id,topicId:message.topicId});
   }
   connect(){if(!this.active||this.forced()||!this.api?.session||!useWorkspace.getState().ready)return;this.disconnect();const api=this.api,epoch=this.epoch;
     const tracker=new ReplayTracker(useWorkspace.getState().cursor);
@@ -250,7 +354,7 @@ export class Runtime {
   private startHttpSync(){if(this.poll||!this.active)return;void this.httpSync();this.poll=setInterval(()=>{void this.httpSync();},8000);}
   private stopHttpSync(){if(this.poll)clearInterval(this.poll);this.poll=null;}
   private async httpSync(){if(!this.active||!this.api?.session||useWorkspace.getState().connection==='已连接')return;try{await this.bootstrap(true);if(this.active&&useWorkspace.getState().connection!=='已连接')useWorkspace.setState({connection:'实时未接通，已用 HTTP 同步'});}catch{/* WebSocket retry continues */}}
-  async logout(remote=true){const api=this.api,session=api?.session;this.epoch++;api?.invalidate();this.stopHttpSync();this.disconnect();this.api=null;this.notified.clear();this.inFlight.clear();this.resuming=null;this.starting=null;const key=useWorkspace.getState().accountKey;useWorkspace.getState().reset();if(key){clearAccountFiles(key);cache.clearAccount(key);}await credentials.clear();await clearNotifications();
+  async logout(remote=true){const api=this.api,session=api?.session;this.epoch++;api?.invalidate();this.stopHttpSync();this.disconnect();this.api=null;this.notified.clear();this.inFlight.clear();this.resuming=null;this.starting=null;const key=useWorkspace.getState().accountKey;useWorkspace.getState().reset();if(key){clearAccountFiles(key);clearAccountPreviewCache(key);cache.clearAccount(key);}setMediaAccount('');setMediaClient(null);await credentials.clear();await clearNotifications();
     if(remote&&api&&session){try{await api.raw('/api/auth/mobile/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refreshToken:session.refreshToken})},false);}catch{/* Local logout must still complete offline. */}}api?.invalidate();
   }
   dispose(){this.active=false;this.stopHttpSync();this.disconnect();this.stopAppState?.();this.stopAppState=null;}

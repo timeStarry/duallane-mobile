@@ -1,14 +1,18 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import {
   ActivityIndicator,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
   type TextInputProps,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { connectionBannerText, connectionCategory } from './connection';
 import { useTheme } from './theme';
 
 export function Label({ children, muted = false }: { children: React.ReactNode; muted?: boolean }) {
@@ -179,7 +183,7 @@ export function SegmentedControl<T extends string>({
   accessibilityLabel,
 }: {
   value: T;
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; icon?: React.ReactNode }[];
   onChange: (value: T) => void;
   accessibilityLabel: string;
 }) {
@@ -207,9 +211,12 @@ export function SegmentedControl<T extends string>({
               backgroundColor: selected ? t.surface : 'transparent',
             }}
           >
-            <Text style={{ color: selected ? t.text : t.muted, fontWeight: selected ? '600' : '500', fontSize: t.type.control }}>
-              {option.label}
-            </Text>
+            <View style={{ alignItems: 'center', gap: 2 }}>
+              {option.icon}
+              <Text style={{ color: selected ? t.text : t.muted, fontWeight: selected ? '600' : '500', fontSize: t.type.meta }}>
+                {option.label}
+              </Text>
+            </View>
           </Pressable>
         );
       })}
@@ -222,17 +229,22 @@ export function SettingRow({
   detail,
   onPress,
   danger = false,
+  icon,
 }: {
   title: string;
   detail?: string;
   onPress?: () => void;
   danger?: boolean;
+  icon?: React.ReactNode;
 }) {
   const t = useTheme();
   const content = (
-    <View style={[styles.setting, { borderBottomColor: t.line, minHeight: t.hit }]}>
-      <Text style={{ fontSize: t.type.body, color: danger ? t.danger : t.text, fontWeight: '500' }}>{title}</Text>
-      {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }}>{detail}</Text> : null}
+    <View style={[styles.setting, { borderBottomColor: t.line, minHeight: t.hit, flexDirection: 'row', alignItems: 'center', gap: t.space.md }]}>
+      {icon}
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={{ fontSize: t.type.body, color: danger ? t.danger : t.text, fontWeight: '500' }}>{title}</Text>
+        {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }}>{detail}</Text> : null}
+      </View>
     </View>
   );
   if (!onPress) return content;
@@ -258,7 +270,7 @@ export function Dialog({
 }) {
   const t = useTheme();
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onRequestClose}>
+    <Modal visible={visible} transparent animationType={t.motionMs('detail') ? 'fade' : 'none'} onRequestClose={onRequestClose}>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="关闭对话框"
@@ -295,33 +307,111 @@ export function ObjectActionSheet({
   visible: boolean;
   title: string;
   detail?: string;
-  actions: { id: string; title: string; onPress: () => void; danger?: boolean; disabled?: boolean }[];
+  actions: { id: string; title: string; onPress: () => void; danger?: boolean; disabled?: boolean; icon?: React.ReactNode }[];
   onRequestClose: () => void;
 }) {
   const t = useTheme();
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onRequestClose}>
+    <Modal visible={visible} transparent animationType={t.motionMs('detail') ? 'slide' : 'none'} onRequestClose={onRequestClose}>
       <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(32,44,50,0.4)' }}>
         <Pressable accessibilityRole="button" accessibilityLabel="关闭动作" style={{ flex: 1 }} onPress={onRequestClose} />
-        <View style={{ backgroundColor: t.elevated, borderTopLeftRadius: t.radius.dialog, borderTopRightRadius: t.radius.dialog, padding: t.space.lg, gap: t.space.sm }}>
+        <View accessibilityViewIsModal style={{ maxHeight: Math.max(240, height - insets.top - t.space.md), backgroundColor: t.elevated, borderTopLeftRadius: t.radius.dialog, borderTopRightRadius: t.radius.dialog, paddingHorizontal: t.space.lg, paddingTop: t.space.lg, paddingBottom: Math.max(insets.bottom, t.space.lg), gap: t.space.sm }}>
           <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }}>{title}</Text>
-          {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted }}>{detail}</Text> : null}
-          {actions.map(action => (
-            <Button
+          {detail ? <Text numberOfLines={2} style={{ fontSize: t.type.meta, color: t.muted }}>{detail}</Text> : null}
+          <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: t.space.sm }} keyboardShouldPersistTaps="handled">
+            {actions.map(action => (
+            <Pressable
               key={action.id}
-              title={action.title}
+              accessibilityRole="button"
+              accessibilityLabel={action.title}
+              accessibilityState={{ disabled: action.disabled }}
               disabled={action.disabled}
-              variant={action.danger ? 'danger' : 'secondary'}
               onPress={() => {
                 onRequestClose();
                 action.onPress();
               }}
-            />
-          ))}
+              style={({ pressed }) => ({
+                minHeight: t.hit,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: t.space.md,
+                paddingHorizontal: t.space.md,
+                borderRadius: t.radius.control,
+                backgroundColor: action.danger ? t.dangerSoft : t.soft,
+                opacity: action.disabled ? t.disabledOpacity : pressed ? t.pressedOpacity : 1,
+              })}
+            >
+              {action.icon}
+              <Text style={{ color: action.danger ? t.danger : t.text, fontSize: t.type.body, fontWeight: '500' }}>{action.title}</Text>
+            </Pressable>
+            ))}
+          </ScrollView>
           <Button title="取消" variant="ghost" onPress={onRequestClose} />
         </View>
       </View>
     </Modal>
+  );
+}
+
+export function SettingGroup({ title, children, danger = false }: { title?: string; children: React.ReactNode; danger?: boolean }) {
+  const t = useTheme();
+  return (
+    <View style={{ gap: t.space.sm }}>
+      {title ? <Text style={{ fontSize: t.type.meta, color: t.muted, paddingHorizontal: t.space.lg }}>{title}</Text> : null}
+      <View
+        style={{
+          backgroundColor: danger ? t.dangerSoft : t.surface,
+          borderRadius: t.radius.dialog,
+          marginHorizontal: t.space.lg,
+          overflow: 'hidden',
+        }}
+      >
+        {children}
+      </View>
+    </View>
+  );
+}
+
+export function UnreadBadge({ count }: { count: number }) {
+  const t = useTheme();
+  if (count <= 0) return null;
+  return (
+    <View
+      style={{
+        backgroundColor: t.shared,
+        borderRadius: t.list.unreadBadge / 2,
+        minWidth: t.list.unreadBadge,
+        height: t.list.unreadBadge,
+        paddingHorizontal: 6,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <Text style={{ color: t.onShared, fontSize: t.type.timestamp, fontWeight: '700' }}>
+        {Math.min(count, 99)}{count > 99 ? '+' : ''}
+      </Text>
+    </View>
+  );
+}
+
+export function ConnectionBanner({ connection }: { connection: string }) {
+  const t = useTheme();
+  const text = connectionBannerText(connection);
+  const category = connectionCategory(connection);
+  const lastCategory = useRef<typeof category>(undefined);
+  const categoryChanged = lastCategory.current !== category;
+  lastCategory.current = category;
+  if (!text || !category) return null;
+  return (
+    <View
+      accessibilityLiveRegion={categoryChanged ? 'polite' : 'none'}
+      accessibilityLabel={text}
+      style={{ backgroundColor: t.warningSoft, paddingHorizontal: t.space.lg, paddingVertical: 6 }}
+    >
+      <Text style={{ color: t.warning, fontSize: t.type.meta, lineHeight: 18 }} numberOfLines={1}>{text}</Text>
+    </View>
   );
 }
 
