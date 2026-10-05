@@ -27,3 +27,9 @@
 ## 回滚
 
 去掉 `android-cronet` 插件与 `CronetNetworking.install`，重建 Android 包。
+
+## 2026-10-06 后续修正
+
+Cronet 保留普通 HTTP；标准 WebSocket 握手必须走 OkHttp 原生双向 streams。
+全局拦截器不应接管该握手，具体证据、分流和回归见
+[WebSocket 传输 ADR](2026-10-06-android-websocket-transport.md)。
