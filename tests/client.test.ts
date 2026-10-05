@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { fetch } from 'expo/fetch';
-import { ApiClient, ApiError, errorText } from '../src/data/client';
+import { ApiClient, ApiError, errorDiagnostic, errorText } from '../src/data/client';
 
 jest.mock('expo/fetch',()=>({fetch:jest.fn()}));
 jest.mock('../src/platform/config',()=>({installed:{appVersion:'0.2.3',versionCode:4}}));
@@ -84,4 +84,46 @@ test('timeouts, missing mobile routes and non-JSON bodies stay distinct from a g
   await expect(client.json('/api/mobile/release-policy',z.object({schemaVersion:z.literal(1)}),undefined,'GET',false)).rejects.toMatchObject({code:'response.invalid',diagnostic:'body.non_json'});
   fetchMock.mockResolvedValueOnce(response({schemaVersion:2}));
   await expect(client.json('/api/mobile/release-policy',z.object({schemaVersion:z.literal(1)}),undefined,'GET',false)).rejects.toMatchObject({code:'response.invalid',diagnostic:'body.schema'});
+});
+
+test.each([
+  { nativeCode: 'ERR_TIMED_OUT', diagnostic: 'net.timeout' },
+  { nativeCode: 'ERR_CONNECTION_TIMED_OUT', diagnostic: 'net.timeout' },
+  { nativeCode: 'ERR_NAME_NOT_RESOLVED', diagnostic: 'net.dns' },
+  { nativeCode: 'ERR_CONNECTION_RESET', diagnostic: 'net.reset' },
+  { nativeCode: 'ERR_CONNECTION_REFUSED', diagnostic: 'net.refused' },
+  { nativeCode: 'ERR_HTTP2_PROTOCOL_ERROR', diagnostic: 'net.http2' },
+  { nativeCode: 'ERR_QUIC_PROTOCOL_ERROR', diagnostic: 'net.quic' },
+  { nativeCode: 'ERR_QUIC_HANDSHAKE_FAILED', diagnostic: 'net.quic' },
+  { nativeCode: 'ERR_SSL_PROTOCOL_ERROR', diagnostic: 'net.tls' },
+  { nativeCode: 'ERR_CERT_AUTHORITY_INVALID', diagnostic: 'net.tls' },
+  { nativeCode: 'ERR_CERT_DATE_INVALID', diagnostic: 'net.tls' },
+])('Cronet $nativeCode has a fixed diagnostic without retrying or disclosing native details', async ({ nativeCode, diagnostic }) => {
+  const privateDetail = 'synthetic-private-body';
+  const nativeError = new Error(`fetch failed: java.io.IOException: java.util.concurrent.ExecutionException: Exception in CronetUrlRequest: net::${nativeCode}, InternalErrorCode=-7, URL=https://synthetic.example/private?token=synthetic-secret, Authorization=synthetic-secret, body=${privateDetail}`);
+  fetchMock.mockRejectedValueOnce(nativeError);
+  const client = new ApiClient('https://workspace.example', jest.fn(), jest.fn());
+  client.session = session;
+  const failure = await client.json('/api/workspace/messages', z.unknown(), { content: privateDetail }, 'POST').catch((error: unknown) => error);
+  const code = diagnostic === 'net.timeout' ? 'request.timeout' : 'request.network';
+  expect(failure).toMatchObject({ code, diagnostic, status: 0 });
+  expect(errorText(failure)).toBe(`${diagnostic === 'net.timeout' ? '连接超时，请重试' : '无法连接到服务器，请检查网络后重试'}（${diagnostic}）`);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const logged = JSON.parse(String(jest.mocked(console.warn).mock.calls.at(-1)?.[0]));
+  expect(logged).toMatchObject({ event: 'api_error', route: 'workspace', code, diagnostic, status: 0 });
+  expect(Object.keys(logged).sort()).toEqual(['appVersion', 'code', 'diagnostic', 'event', 'ms', 'route', 'src', 'status', 'versionCode']);
+  expect(JSON.stringify(logged)).not.toMatch(/synthetic-private-body|synthetic-secret|synthetic\.example|Authorization|InternalErrorCode|ExecutionException|\/messages|access-token-for-test/i);
+});
+
+test('explicit Cronet codes take precedence over generic wrapper words without treating a QUIC handshake as TLS', () => {
+  expect(errorDiagnostic(new Error('Network error: net::ERR_NAME_NOT_RESOLVED'))).toBe('net.dns');
+  expect(errorDiagnostic(new Error('Handshake failed: net::ERR_QUIC_HANDSHAKE_FAILED'))).toBe('net.quic');
+  expect(errorDiagnostic(new Error('net::err_http2_protocol_error'))).toBe('net.http2');
+  expect(errorDiagnostic(Object.assign(new Error('net::ERR_QUIC_PROTOCOL_ERROR'), { name: 'AbortError' }))).toBe('net.timeout');
+});
+
+test('unrecognized transport causes remain unknown and nested causes are not guessed', () => {
+  expect(errorDiagnostic(new Error('net::ERR_UNRECOGNIZED_NATIVE_FAILURE'))).toBe('net.unknown');
+  expect(errorDiagnostic(new Error('fetch failed', { cause: new Error('net::ERR_QUIC_PROTOCOL_ERROR') }))).toBe('net.unknown');
+  expect(errorDiagnostic(new Error('java.io.IOException: java.util.concurrent.ExecutionException'))).toBe('net.unknown');
 });

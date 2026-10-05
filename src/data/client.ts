@@ -42,7 +42,21 @@ function classifyTransport(error: unknown): string {
   const name = error instanceof Error ? error.name : '';
   const text = error instanceof Error ? error.message : String(error ?? '');
   const lower = text.toLowerCase();
-  if (name === 'AbortError' || lower.includes('aborted') || lower.includes('timed out') || lower.includes('timeout')) return 'net.timeout';
+  if (name === 'AbortError') return 'net.timeout';
+  // Prefer Cronet's explicit code over incidental wrapper text, such as a QUIC handshake.
+  const cronetCode = text.match(/\bnet::(ERR_[A-Z0-9_]+)\b/i)?.[1]?.toUpperCase();
+  switch (cronetCode) {
+    case 'ERR_TIMED_OUT':
+    case 'ERR_CONNECTION_TIMED_OUT': return 'net.timeout';
+    case 'ERR_NAME_NOT_RESOLVED': return 'net.dns';
+    case 'ERR_CONNECTION_RESET': return 'net.reset';
+    case 'ERR_CONNECTION_REFUSED': return 'net.refused';
+    case 'ERR_HTTP2_PROTOCOL_ERROR': return 'net.http2';
+    case 'ERR_QUIC_PROTOCOL_ERROR':
+    case 'ERR_QUIC_HANDSHAKE_FAILED': return 'net.quic';
+  }
+  if (cronetCode?.startsWith('ERR_SSL_') || cronetCode?.startsWith('ERR_CERT_')) return 'net.tls';
+  if (lower.includes('aborted') || lower.includes('timed out') || lower.includes('timeout')) return 'net.timeout';
   if (/(ssl|tls|cert|handshake|trust anchor|certpath)/i.test(text)) return 'net.tls';
   if (lower.includes('cleartext')) return 'net.cleartext';
   if (lower.includes('enotfound') || lower.includes('unable to resolve') || lower.includes('unknown host')) return 'net.dns';
