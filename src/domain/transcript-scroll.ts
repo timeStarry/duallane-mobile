@@ -27,8 +27,16 @@ export function isPinnedToLatest(input: {
   if (input.mode === 'history') return input.offsetY < threshold;
   const content = input.contentHeight ?? 0;
   const layout = input.layoutHeight ?? 0;
+  if (!Number.isFinite(content) || !Number.isFinite(layout) || content < 0 || layout <= 0) return false;
   if (content <= layout + threshold) return true;
   return content - input.offsetY - layout < threshold;
+}
+
+// FlatList's declaration returns a JSX element, but its public responder exposes scrollToEnd.
+export function scrollResponderToEnd(responder: unknown, animated: boolean) {
+  if (responder && typeof responder === 'object' && 'scrollToEnd' in responder && typeof responder.scrollToEnd === 'function') {
+    responder.scrollToEnd({ animated });
+  }
 }
 
 export function shouldLoadOlderHistory(input: { historyReady: boolean; hasOlder: boolean; messageCount: number }) {

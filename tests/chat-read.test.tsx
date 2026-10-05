@@ -8,6 +8,7 @@ import type { Transfers } from '../src/data/transfers';
 import { bootstrapSchema, conversationSchema, memberSchema, parseMessage, targetKey, topicSchema, type ChatTarget, type Draft, type Message } from '../src/domain/contracts';
 import { useWorkspace } from '../src/domain/store';
 import { CatalogEmoteGrid } from '../src/ui/CatalogEmoteGrid';
+import type { WorkspaceMessageDisplayItem } from '../src/domain/hidden-messages';
 
 let mockFocused = true;
 let mockPanel = 'none';
@@ -28,6 +29,7 @@ const metrics = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top:
 const conversationTarget: ChatTarget = { kind: 'conversation', id: 'g1' };
 const topicTarget: ChatTarget = { kind: 'topic', id: 't1', conversationId: 'g1' };
 const originalAppState = AppState.currentState;
+const mockNativeScrollToEnd = jest.fn();
 
 function dto(id: string, second: number, target: ChatTarget = conversationTarget, extra: Record<string, unknown> = {}) {
   return {
@@ -78,6 +80,28 @@ function offset(y: number) {
   return { nativeEvent: { contentOffset: { y }, contentSize: { height: 1500 }, layoutMeasurement: { height: 500 } } };
 }
 
+function visibleLatest(view: ReturnType<typeof render>, messageId: string) {
+  const list = view.UNSAFE_getByType(FlatList);
+  const items = list.props.data as WorkspaceMessageDisplayItem<Message>[];
+  const index = items.findIndex(item => item.kind === 'message'
+    ? item.message.id === messageId
+    : item.messages.some(message => message.id === messageId));
+  fireEvent(list, 'viewableItemsChanged', {
+    viewableItems: [{ item: items[index], index, key: messageId, isViewable: true }], changed: [],
+  });
+}
+
+async function observeLatest(view: ReturnType<typeof render>, messageId?: string) {
+  await act(async () => undefined);
+  const list = view.UNSAFE_getByType(FlatList);
+  const items = list.props.data as WorkspaceMessageDisplayItem<Message>[];
+  const tail = list.props.inverted ? items[0] : items.at(-1);
+  const tailId = messageId ?? (tail?.kind === 'message' ? tail.message.id : tail?.messages.at(-1)?.id);
+  if (!tailId) throw new Error('The test must provide a populated transcript');
+  fireEvent.scroll(list, offset(list.props.inverted ? 0 : 1000));
+  visibleLatest(view, tailId);
+}
+
 beforeEach(() => {
   jest.useFakeTimers();
   useWorkspace.getState().reset();
@@ -87,6 +111,170 @@ beforeEach(() => {
   jest.spyOn(FlatList.prototype, 'scrollToIndex').mockImplementation(() => undefined);
   jest.spyOn(FlatList.prototype, 'scrollToOffset').mockImplementation(() => undefined);
   jest.spyOn(FlatList.prototype, 'scrollToEnd').mockImplementation(() => undefined);
+  mockNativeScrollToEnd.mockClear();
+  jest.spyOn(FlatList.prototype, 'getScrollResponder').mockImplementation(() => (
+    { scrollToEnd: mockNativeScrollToEnd } as unknown as ReturnType<FlatList['getScrollResponder']>
+  ));
+});
+
+test('an initially long async card does not read or hide latest until the real bottom and tail are visible', async () => {
+  seed(conversationTarget, [message('long-card', 0), message('latest-1', 1)]);
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await act(async () => undefined);
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  expect(view.queryByRole('button', { name: '回到最新' })).toBeNull();
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'layout', { nativeEvent: { layout: { height: 500, width: 390, x: 0, y: 0 } } });
+  fireEvent(list, 'contentSizeChange', 390, 1500);
+  fireEvent.scroll(list, offset(200));
+  expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+  expect(mockNativeScrollToEnd).toHaveBeenCalledWith({ animated: false });
+  expect(FlatList.prototype.scrollToEnd).not.toHaveBeenCalled();
+  fireEvent.press(view.getByRole('button', { name: '回到最新' }));
+  await act(async () => undefined);
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+  fireEvent.scroll(list, offset(1000));
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  visibleLatest(view, 'latest-1');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledWith('g1', 'latest-1', false));
+  expect(view.queryByRole('button', { name: '回到最新' })).toBeNull();
+
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  await act(async () => undefined);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  fireEvent(list, 'contentSizeChange', 390, 2500);
+  expect(mockNativeScrollToEnd).toHaveBeenLastCalledWith({ animated: false });
+  visibleLatest(view, 'latest-2');
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 2000 }, contentSize: { height: 2500 }, layoutMeasurement: { height: 500 } } });
+  await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+});
+
+test('a short complete transcript can confirm its visible hidden tail without a scroll event', async () => {
+  seed(conversationTarget, [message('latest-1', 1, conversationTarget, { hiddenByCurrentUser: true })]);
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await act(async () => undefined);
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'layout', { nativeEvent: { layout: { height: 500, width: 390, x: 0, y: 0 } } });
+  fireEvent(list, 'contentSizeChange', 390, 200);
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  visibleLatest(view, 'latest-1');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledWith('g1', 'latest-1', false));
+});
+
+test('a short mounted list retains observed visibility across focus changes without another native callback', async () => {
+  seed(conversationTarget, [message('original', 0), message('latest-1', 1)]);
+  useWorkspace.setState({ connection: '离线缓存，恢复连接后同步' });
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await act(async () => undefined);
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'layout', { nativeEvent: { layout: { height: 500, width: 390, x: 0, y: 0 } } });
+  fireEvent(list, 'contentSizeChange', 390, 200);
+  visibleLatest(view, 'latest-1');
+  expect(runtime.markRead).not.toHaveBeenCalled();
+
+  view.rerender(screen(runtime, conversationTarget, 'original'));
+  await waitFor(() => expect(FlatList.prototype.scrollToIndex).toHaveBeenCalled());
+  expect(view.UNSAFE_getByType(FlatList)).toBe(list);
+  act(() => useWorkspace.setState({ connection: '已连接' }));
+  await act(async () => undefined);
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  fireEvent.press(view.getByRole('button', { name: '回到最新' }));
+  // Content already fits; native offsets and visible indices remain unchanged.
+  // No synthetic scroll, layout, content-size or viewability callback follows the command.
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledWith('g1', 'latest-1', false));
+  expect(view.queryByRole('button', { name: '回到最新' })).toBeNull();
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+});
+
+test.each(['target', 'account', 'mode'])('late list observations from a previous %s cannot confirm or scroll the new transcript', async change => {
+  seed(conversationTarget, [message('latest-1', 1)]);
+  const runtime = createRuntime();
+  let finishOpen!: (count: number) => void;
+  if (change === 'mode') runtime.open.mockImplementationOnce(() => new Promise(resolve => { finishOpen = resolve; }));
+  const view = render(screen(runtime));
+  await act(async () => undefined);
+  const old = view.UNSAFE_getByType(FlatList).props;
+  const oldTail = { viewableItems: [{ item: old.data[0], index: 0, key: 'latest-1', isViewable: true }], changed: [] };
+  let activeTarget = conversationTarget;
+  if (change === 'target') {
+    activeTarget = { kind: 'conversation', id: 'g2' };
+    act(() => {
+      useWorkspace.setState(s => ({ conversations: { ...s.conversations, g2: conversationSchema.parse({ id: 'g2', type: 'group', displayTitle: 'g2', lastActivityAt: '2026-10-05T00:00:00Z' }) } }));
+      useWorkspace.getState().setMessages('g2', [message('latest-1', 1, activeTarget)]);
+    });
+    view.rerender(screen(runtime, activeTarget));
+  } else if (change === 'account') act(() => useWorkspace.setState({ accountKey: 'test:another' }));
+  else await act(async () => { finishOpen(50); });
+  await act(async () => undefined);
+  mockNativeScrollToEnd.mockClear();
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  act(() => {
+    old.onScrollBeginDrag();
+    old.onLayout({ nativeEvent: { layout: { height: 500, width: 390, x: 0, y: 0 } } });
+    old.onContentSizeChange(390, 1500);
+    old.onScroll(offset(1000));
+    old.onViewableItemsChanged(oldTail);
+    old.onMomentumScrollEnd(offset(1000));
+  });
+  await act(async () => undefined);
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
+  expect(FlatList.prototype.scrollToOffset).not.toHaveBeenCalled();
+  await observeLatest(view, 'latest-1');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledWith(activeTarget.id, 'latest-1', false));
+});
+
+test.each(['content', 'viewport'])('a %s size change revokes a queued read until real geometry reaches the latest again', async changed => {
+  seed(conversationTarget, [message('latest-1', 1)]);
+  const runtime = createRuntime();
+  let finishRead!: () => void;
+  runtime.markRead.mockImplementationOnce(() => new Promise<void>(resolve => { finishRead = resolve; }));
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  await observeLatest(view, 'latest-2');
+  const list = view.UNSAFE_getByType(FlatList);
+  if (changed === 'content') fireEvent(list, 'contentSizeChange', 390, 2500);
+  else fireEvent(list, 'layout', { nativeEvent: { layout: { height: 200, width: 390, x: 0, y: 0 } } });
+  await act(async () => { finishRead(); });
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+  // The visible item set did not change, so no second viewability callback is required.
+  fireEvent.scroll(list, { nativeEvent: {
+    contentOffset: { y: changed === 'content' ? 2000 : 1300 },
+    contentSize: { height: changed === 'content' ? 2500 : 1500 },
+    layoutMeasurement: { height: changed === 'content' ? 500 : 200 },
+  } });
+  await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+});
+
+test('browsing away stops automatic pinning while later programmatic observations cannot change that intent', async () => {
+  seed(conversationTarget, [message('old', 0), message('latest-1', 1)]);
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'scrollBeginDrag');
+  fireEvent.scroll(list, offset(300));
+  fireEvent(list, 'scrollEndDrag', offset(300));
+  fireEvent(list, 'momentumScrollEnd', offset(300));
+  mockNativeScrollToEnd.mockClear();
+  fireEvent.scroll(list, offset(1000));
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  fireEvent(list, 'contentSizeChange', 390, 2500);
+  expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  fireEvent.press(view.getByRole('button', { name: '回到最新' }));
+  expect(mockNativeScrollToEnd).toHaveBeenCalledWith({ animated: true });
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
 });
 
 afterEach(() => {
@@ -112,8 +300,11 @@ test.each([conversationTarget, topicTarget])('opening a $kind at a historical an
   await waitFor(() => expect(FlatList.prototype.scrollToIndex).toHaveBeenCalledWith({ index: 0, animated: false, viewPosition: 0.5 }));
   expect(runtime.markRead).not.toHaveBeenCalled();
   act(() => useWorkspace.getState().upsertMessage(message('latest-3', 3, target)));
+  await observeLatest(view, 'latest-3');
   expect(runtime.markRead).not.toHaveBeenCalled();
   fireEvent.press(view.getByRole('button', { name: '回到最新' }));
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  await observeLatest(view, 'latest-3');
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledWith(target.id, 'latest-3', target.kind === 'topic'));
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
 });
@@ -123,6 +314,7 @@ test('returning to the bottom by scrolling reads a message received while browsi
   const runtime = createRuntime();
   runtime.open.mockResolvedValue(50);
   const view = render(screen(runtime));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(view.UNSAFE_getByType(FlatList).props.inverted).toBe(true));
   const list = view.UNSAFE_getByType(FlatList);
@@ -133,6 +325,7 @@ test('returning to the bottom by scrolling reads a message received while browsi
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
 
   fireEvent(list, 'momentumScrollEnd', offset(0));
+  visibleLatest(view, 'latest-2');
   await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
   fireEvent(list, 'momentumScrollEnd', offset(0));
   act(() => useWorkspace.setState(s => ({ conversations: { ...s.conversations, g1: { ...s.conversations.g1!, unreadCount: 0, lastReadMessageId: 'latest-2' } } })));
@@ -145,11 +338,14 @@ test('read requests are serialized and a local pending message waits for server 
   let finishRead!: () => void;
   runtime.markRead.mockImplementationOnce(() => new Promise<void>(resolve => { finishRead = resolve; }));
   const view = render(screen(runtime));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  await observeLatest(view, 'latest-2');
   await act(async () => undefined);
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
   act(() => useWorkspace.getState().upsertMessage({ ...message('latest-3', 3), status: 'sending' }));
+  await observeLatest(view, 'latest-3');
   await act(async () => { finishRead(); });
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
   act(() => useWorkspace.getState().upsertMessage(message('latest-3', 3)));
@@ -163,6 +359,7 @@ test('a failed marker does not retry in a render loop and retries after connecti
   const runtime = createRuntime();
   runtime.markRead.mockRejectedValue(new Error('synthetic failure'));
   const view = render(screen(runtime));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   await act(async () => undefined);
   view.rerender(screen(runtime));
@@ -180,7 +377,8 @@ test.each(['background', 'unfocused', 'offline', 'unjoined'])('automatic read is
   if (state === 'offline') useWorkspace.setState({ connection: '离线缓存，恢复连接后同步' });
   if (state === 'unjoined') useWorkspace.setState(s => ({ topics: { ...s.topics, t1: { ...s.topics.t1!, joined: false } } }));
   const runtime = createRuntime();
-  render(screen(runtime, topicTarget));
+  const view = render(screen(runtime, topicTarget));
+  if (state !== 'unjoined') await observeLatest(view);
   await act(async () => undefined);
   expect(runtime.markRead).not.toHaveBeenCalled();
 });
@@ -190,9 +388,10 @@ test('resuming the app reads a newer server message only when the current view r
   AppState.currentState = 'background';
   const listen = jest.spyOn(AppState, 'addEventListener');
   const runtime = createRuntime();
-  render(screen(runtime));
+  const view = render(screen(runtime));
   await act(async () => undefined);
   act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  await observeLatest(view, 'latest-2');
   expect(runtime.markRead).not.toHaveBeenCalled();
   const onChange = listen.mock.calls.find(([event]) => event === 'change')?.[1];
   act(() => {
@@ -206,6 +405,7 @@ test('changing the historical anchor on the same route suppresses read before lo
   seed(conversationTarget, [message('original', 0), message('latest-1', 1)]);
   const runtime = createRuntime();
   const view = render(screen(runtime));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   view.rerender(screen(runtime, conversationTarget, 'original'));
   await waitFor(() => expect(FlatList.prototype.scrollToIndex).toHaveBeenCalled());
@@ -220,6 +420,7 @@ test.each([conversationTarget, topicTarget])('reply location fetches an authoriz
   const runtime = createRuntime();
   runtime.api.json.mockResolvedValue({ messages: [dto('original', 0, target), dto('foreign', 1, { kind: 'conversation', id: 'foreign-group' })] });
   const view = render(screen(runtime, target));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   fireEvent.press(view.getByRole('button', { name: '定位原消息' }));
   await waitFor(() => expect(FlatList.prototype.scrollToIndex).toHaveBeenCalledWith({ index: 0, animated: false, viewPosition: 0.5 }));
@@ -229,6 +430,8 @@ test.each([conversationTarget, topicTarget])('reply location fetches an authoriz
   act(() => useWorkspace.getState().upsertMessage(message('latest-3', 3, target)));
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
   fireEvent.press(view.getByRole('button', { name: '回到最新' }));
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  await observeLatest(view, 'latest-3');
   await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith(target.id, 'latest-3', target.kind === 'topic'));
 });
 
@@ -236,12 +439,13 @@ test('a cached original is located without loading or snapping back to the lates
   seed(conversationTarget, [message('original', 0), message('reply', 2, conversationTarget, { replyToMessageId: 'original' })]);
   const runtime = createRuntime();
   const view = render(screen(runtime));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
-  jest.mocked(FlatList.prototype.scrollToEnd).mockClear();
+  mockNativeScrollToEnd.mockClear();
   fireEvent.press(view.getByRole('button', { name: '定位原消息' }));
   await waitFor(() => expect(FlatList.prototype.scrollToIndex).toHaveBeenCalled());
   fireEvent(view.UNSAFE_getByType(FlatList), 'contentSizeChange', 390, 1500);
-  expect(FlatList.prototype.scrollToEnd).not.toHaveBeenCalled();
+  expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
   expect(runtime.api.json).not.toHaveBeenCalled();
 });
 
@@ -252,6 +456,7 @@ test.each([conversationTarget, topicTarget])('a late $kind around page cannot re
   runtime.api.json.mockImplementationOnce(() => new Promise(resolve => { finishAround = resolve; }));
   runtime.api.json.mockResolvedValue({ messages: [dto('original', 0, target), dto('neighbor', 1, target, { recalledAt: '2026-10-06T01:00:00Z', plainText: 'Recalled', content: null })] });
   const view = render(screen(runtime, target));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   fireEvent.press(view.getByRole('button', { name: '定位原消息' }));
   await waitFor(() => expect(runtime.api.json).toHaveBeenCalledTimes(1));
@@ -268,6 +473,7 @@ test('a personally hidden original is kept hidden with a safe recovery hint', as
   seed(conversationTarget, [message('original', 0, conversationTarget, { hiddenByCurrentUser: true }), message('reply', 2, conversationTarget, { replyToMessageId: 'original' })]);
   const runtime = createRuntime();
   const view = render(screen(runtime));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   fireEvent.press(view.getByRole('button', { name: '定位原消息' }));
   await waitFor(() => expect(view.getByText('原消息已隐藏，请先恢复后再定位。')).toBeTruthy());
@@ -282,6 +488,7 @@ test.each(['missing', 'foreign', 'forbidden'])('an unavailable reply (%s) gives 
   if (result === 'forbidden') runtime.api.json.mockRejectedValue(new Error('sensitive server detail'));
   else runtime.api.json.mockResolvedValue({ messages: result === 'foreign' ? [dto('original', 0, { kind: 'conversation', id: 'foreign-group' })] : [] });
   const view = render(screen(runtime));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   fireEvent.press(view.getByRole('button', { name: '定位原消息' }));
   await waitFor(() => expect(view.getAllByText('原消息不可用')).toHaveLength(2));
@@ -297,6 +504,7 @@ test.each(['latest', 'scroll', 'target', 'account'])('a late around response can
   let finishAround!: (response: { messages: ReturnType<typeof dto>[] }) => void;
   runtime.api.json.mockImplementation(() => new Promise(resolve => { finishAround = resolve; }));
   const view = render(screen(runtime));
+  await observeLatest(view);
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
   fireEvent.press(view.getByRole('button', { name: '定位原消息' }));
   await waitFor(() => expect(runtime.api.json).toHaveBeenCalledTimes(1));

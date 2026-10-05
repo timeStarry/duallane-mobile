@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
+import { AppState, FlatList, Pressable, ScrollView, Text, View, type ViewToken } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { z } from 'zod';
@@ -12,10 +12,10 @@ import { rememberEmotes } from '../../data/media';
 import { Transfers } from '../../data/transfers';
 import { conversationIdentity } from '../../ui/chrome';
 import { connectionCategory } from '../../ui/connection';
-import { groupHiddenWorkspaceMessages } from '../../domain/hidden-messages';
+import { groupHiddenWorkspaceMessages, type WorkspaceMessageDisplayItem } from '../../domain/hidden-messages';
 import { formatMessageDayLabel, getMessageDayKey, getMessageGroupPositions, workspaceUnreadIndex } from '../../domain/message-grouping';
 import { composerEmotePacks } from '../../domain/emote-catalog';
-import { hasOlderMessages, isPinnedToLatest, newestFirstTranscript, shouldLoadOlderHistory, transcriptMode } from '../../domain/transcript-scroll';
+import { hasOlderMessages, isPinnedToLatest, newestFirstTranscript, scrollResponderToEnd, shouldLoadOlderHistory, transcriptMode } from '../../domain/transcript-scroll';
 import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
 import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
 import { useChatIme } from '../../ui/useChatIme';
@@ -51,6 +51,7 @@ import { AtSign, Bell, BellOff, ChevronLeft, Info, Search } from 'lucide-react-n
 
 const emptyMessages: Message[] = [];
 const emptyDraft: Draft = { text: '', mentionIds: [] };
+const latestViewabilityConfig = { itemVisiblePercentThreshold: 1 };
 
 export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Runtime; open: (id: string) => void; openTopic: (topic: Topic) => void }) {
   const conversations = useWorkspace(s => s.conversations);
@@ -156,6 +157,15 @@ export function ChatScreen({
   const [loading, setLoading] = useState(() => useWorkspace.getState().messages[key] === undefined);
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
+  const lastId = messages.at(-1)?.id;
+  const lastStatus = messages.at(-1)?.status;
+  const mode = transcriptMode(hasOlder);
+  // Visibility belongs to the mounted list: unchanged visible keys do not emit another callback.
+  const geometry = useMemo(() => ({ accountKey, key, mode, visibleIds: new Set<string>(), offsetY: 0, contentHeight: undefined as number | undefined, layoutHeight: undefined as number | undefined }), [accountKey, key, mode]);
+  const observation = useMemo(() => ({ geometry, lastId, focusMessageId, confirmed: false, revision: 0 }), [geometry, lastId, focusMessageId]);
+  const currentObservation = useRef(observation);
+  currentObservation.current = observation;
+  const [readConfirmation, setReadConfirmation] = useState<{ observation: typeof observation; revision: number }>();
   const [progress, setProgress] = useState('');
   const [emotes, setEmotes] = useState<Emote[]>([]);
   const [library, setLibrary] = useState<EmoteLibrary | null>(null);
@@ -163,11 +173,11 @@ export function ChatScreen({
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList>(null);
   const pinToLatest = useRef(!focusMessageId);
-  const [pinnedToLatest, setPinnedToLatest] = useState(!focusMessageId);
   const [foreground, setForeground] = useState(AppState.currentState === 'active');
   const readQueue = useRef(Promise.resolve());
   const readMarker = useRef<{ accountKey: string; key: string; messageId: string } | undefined>(undefined);
   const draggingTranscript = useRef(false);
+  const userScroll = useRef(false);
   const historyReady = useRef(false);
   const [newMessages, setNewMessages] = useState(false);
   const focusInvocation = useRef(0);
@@ -190,8 +200,9 @@ export function ChatScreen({
   }, [runtime, targetId, targetKind, key]);
   useEffect(() => {
     pinToLatest.current = !focusMessageId;
-    setPinnedToLatest(!focusMessageId);
+    setReadConfirmation(undefined);
     draggingTranscript.current = false;
+    userScroll.current = false;
     historyReady.current = false;
     setNewMessages(!!focusMessageId);
     setResolvedFocus(undefined);
@@ -218,55 +229,72 @@ export function ChatScreen({
   }, [runtime]);
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const identity = conversation ? conversationIdentity(conversation, selfId, members) : undefined;
-  const lastId = messages.at(-1)?.id;
-  const lastStatus = messages.at(-1)?.status;
-  const mode = transcriptMode(hasOlder);
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const invalidateReadConfirmation = useCallback(() => {
+    const current = currentObservation.current;
+    current.revision += 1;
+    current.confirmed = false;
+    setReadConfirmation(undefined);
+  }, []);
+  const reconcileLatest = useCallback(() => {
+    const current = currentObservation.current;
+    const measuredGeometry = current.geometry;
+    if (useWorkspace.getState().accountKey !== measuredGeometry.accountKey) return;
+    const measured = measuredGeometry.contentHeight !== undefined && measuredGeometry.layoutHeight !== undefined && measuredGeometry.layoutHeight > 0;
+    const pinned = measured && isPinnedToLatest(measuredGeometry);
+    current.confirmed = !!current.lastId && pinToLatest.current && pinned && measuredGeometry.visibleIds.has(current.lastId);
+    setReadConfirmation(previous => current.confirmed
+      ? previous?.observation === current && previous.revision === current.revision ? previous : { observation: current, revision: current.revision }
+      : undefined);
+    if (current.confirmed) setNewMessages(false);
+    else if (measured && !pinned) setNewMessages(true);
+  }, []);
   const scrollToLatest = useCallback((animated: boolean) => {
     focusInvocation.current += 1;
     setFocusRequest(undefined);
     setResolvedFocus(undefined);
     pinToLatest.current = true;
-    setPinnedToLatest(true);
-    setNewMessages(false);
+    draggingTranscript.current = false;
+    userScroll.current = false;
+    invalidateReadConfirmation();
     if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated });
-    else list.current?.scrollToEnd({ animated });
-  }, []);
-  const applyUserOffset = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+    else scrollResponderToEnd(list.current?.getScrollResponder(), animated);
+    const measuredGeometry = currentObservation.current.geometry;
+    // A measured, fully fitting transcript cannot move, so native may emit no scroll event.
+    if (measuredGeometry.mode === 'complete' && measuredGeometry.contentHeight !== undefined && measuredGeometry.layoutHeight !== undefined && measuredGeometry.contentHeight <= measuredGeometry.layoutHeight) reconcileLatest();
+  }, [invalidateReadConfirmation, reconcileLatest]);
+  const isCurrentObservation = () => currentObservation.current === observation && useWorkspace.getState().accountKey === accountKey;
+  const observeOffset = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }, fromUser: boolean) => {
+    if (!isCurrentObservation()) return;
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const pinned = isPinnedToLatest({
-      mode: modeRef.current,
-      offsetY: contentOffset.y,
-      contentHeight: contentSize.height,
-      layoutHeight: layoutMeasurement.height,
-    });
-    pinToLatest.current = pinned;
-    setPinnedToLatest(pinned);
-    setNewMessages(show => {
-      const next = !pinned;
-      return show === next ? show : next;
-    });
+    if (geometry.contentHeight !== contentSize.height || geometry.layoutHeight !== layoutMeasurement.height) invalidateReadConfirmation();
+    geometry.offsetY = contentOffset.y;
+    geometry.contentHeight = contentSize.height;
+    geometry.layoutHeight = layoutMeasurement.height;
+    if (fromUser) pinToLatest.current = isPinnedToLatest(geometry);
+    reconcileLatest();
   };
-  const pinIfNeeded = () => {
-    if (!pinToLatest.current) return;
+  const pinIfNeeded = useCallback(() => {
+    if (currentObservation.current !== observation || useWorkspace.getState().accountKey !== accountKey || !pinToLatest.current || draggingTranscript.current) return;
+    userScroll.current = false;
     if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated: false });
-    else list.current?.scrollToEnd({ animated: false });
-  };
+    else scrollResponderToEnd(list.current?.getScrollResponder(), false);
+  }, [accountKey, observation]);
   useEffect(() => {
     if (!lastId) return;
     if (pinToLatest.current) pinIfNeeded();
     else setNewMessages(true);
-  }, [key, lastId]);
+  }, [accountKey, key, lastId, mode, pinIfNeeded]);
   const canRead = !!conversation && (target.kind !== 'topic' || !!topic?.joined);
   const online = ['connected', 'http_sync'].includes(connectionCategory(connection) ?? '');
   useEffect(() => {
-    if (!lastId || lastStatus || !canRead || !focused || !foreground || !online || !pinnedToLatest || !pinToLatest.current) return;
+    if (!lastId || lastStatus || !canRead || !focused || !foreground || !online || readConfirmation?.observation !== observation || !observation.confirmed || !pinToLatest.current) return;
     let cancelled = false;
     // Serialize markers so an older response cannot overwrite a newer read cursor.
     readQueue.current = readQueue.current.then(async () => {
       const state = useWorkspace.getState();
-      if (cancelled || !pinToLatest.current || AppState.currentState !== 'active' || state.accountKey !== accountKey || state.messages[key]?.at(-1)?.id !== lastId) return;
+      if (cancelled || currentObservation.current !== observation || readConfirmation.revision !== observation.revision || !observation.confirmed || !pinToLatest.current || AppState.currentState !== 'active' || state.accountKey !== accountKey || state.messages[key]?.at(-1)?.id !== lastId) return;
       const previous = readMarker.current;
       if (previous?.accountKey === accountKey && previous.key === key && previous.messageId === lastId) return;
       const marker = { accountKey, key, messageId: lastId };
@@ -275,7 +303,7 @@ export function ChatScreen({
       catch { if (readMarker.current === marker) readMarker.current = undefined; }
     });
     return () => { cancelled = true; };
-  }, [accountKey, canRead, focused, foreground, key, lastId, lastStatus, online, pinnedToLatest, runtime, target.id, target.kind]);
+  }, [accountKey, canRead, focused, foreground, key, lastId, lastStatus, observation, online, readConfirmation, runtime, target.id, target.kind]);
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
   const send = (existing?: Message) => {
@@ -298,8 +326,7 @@ export function ChatScreen({
     setFocusRequest(undefined);
     setResolvedFocus(undefined);
     pinToLatest.current = true;
-    setPinnedToLatest(true);
-    setNewMessages(false);
+    invalidateReadConfirmation();
     const uploadTaskId = existing?.pendingUploadTaskId ?? latest.pendingAttachment?.taskId;
     const task = uploadTaskId ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === uploadTaskId) : undefined;
     const needsUpload = !!uploadTaskId && !existing?.attachments[0];
@@ -335,7 +362,9 @@ export function ChatScreen({
   };
   const locateMessage = (messageId: string) => {
     pinToLatest.current = false;
-    setPinnedToLatest(false);
+    invalidateReadConfirmation();
+    draggingTranscript.current = false;
+    userScroll.current = false;
     setNewMessages(true);
     setError('');
     setResolvedFocus(undefined);
@@ -419,34 +448,59 @@ export function ChatScreen({
         </View>
       ) : (
         <FlatList
-          key={`${key}:${mode}`}
+          key={`${accountKey}:${key}:${mode}`}
           ref={list}
           inverted={mode === 'history'}
           data={listItems}
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
           onScrollBeginDrag={() => {
+            if (!isCurrentObservation()) return;
             focusInvocation.current += 1;
             setFocusRequest(undefined);
             setResolvedFocus(undefined);
             draggingTranscript.current = true;
+            userScroll.current = true;
             historyReady.current = true;
+            invalidateReadConfirmation();
           }}
           onScrollEndDrag={e => {
+            if (!isCurrentObservation()) return;
             draggingTranscript.current = false;
-            applyUserOffset(e);
+            observeOffset(e, true);
           }}
           onMomentumScrollEnd={e => {
+            if (!isCurrentObservation()) return;
             draggingTranscript.current = false;
-            applyUserOffset(e);
+            observeOffset(e, userScroll.current);
+            userScroll.current = false;
           }}
           onScroll={e => {
-            if (!draggingTranscript.current) return;
-            applyUserOffset(e);
+            observeOffset(e, draggingTranscript.current || userScroll.current);
           }}
           scrollEventThrottle={100}
-          onLayout={pinIfNeeded}
-          onContentSizeChange={pinIfNeeded}
+          onLayout={e => {
+            if (!isCurrentObservation()) return;
+            if (geometry.layoutHeight !== e.nativeEvent.layout.height) invalidateReadConfirmation();
+            geometry.layoutHeight = e.nativeEvent.layout.height;
+            reconcileLatest();
+            pinIfNeeded();
+          }}
+          onContentSizeChange={(_width, height) => {
+            if (!isCurrentObservation()) return;
+            if (geometry.contentHeight !== height) invalidateReadConfirmation();
+            geometry.contentHeight = height;
+            reconcileLatest();
+            pinIfNeeded();
+          }}
+          viewabilityConfig={latestViewabilityConfig}
+          onViewableItemsChanged={({ viewableItems }: { viewableItems: ViewToken<WorkspaceMessageDisplayItem<Message>>[] }) => {
+            if (!isCurrentObservation()) return;
+            geometry.visibleIds = new Set(viewableItems.flatMap(({ item, isViewable }) => !isViewable ? [] : item.kind === 'message'
+              ? [item.message.id]
+              : item.messages.map(message => message.id)));
+            reconcileLatest();
+          }}
           onEndReached={() => {
             if (!shouldLoadOlderHistory({ historyReady: historyReady.current, hasOlder, messageCount: messages.length })) return;
             const first = messages[0]?.id;
@@ -510,7 +564,7 @@ export function ChatScreen({
             <View style={{ paddingHorizontal: 16 }}><Label muted>旧草稿中的提及请重新选择成员</Label></View>
           ) : null}
           {target.kind === 'topic' && topic?.allowSyncToGroup ? (
-            <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: 40, justifyContent: 'center' }}>
+            <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: t.hit, justifyContent: 'center' }}>
               <Label muted>{syncToGroup ? '将同步到群聊' : '默认只发到话题，点按改为同步到群'}</Label>
             </Pressable>
           ) : null}
