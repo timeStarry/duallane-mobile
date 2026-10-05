@@ -18,33 +18,42 @@ export function SwitchRow({
 }) {
   const t = useTheme();
   return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
+    <Pressable
+      accessible
+      accessibilityRole="switch"
+      accessibilityLabel={title}
+      accessibilityHint={detail}
+      accessibilityState={{ disabled, checked: value }}
+      disabled={disabled}
+      onPress={() => onValueChange(!value)}
+      style={({ pressed }) => ({
         paddingHorizontal: t.space.lg,
         paddingVertical: t.space.md,
         minHeight: t.hit,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: t.line,
-        gap: t.space.md,
-        opacity: disabled ? t.disabledOpacity : 1,
-      }}
+        opacity: disabled ? t.disabledOpacity : pressed ? t.pressedOpacity : 1,
+      })}
     >
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={{ fontSize: t.type.body, color: t.text, fontWeight: '500' }}>{title}</Text>
-        {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }}>{detail}</Text> : null}
+      <View
+        pointerEvents="none"
+        accessible={false}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.md }}
+      >
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: t.type.body, color: t.text, fontWeight: '500' }}>{title}</Text>
+          {detail ? <Text style={{ fontSize: t.type.meta, color: t.muted, marginTop: 2 }}>{detail}</Text> : null}
+        </View>
+        <Switch
+          value={value}
+          disabled={disabled}
+          trackColor={{ false: t.line, true: t.shared }}
+          thumbColor={t.surface}
+        />
       </View>
-      <Switch
-        accessibilityLabel={title}
-        accessibilityState={{ disabled, checked: value }}
-        value={value}
-        onValueChange={onValueChange}
-        disabled={disabled}
-        trackColor={{ false: t.line, true: t.shared }}
-        thumbColor={t.surface}
-      />
-    </View>
+    </Pressable>
   );
 }
 
