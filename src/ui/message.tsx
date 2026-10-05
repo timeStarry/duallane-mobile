@@ -288,8 +288,9 @@ export function MessageRow({
                 key={emoteKey}
                 accessibilityRole="button"
                 accessibilityLabel={`反应 ${catalogUnicodeGlyph(emoteKey) ?? emoteKey}`}
+                accessibilityState={{ selected: message.reactions.some(reaction => reaction.emoteKey === emoteKey && reaction.reactedByCurrentUser) }}
                 onPress={() => { toggleReaction(emoteKey); setReactOpen(false); setCluster(false); }}
-                style={{ minWidth: t.hit, minHeight: t.hit, alignItems: 'center', justifyContent: 'center' }}
+                style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: t.radius.control, backgroundColor: message.reactions.some(reaction => reaction.emoteKey === emoteKey && reaction.reactedByCurrentUser) ? t.sharedSoft : undefined, alignItems: 'center', justifyContent: 'center' }}
               >
                 <ReactionGlyph emoteKey={emoteKey} />
               </Pressable>
@@ -328,6 +329,7 @@ export function MessageRow({
         <CatalogEmoteGrid
           packs={reactionEmotePacks(chatSettings?.enabledPackIds)}
           selectedPackId={reactionPack}
+          selectedItemKeys={message.reactions.filter(reaction => reaction.reactedByCurrentUser).map(reaction => reaction.emoteKey)}
           onSelectPack={setReactionPack}
           onPick={(item, packId) => {
             const emoteKey = catalogReactionKey(packId, item.id);

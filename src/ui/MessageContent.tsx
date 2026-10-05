@@ -48,7 +48,7 @@ export function MessageContent({
   return (
     <View style={{ gap: 6 }}>
       {message.blocks.map((block, index) => (
-        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} />
+        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} cardContext={{ conversationId: message.conversationId, topicId: message.topicId }} />
       ))}
     </View>
   );
@@ -61,6 +61,7 @@ function BlockView({
   onPreview,
   onOpenTopic,
   runtime,
+  cardContext,
 }: {
   block: Block;
   attachments: Attachment[];
@@ -68,6 +69,7 @@ function BlockView({
   onPreview?: (file: Attachment) => void;
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
+  cardContext: { conversationId: string; topicId?: string | null };
 }) {
   const t = useTheme();
   if (block.type === 'text') return <MarkdownText text={block.text} />;
@@ -85,7 +87,7 @@ function BlockView({
     if (isPreviewableImage(file)) return <AttachmentImage file={file} download={download} onPreview={onPreview} />;
     return <FileRow file={file} download={() => download(file)} />;
   }
-  if (block.type === 'card') return <WorkspaceCard block={block} runtime={runtime} onOpenTopic={onOpenTopic} />;
+  if (block.type === 'card') return <WorkspaceCard block={block} runtime={runtime} onOpenTopic={onOpenTopic} context={cardContext} />;
   if (block.type === 'emote_collection') return <EmoteCollectionShare shareId={block.shareId} summary={block.share} runtime={runtime} />;
   if (block.type === 'topic_reference') {
     return (

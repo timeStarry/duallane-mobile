@@ -41,7 +41,8 @@ test('hidden DTOs cannot retain original text or attachments', () => {
 
 test('permission-filtered paginated replay only advances high water after the last page', () => {
   const tracker = new ReplayTracker(1);
-  const event = (id:string, seq:number) => ({ version:1, type:'event', event:{ version:1, id, seq, spaceId:'spc_default', type:'message.created', payload:{ message } } });
+  // Go puts the major on the transport frame, not events.Event.
+  const event = (id:string, seq:number) => ({ version:1, type:'event', event:{ id, seq, spaceId:'spc_default', type:'message.created', payload:{ message } } });
   tracker.accept({ version:1, type:'ready', currentSeq:20, replayCount:1, hasMore:true });
   expect(tracker.accept(event('e1', 4))).toMatchObject({ replay:true, hello:true });
   expect(tracker.cursor).toBe(4);
@@ -54,4 +55,27 @@ test('permission-filtered paginated replay only advances high water after the la
 test('an unsupported outer realtime major requests synchronization', () => {
   const tracker = new ReplayTracker(0);
   expect(tracker.accept({ version:2, type:'event', event:{} })).toEqual({ sync:true });
+});
+
+test('a live Go event without an inner major is accepted once', () => {
+  const tracker = new ReplayTracker(1);
+  tracker.accept({ version:1, type:'ready', currentSeq:1, replayCount:0 });
+  const frame = { version:1, type:'event', event:{ id:'go-live', seq:3, spaceId:'spc_default', type:'message.created', conversationId:'c1', payload:{ message } } };
+  expect(tracker.accept(frame)).toMatchObject({ event:frame.event, replay:false });
+  expect(tracker.cursor).toBe(3);
+  expect(tracker.accept(frame).event).toBeUndefined();
+});
+
+test.each([undefined, 2, '1'])('an absent or unsupported outer major %s cannot authorize an event', version => {
+  const tracker = new ReplayTracker(0);
+  tracker.accept({ version:1, type:'ready', currentSeq:0, replayCount:0 });
+  expect(tracker.accept({ version, type:'event', event:{ version:1, id:'e1', seq:1, spaceId:'spc_default', type:'message.created', payload:{ message } } })).toEqual({ sync:true });
+});
+
+test('legacy inner major 1 remains compatible but cannot override the outer contract', () => {
+  const tracker = new ReplayTracker(0);
+  tracker.accept({ version:1, type:'ready', currentSeq:0, replayCount:0 });
+  const event = { version:1, id:'legacy', seq:1, spaceId:'spc_default', type:'message.created', payload:{ message } };
+  expect(tracker.accept({ version:1, type:'event', event }).event).toEqual(event);
+  expect(tracker.accept({ version:1, type:'event', event:{ ...event, id:'future', seq:2, version:2 } })).toEqual({ sync:true });
 });

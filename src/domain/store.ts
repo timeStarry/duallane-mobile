@@ -11,6 +11,8 @@ type State = {
   drafts: Record<string, Draft>;
   chatSettings: ChatSettings | null;
   cursor: number;
+  cardRevisions: Record<string, number>;
+  cardSyncVersion: number;
   connection: string;
   policy: ReleasePolicy | null;
   ready: boolean;
@@ -26,13 +28,16 @@ type State = {
   pruneTopics: (allowedIds: Set<string>) => void;
   setDraft: (id: string, draft: Partial<Draft> | string) => void;
   setChatSettings: (settings: ChatSettings | null) => void;
+  invalidateCard: (id: string, revision: number, invalidated?: boolean) => void;
+  refreshCards: () => void;
   reset: () => void;
 };
 
 const emptyDraft = (): Draft => ({ text: '', mentionIds: [] });
 const initial = {
   bootstrap: null, conversations: {}, topics: {}, messages: {}, files: [], drafts: {}, chatSettings: null,
-  cursor: 0, connection: '正在连接', policy: null, ready: false, busy: false, error: '', accountKey: '',
+  cursor: 0, cardRevisions: {} as Record<string, number>, cardSyncVersion: 0,
+  connection: '正在连接', policy: null, ready: false, busy: false, error: '', accountKey: '',
 };
 
 export function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
@@ -69,7 +74,12 @@ export const useWorkspace = create<State>(set => ({
       return id in conversations;
     })) : {};
     const topics = sameAccount ? Object.fromEntries(Object.entries(s.topics).filter(([, topic]) => topic.conversationId in conversations)) : {};
-    return { bootstrap: b, accountKey, conversations, messages, drafts, topics, files: b.permissions.canDownload ? b.files : [], ready: true, error: '', cursor: b.eventCursor };
+    return {
+      bootstrap: b, accountKey, conversations, messages, drafts, topics, files: b.permissions.canDownload ? b.files : [], ready: true, error: '', cursor: b.eventCursor,
+      cardRevisions: sameAccount ? s.cardRevisions : {},
+      // A fresh snapshot recovers projection events that were missed while disconnected.
+      cardSyncVersion: s.cardSyncVersion + (!sameAccount || s.bootstrap?.eventCursor !== b.eventCursor ? 1 : 0),
+    };
   }),
   setTopics: incoming => set(s => {
     const topics = Object.fromEntries(incoming.map(topic => [topic.id, topic]));
@@ -107,5 +117,11 @@ export const useWorkspace = create<State>(set => ({
     return { drafts: { ...s.drafts, [id]: next } };
   }),
   setChatSettings: chatSettings => set({ chatSettings }),
+  invalidateCard: (id, revision, invalidated = false) => set(s => {
+    const previous = s.cardRevisions[id] ?? 0;
+    if (revision <= previous && !invalidated) return s;
+    return { cardRevisions: { ...s.cardRevisions, [id]: Math.max(revision, previous + (invalidated && revision <= previous ? 1 : 0)) } };
+  }),
+  refreshCards: () => set(s => ({ cardSyncVersion: s.cardSyncVersion + 1 })),
   reset: () => set({ ...initial }),
 }));

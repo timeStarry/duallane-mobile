@@ -224,6 +224,7 @@ test('catalog toggles the same selected image reaction and shows safe command re
   fireEvent.press(view.getByRole('button', { name: '添加表情回复' }));
   fireEvent.press(view.getByRole('tab', { name: 'B站' }));
   const catalog = within(view.getByLabelText('选择消息表情回复'));
+  expect(catalog.getByRole('button', { name: 'doge' }).props.accessibilityState).toMatchObject({ selected: true });
   fireEvent.press(catalog.getByRole('button', { name: 'doge' }));
   expect(runtime.react).toHaveBeenCalledWith(original.id, 'bili:doge', true);
   await waitFor(() => expect(view.getByText('你当前不能执行此操作')).toBeTruthy());
@@ -246,15 +247,18 @@ test.each([
 ])('quick reaction %s uses the same canonical key to add and remove', async (emoteKey, glyph) => {
   const runtime = { react: jest.fn().mockResolvedValue(undefined) } as unknown as Runtime;
   const { view, rerender } = renderRow(runtime);
-  const chooseQuick = async () => {
+  const chooseQuick = async (selected: boolean) => {
     fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
     fireEvent.press(view.getByRole('button', { name: '反应' }));
-    await act(async () => fireEvent.press(view.getByRole('button', { name: `反应 ${glyph}` })));
+    const quick = view.getByRole('button', { name: `反应 ${glyph}` });
+    expect(quick.props.accessibilityState).toMatchObject({ selected });
+    if (selected) expect(StyleSheet.flatten(quick.props.style).backgroundColor).toBe(resolveTheme('light').sharedSoft);
+    await act(async () => fireEvent.press(quick));
   };
-  await chooseQuick();
+  await chooseQuick(false);
   expect(runtime.react).toHaveBeenLastCalledWith(original.id, emoteKey, false);
   rerender({ ...original, reactions: [{ emoteKey, count: 1, reactedByCurrentUser: true }] });
-  await chooseQuick();
+  await chooseQuick(true);
   expect(runtime.react).toHaveBeenLastCalledWith(original.id, emoteKey, true);
 });
 

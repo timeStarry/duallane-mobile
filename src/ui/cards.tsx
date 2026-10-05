@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { MapPin, Megaphone } from 'lucide-react-native';
 import type { Block } from '../domain/contracts';
 import { echoKindLabel, echoReleaseView, type EchoReleaseView } from '../domain/echo-release';
+import { useWorkspace } from '../domain/store';
 import type { Runtime } from '../data/runtime';
 import { ApiError, errorText } from '../data/client';
 import { Button, Label } from './primitives';
@@ -22,7 +23,20 @@ type CardModel = {
 };
 type CardBlock = Extract<Block, { type: 'card' }>;
 type CardResolution = Awaited<ReturnType<Runtime['resolveCard']>>;
-type ResolvedCard = { block: CardBlock; runtime: Runtime; model: CardModel };
+type CardContext = { conversationId: string; topicId?: string | null };
+type CardScope = {
+  accountKey: string; api: Runtime['api'] | undefined; runtime: Runtime | undefined;
+  cardId: string; cardType: string; schemaVersion: number; fallbackText: string;
+  conversationId: string | undefined; topicId: string | undefined;
+  readable: boolean; revision: number; syncVersion: number;
+};
+type ResolvedCard = { scope: CardScope; model: CardModel };
+
+function canReadCard(context?: CardContext) {
+  const state = useWorkspace.getState();
+  return !!state.bootstrap?.permissions.canReadConversations && (!context || !!state.conversations[context.conversationId])
+    && (!context?.topicId || (!!state.topics[context.topicId]?.joined && state.topics[context.topicId]?.conversationId === context.conversationId));
+}
 
 function stringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
@@ -50,22 +64,39 @@ export function WorkspaceCard({
   block,
   runtime,
   onOpenTopic,
+  context,
 }: {
   block: CardBlock;
   runtime?: Runtime;
   onOpenTopic?: (topicId: string) => void;
+  context?: CardContext;
 }) {
   const t = useTheme();
   const { cardId, cardType, schemaVersion, fallbackText } = block;
+  const conversationId = context?.conversationId;
+  const topicId = context?.topicId ?? undefined;
+  const accountKey = useWorkspace(state => state.accountKey);
+  const revision = useWorkspace(state => state.cardRevisions[cardId] ?? 0);
+  const syncVersion = useWorkspace(state => state.cardSyncVersion);
+  const readable = useWorkspace(state => !!state.bootstrap?.permissions.canReadConversations && (!conversationId || !!state.conversations[conversationId])
+    && (!topicId || (!!state.topics[topicId]?.joined && state.topics[topicId]?.conversationId === conversationId)));
+  const api = runtime?.api;
+  const scope = useMemo<CardScope>(() => ({ accountKey, api, runtime, cardId, cardType, schemaVersion, fallbackText, conversationId, topicId, readable, revision, syncVersion }),
+    [accountKey, api, runtime, cardId, cardType, schemaVersion, fallbackText, conversationId, topicId, readable, revision, syncVersion]);
+  const activeScope = useRef(scope);
+  activeScope.current = scope;
   const [resolved, setResolved] = useState<ResolvedCard>();
-  const model = resolved && resolved.runtime === runtime &&
-    resolved.block.cardId === block.cardId && resolved.block.cardType === block.cardType &&
-    resolved.block.schemaVersion === block.schemaVersion && resolved.block.fallbackText === block.fallbackText
-    ? resolved.model : fallbackModel(block);
+  const model = readable && resolved?.scope === scope ? resolved.model : fallbackModel(block);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const invocation = useRef(0);
   const busyRef = useRef('');
+  const current = useCallback((requestedInvocation: number) => {
+    const state = useWorkspace.getState();
+    return activeScope.current === scope && invocation.current === requestedInvocation && runtime?.api === api
+      && state.accountKey === accountKey && canReadCard(conversationId ? { conversationId, topicId } : undefined)
+      && (state.cardRevisions[cardId] ?? 0) === revision && state.cardSyncVersion === syncVersion;
+  }, [scope, runtime, api, accountKey, conversationId, topicId, cardId, revision, syncVersion]);
   const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
   useEffect(() => {
     const generation = invocation;
@@ -75,16 +106,17 @@ export function WorkspaceCard({
     setBusy('');
     busyRef.current = '';
     setSelectedOptionIds([]);
-    if (!runtime) return;
+    if (!runtime || !readable) return;
     const requestedBlock: CardBlock = { type: 'card', cardId, cardType, schemaVersion, fallbackText };
-    void runtime.resolveCard(cardId).then(card => {
-      if (generation.current !== currentInvocation) return;
+    const request = conversationId ? runtime.resolveCard(cardId, { conversationId, topicId }) : runtime.resolveCard(cardId);
+    void request.then(card => {
+      if (!current(currentInvocation)) return;
       const next = projectCardModel(card, requestedBlock);
       setSelectedOptionIds(stringArray(next.payload.selectedOptionIds));
-      setResolved({ block: requestedBlock, runtime, model: next });
-    }).catch(caught => { if (generation.current === currentInvocation) setError(errorText(caught)); });
+      setResolved({ scope, model: next });
+    }).catch(caught => { if (current(currentInvocation)) setError(errorText(caught)); });
     return () => { ++generation.current; };
-  }, [cardId, cardType, schemaVersion, fallbackText, runtime]);
+  }, [cardId, cardType, schemaVersion, fallbackText, runtime, readable, conversationId, topicId, scope, current]);
   if (model.release) return <EchoReleaseCard view={model.release} status={model.status} error={error} />;
   const kind = echoKindLabel(model.cardType);
   const open = model.topicId && model.actions.includes('open_topic') ? () => onOpenTopic?.(model.topicId) : undefined;
@@ -94,26 +126,26 @@ export function WorkspaceCard({
   const requirementAction = state === 'pending_review' ? 'collect' : state === 'planned' ? 'start' : state === 'in_progress' ? 'implement' : '';
   const actionTitle: Record<string, string> = { join_topic: '加入话题', collect: '转为正式需求', start: '开始处理', implement: '标记已交付' };
   const execute = (action: string, input: Record<string, unknown> = {}) => {
-    if (!runtime || busyRef.current) return;
+    if (!runtime || busyRef.current || !current(invocation.current)) return;
     const currentInvocation = invocation.current;
     busyRef.current = action;
     setError('');
     setBusy(action);
     void runtime.cardAction(block.cardId, action, model.actions, model.revision, input).then(() => {
-      if (invocation.current !== currentInvocation) return;
-      return runtime.resolveCard(block.cardId);
+      if (!current(currentInvocation)) return;
+      return conversationId ? runtime.resolveCard(block.cardId, { conversationId, topicId }) : runtime.resolveCard(block.cardId);
     }).then(card => {
-      if (!card || invocation.current !== currentInvocation) return;
+      if (!card || !current(currentInvocation)) return;
       if (action === 'join_topic' && model.topicId) onOpenTopic?.(model.topicId);
       const next = projectCardModel(card, block);
-      setResolved({ block, runtime, model: next });
+      setResolved({ scope, model: next });
       setSelectedOptionIds(stringArray(next.payload.selectedOptionIds));
     }).catch(caught => {
-      if (invocation.current !== currentInvocation) return;
+      if (!current(currentInvocation)) return;
       if (caught instanceof ApiError && [401, 403, 404].includes(caught.status)) setResolved(undefined);
       setError(errorText(caught));
     }).finally(() => {
-      if (invocation.current !== currentInvocation) return;
+      if (!current(currentInvocation)) return;
       busyRef.current = '';
       setBusy('');
     });

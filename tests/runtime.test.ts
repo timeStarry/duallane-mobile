@@ -7,6 +7,7 @@ import { cache, credentials } from '../src/platform/storage';
 import { releaseSchema } from '../src/domain/updates';
 import { config } from '../src/platform/config';
 import { showMessageNotification } from '../src/platform/notifications';
+import { ReplayTracker } from '../src/domain/replay';
 import type { WorkspaceEvent } from '../src/domain/contracts';
 
 jest.mock('expo/fetch',()=>({fetch:jest.fn()}));
@@ -167,4 +168,62 @@ test('an allowed card action sends its validated UI input to the server',async()
   await runtime.cardAction('card-1','echo.vote.submit',['echo.vote.submit'],3,{optionId:'choice-a'});
   const post=fetchMock.mock.calls.find(([url])=>String(url).endsWith('/cards/card-1/actions'));
   expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({actionId:'echo.vote.submit',expectedRevision:3,input:{optionId:'choice-a'}});
+});
+
+// Exact outer frame / unversioned event shape from Go realtime.EventEnvelope and events.Event.
+const echoGoFrame = {
+  version:1, type:'event', event:{ id:'echo-live', spaceId:'s1', seq:5, type:'message.created', conversationId:'c1', payload:{
+    message:{ ...message, id:'echo-status-1', authorId:'usr_system_echo', authorName:'回声', authorKind:'bot', kind:'bot',
+      plainText:'回声需求 REQ-2026-0001 状态已更新', content:{ format:'duallane.message+json;v=1', plainText:'回声需求状态已更新', blocks:[
+        { type:'card', cardId:'card_echo_status', cardType:'echo.request-status', schemaVersion:1, fallbackText:'回声需求状态已更新' },
+      ] } },
+  } },
+};
+
+async function receiveGoFrame(tracker:ReplayTracker, frame:unknown) {
+  const accepted = tracker.accept(frame);
+  expect(accepted.sync).not.toBe(true);
+  if (accepted.event) await (runtime as unknown as {applyEvent:(event:WorkspaceEvent,replay:boolean)=>Promise<void>}).applyEvent(accepted.event,!!accepted.replay);
+}
+
+test('a real Go live bot-card frame updates messages and notifies a background member once',async()=>{
+  await runtime.start();
+  (runtime as unknown as {foreground:boolean}).foreground=false;
+  const tracker=new ReplayTracker(4);
+  tracker.accept({version:1,type:'ready',currentSeq:4,replayCount:0});
+  await receiveGoFrame(tracker,echoGoFrame);
+  await receiveGoFrame(tracker,echoGoFrame);
+  expect(useWorkspace.getState().messages.c1?.[0]).toMatchObject({id:'echo-status-1',kind:'bot',fallback:false});
+  expect(showMessageNotification).toHaveBeenCalledTimes(1);
+  expect(showMessageNotification).toHaveBeenCalledWith(expect.objectContaining({userId:'u1',conversationId:'c1',messageId:'echo-status-1'}));
+});
+
+test('a real Go replay bot-card frame restores content without a notification',async()=>{
+  await runtime.start();
+  (runtime as unknown as {foreground:boolean}).foreground=false;
+  const tracker=new ReplayTracker(4);
+  tracker.accept({version:1,type:'ready',currentSeq:5,replayCount:1});
+  await receiveGoFrame(tracker,echoGoFrame);
+  expect(useWorkspace.getState().messages.c1?.[0]?.id).toBe('echo-status-1');
+  expect(showMessageNotification).not.toHaveBeenCalled();
+});
+
+test.each(['mentions','muted'] as const)('a real Go bot-card frame respects %s notification preference',async notificationLevel=>{
+  await runtime.start();
+  (runtime as unknown as {foreground:boolean}).foreground=false;
+  useWorkspace.setState(s=>({conversations:{...s.conversations,c1:{...s.conversations.c1!,notificationLevel}}}));
+  const tracker=new ReplayTracker(4);
+  tracker.accept({version:1,type:'ready',currentSeq:4,replayCount:0});
+  await receiveGoFrame(tracker,echoGoFrame);
+  expect(useWorkspace.getState().messages.c1?.[0]?.id).toBe('echo-status-1');
+  expect(showMessageNotification).not.toHaveBeenCalled();
+});
+
+test('a real Go live card does not notify the foreground member',async()=>{
+  await runtime.start();
+  (runtime as unknown as {foreground:boolean}).foreground=true;
+  const tracker=new ReplayTracker(4);
+  tracker.accept({version:1,type:'ready',currentSeq:4,replayCount:0});
+  await receiveGoFrame(tracker,echoGoFrame);
+  expect(showMessageNotification).not.toHaveBeenCalled();
 });

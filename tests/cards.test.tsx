@@ -3,9 +3,21 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { WorkspaceCard } from '../src/ui/cards';
 import type { Runtime } from '../src/data/runtime';
 import { ApiError } from '../src/data/client';
+import { bootstrapSchema } from '../src/domain/contracts';
+import { useWorkspace } from '../src/domain/store';
 
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { extra: { environment: 'test', apiOrigin: '', channel: 'internal' } }, nativeAppVersion: '0.2.0', nativeBuildVersion: '2' } }));
 jest.mock('expo/fetch', () => ({ fetch: jest.fn() }));
+
+beforeEach(() => {
+  useWorkspace.getState().reset();
+  useWorkspace.getState().applyBootstrap(bootstrapSchema.parse({
+    auth: { currentUser: { id: 'self', displayName: 'Self' } }, space: { id: 'space-1', name: 'Synthetic' }, eventCursor: 1,
+    permissions: { canReadConversations: true }, policy: { dailyQuotaBytes: 100, remainingQuotaBytes: 100, messageRetentionCount: 50 },
+    members: [], conversations: [], files: [],
+  }), 'test:self');
+});
+afterEach(() => useWorkspace.getState().reset());
 
 const block = { type: 'card' as const, cardId: 'card-1', cardType: 'echo.solicitation', schemaVersion: 1, fallbackText: '需求投票' };
 

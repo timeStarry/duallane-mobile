@@ -374,7 +374,17 @@ export class Runtime {
     rememberEmotes([result.emote]);
     return result.emote;
   }
-  async resolveCard(cardId:string){const result=await this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}`,z.object({card:cardResolutionSchema}));return result.card;}
+  async resolveCard(cardId:string,context?:{conversationId:string;topicId?:string|null}){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const readable=()=>!!useWorkspace.getState().bootstrap?.permissions.canReadConversations&&(!context||this.canReadBucket(context.topicId?`topic:${context.topicId}`:context.conversationId))
+      &&(!context?.topicId||useWorkspace.getState().topics[context.topicId]?.conversationId===context.conversationId);
+    if(!readable())throw new ApiError('permission.denied',403);
+    const result=await api.json(`/api/workspace/cards/${encodeURIComponent(cardId)}`,z.object({card:cardResolutionSchema}));
+    if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey)throw new Error('Stale session');
+    if(!readable())throw new ApiError('permission.denied',403);
+    if(result.card.block.cardId&&result.card.block.cardId!==cardId)throw new ApiError('response.invalid',0,'body.schema');
+    return result.card;
+  }
   async cardAction(cardId:string,actionId:string,allowed:string[]=[],revision?:number,input:Record<string,unknown>={}){
     assertAllowedCardAction(actionId,allowed);
     return this.requireApi().json(`/api/workspace/cards/${encodeURIComponent(cardId)}/actions`,z.object({action:z.unknown()}).passthrough(),{actionId,clientActionId:Crypto.randomUUID(),expectedRevision:revision,input});
@@ -397,6 +407,11 @@ export class Runtime {
       .finally(()=>this.refreshingConversations.delete(id));
   }
   private async applyEvent(event:WorkspaceEvent,replay:boolean){const s=useWorkspace.getState();if(!s.bootstrap||event.spaceId!==s.bootstrap.space.id)return;
+    if(['card.created','card.updated','card.invalidated'].includes(event.type)){
+      const reference=z.object({cardId:z.string().min(1).max(256),revision:z.number().int().nonnegative().default(0)}).safeParse({cardId:event.payload.cardId??event.targetId,revision:event.payload.revision});
+      if(reference.success&&s.bootstrap.permissions.canReadConversations&&(!event.conversationId||this.canReadBucket(event.conversationId)))s.invalidateCard(reference.data.cardId,reference.data.revision,event.type==='card.invalidated');
+      return;
+    }
     if(event.type==='topic.message.created'){
       const ref=topicCreatedRef(event.payload);
       const parsed=parseMessage(event.payload.message);
@@ -467,7 +482,7 @@ export class Runtime {
   private scheduleRetry(){if(!this.active||!this.api?.session||this.forced()||this.retry)return;this.retry=setTimeout(()=>{this.retry=null;void this.resume();},Math.min(30000,1000*2**Math.min(this.attempts++,5)));}
   private scheduleSync(){if(this.syncing)return;this.disconnect();this.syncing=this.resume().finally(()=>{this.syncing=null;});}
   resume(){if(this.resuming)return this.resuming;const task=this.reconnect();this.resuming=task;void task.finally(()=>{if(this.resuming===task)this.resuming=null;});return task;}
-  private async reconnect(){const epoch=this.epoch,api=this.api;if(!this.current(epoch)||!api)return;this.disconnect();try{await this.checkPolicy();if(!this.current(epoch)||this.forced())return;if(api.session){await this.bootstrap(true);this.connect();}}catch(error){if(!this.current(epoch))return;if(error instanceof ApiError&&([401,403].includes(error.status)||error.code==='workspace.disabled')){await this.logout(false);useWorkspace.setState({error:errorText(error)});return;}useWorkspace.setState({connection:'连接暂时不可用',error:errorText(error)});this.scheduleRetry();}}
+  private async reconnect(){const epoch=this.epoch,api=this.api,account=useWorkspace.getState().accountKey,snapshot=useWorkspace.getState().cardSyncVersion;if(!this.current(epoch)||!api)return;this.disconnect();try{await this.checkPolicy();if(!this.current(epoch)||this.forced())return;if(api.session){await this.bootstrap(true);if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey)return;if(useWorkspace.getState().cardSyncVersion===snapshot)useWorkspace.getState().refreshCards();this.connect();}}catch(error){if(!this.current(epoch))return;if(error instanceof ApiError&&([401,403].includes(error.status)||error.code==='workspace.disabled')){await this.logout(false);useWorkspace.setState({error:errorText(error)});return;}useWorkspace.setState({connection:'连接暂时不可用',error:errorText(error)});this.scheduleRetry();}}
   disconnect(){if(this.retry)clearTimeout(this.retry);if(this.heartbeat)clearInterval(this.heartbeat);if(this.refreshTimer)clearTimeout(this.refreshTimer);this.retry=null;this.heartbeat=null;this.refreshTimer=null;const socket=this.socket;this.socket=null;if(socket)socket.close();}
   private startHttpSync(){if(this.poll||!this.active)return;void this.httpSync();this.poll=setInterval(()=>{void this.httpSync();},8000);}
   private stopHttpSync(){if(this.poll)clearInterval(this.poll);this.poll=null;}
