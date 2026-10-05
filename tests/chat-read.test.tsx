@@ -166,6 +166,143 @@ test('a short complete transcript can confirm its visible hidden tail without a 
   await waitFor(() => expect(runtime.markRead).toHaveBeenCalledWith('g1', 'latest-1', false));
 });
 
+test.each(['navigation', 'foreground'])('an untouched transcript repins after %s and a late native offset without reading early', async transition => {
+  seed(conversationTarget, [message('long-card', 0), message('latest-1', 1)]);
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  if (transition === 'navigation') {
+    mockFocused = false;
+    view.rerender(screen(runtime));
+  } else act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+
+  mockNativeScrollToEnd.mockClear();
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  const list = view.UNSAFE_getByType(FlatList);
+  // A refreshed card changes height while the mounted native screen is inactive.
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 200 }, contentSize: { height: 4500 }, layoutMeasurement: { height: 500 } } });
+  visibleLatest(view, 'latest-2');
+  expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  const inactiveCallbacks = list.props;
+
+  if (transition === 'navigation') {
+    mockFocused = true;
+    view.rerender(screen(runtime));
+  } else act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  await act(async () => undefined);
+  expect(mockNativeScrollToEnd).toHaveBeenCalledTimes(1);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  act(() => inactiveCallbacks.onScroll({ nativeEvent: { contentOffset: { y: 4000 }, contentSize: { height: 4500 }, layoutMeasurement: { height: 500 } } }));
+  await act(async () => undefined);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  // Native restores/clamps its old offset after the first scroll command.
+  const oldPosition = { nativeEvent: { contentOffset: { y: 200 }, contentSize: { height: 4500 }, layoutMeasurement: { height: 500 } } };
+  fireEvent.scroll(list, oldPosition);
+  expect(mockNativeScrollToEnd).toHaveBeenCalledTimes(2);
+  for (let frame = 0; frame < 5; frame += 1) fireEvent.scroll(list, oldPosition);
+  expect(mockNativeScrollToEnd).toHaveBeenCalledTimes(2);
+  expect(view.getByTestId('transcript-latest-overlay')).toHaveStyle({ position: 'absolute' });
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+
+  fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 4000 }, contentSize: { height: 4500 }, layoutMeasurement: { height: 500 } } });
+  visibleLatest(view, 'latest-2');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+  expect(view.queryByRole('button', { name: '回到最新' })).toBeNull();
+});
+
+test('async card relayout gets one offset correction per measured size without a user drag or an early read', async () => {
+  seed(conversationTarget, [message('long-card', 0), message('latest-1', 1)]);
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  mockNativeScrollToEnd.mockClear();
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  expect(mockNativeScrollToEnd).toHaveBeenCalledTimes(1);
+  // Even inside the read threshold, a preserved pin should reveal the whole tail.
+  const staleOffset = { nativeEvent: { contentOffset: { y: 3950 }, contentSize: { height: 4500 }, layoutMeasurement: { height: 500 } } };
+  fireEvent.scroll(list, staleOffset);
+  expect(mockNativeScrollToEnd).toHaveBeenCalledTimes(2);
+  fireEvent.scroll(list, staleOffset);
+  expect(mockNativeScrollToEnd).toHaveBeenCalledTimes(2);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+
+  // A later async expansion is a new measured change, not a timer retry loop.
+  fireEvent(list, 'contentSizeChange', 390, 5500);
+  fireEvent.scroll(list, { nativeEvent: { ...staleOffset.nativeEvent, contentSize: { height: 5500 } } });
+  expect(mockNativeScrollToEnd).toHaveBeenCalledTimes(4);
+  fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 5000 }, contentSize: { height: 5500 }, layoutMeasurement: { height: 500 } } });
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  visibleLatest(view, 'latest-2');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+});
+
+test('a background message update cannot reuse the previously visible tail to read when resuming', async () => {
+  seed(conversationTarget, [message('latest-1', 1)]);
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  await act(async () => undefined);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  await observeLatest(view, 'latest-2');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+});
+
+test('an inverted transcript confirms a new visible tail when its native offset stays at zero', async () => {
+  seed(conversationTarget, [message('latest-1', 1)]);
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'contentSizeChange', 390, 2500);
+  visibleLatest(view, 'latest-2');
+  // scrollToOffset(0) cannot emit a changed offset when native is already at zero.
+  await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+});
+
+test.each(['navigation', 'foreground'])('returning from %s preserves the user history anchor through new content and late offsets', async transition => {
+  seed(conversationTarget, [message('old', 0), message('latest-1', 1)]);
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'scrollBeginDrag');
+  fireEvent.scroll(list, offset(300));
+  fireEvent(list, 'scrollEndDrag', offset(300));
+  fireEvent(list, 'momentumScrollEnd', offset(300));
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  if (transition === 'navigation') { mockFocused = false; view.rerender(screen(runtime)); }
+  else act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+  mockNativeScrollToEnd.mockClear();
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  if (transition === 'navigation') { mockFocused = true; view.rerender(screen(runtime)); }
+  else act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 300 }, contentSize: { height: 4500 }, layoutMeasurement: { height: 500 } } });
+  await act(async () => undefined);
+  expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+});
+
 test('a short mounted list retains observed visibility across focus changes without another native callback', async () => {
   seed(conversationTarget, [message('original', 0), message('latest-1', 1)]);
   useWorkspace.setState({ connection: '离线缓存，恢复连接后同步' });

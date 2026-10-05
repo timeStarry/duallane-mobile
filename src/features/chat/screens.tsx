@@ -160,11 +160,15 @@ export function ChatScreen({
   const lastId = messages.at(-1)?.id;
   const lastStatus = messages.at(-1)?.status;
   const mode = transcriptMode(hasOlder);
+  const [foreground, setForeground] = useState(AppState.currentState === 'active');
   // Visibility belongs to the mounted list: unchanged visible keys do not emit another callback.
   const geometry = useMemo(() => ({ accountKey, key, mode, visibleIds: new Set<string>(), offsetY: 0, contentHeight: undefined as number | undefined, layoutHeight: undefined as number | undefined }), [accountKey, key, mode]);
-  const observation = useMemo(() => ({ geometry, lastId, focusMessageId, confirmed: false, revision: 0 }), [geometry, lastId, focusMessageId]);
+  const observation = useMemo(() => ({ geometry, lastId, focusMessageId, confirmed: false, revision: 0, correctedRevision: -1 }), [geometry, lastId, focusMessageId]);
   const currentObservation = useRef(observation);
   currentObservation.current = observation;
+  const activity = useMemo(() => ({ active: focused && foreground }), [focused, foreground]);
+  const currentActivity = useRef(activity);
+  currentActivity.current = activity;
   const [readConfirmation, setReadConfirmation] = useState<{ observation: typeof observation; revision: number }>();
   const [progress, setProgress] = useState('');
   const [emotes, setEmotes] = useState<Emote[]>([]);
@@ -173,7 +177,6 @@ export function ChatScreen({
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList>(null);
   const pinToLatest = useRef(!focusMessageId);
-  const [foreground, setForeground] = useState(AppState.currentState === 'active');
   const readQueue = useRef(Promise.resolve());
   const readMarker = useRef<{ accountKey: string; key: string; messageId: string } | undefined>(undefined);
   const draggingTranscript = useRef(false);
@@ -243,7 +246,7 @@ export function ChatScreen({
     if (useWorkspace.getState().accountKey !== measuredGeometry.accountKey) return;
     const measured = measuredGeometry.contentHeight !== undefined && measuredGeometry.layoutHeight !== undefined && measuredGeometry.layoutHeight > 0;
     const pinned = measured && isPinnedToLatest(measuredGeometry);
-    current.confirmed = !!current.lastId && pinToLatest.current && pinned && measuredGeometry.visibleIds.has(current.lastId);
+    current.confirmed = currentActivity.current.active && !!current.lastId && pinToLatest.current && pinned && measuredGeometry.visibleIds.has(current.lastId);
     setReadConfirmation(previous => current.confirmed
       ? previous?.observation === current && previous.revision === current.revision ? previous : { observation: current, revision: current.revision }
       : undefined);
@@ -264,7 +267,13 @@ export function ChatScreen({
     // A measured, fully fitting transcript cannot move, so native may emit no scroll event.
     if (measuredGeometry.mode === 'complete' && measuredGeometry.contentHeight !== undefined && measuredGeometry.layoutHeight !== undefined && measuredGeometry.contentHeight <= measuredGeometry.layoutHeight) reconcileLatest();
   }, [invalidateReadConfirmation, reconcileLatest]);
-  const isCurrentObservation = () => currentObservation.current === observation && useWorkspace.getState().accountKey === accountKey;
+  const pinIfNeeded = useCallback(() => {
+    if (currentObservation.current !== observation || currentActivity.current !== activity || !activity.active || useWorkspace.getState().accountKey !== accountKey || !pinToLatest.current || draggingTranscript.current) return;
+    userScroll.current = false;
+    if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated: false });
+    else scrollResponderToEnd(list.current?.getScrollResponder(), false);
+  }, [accountKey, activity, observation]);
+  const isCurrentObservation = () => currentObservation.current === observation && currentActivity.current === activity && useWorkspace.getState().accountKey === accountKey;
   const observeOffset = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }, fromUser: boolean) => {
     if (!isCurrentObservation()) return;
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
@@ -274,18 +283,27 @@ export function ChatScreen({
     geometry.layoutHeight = layoutMeasurement.height;
     if (fromUser) pinToLatest.current = isPinnedToLatest(geometry);
     reconcileLatest();
+    // Native can restore/clamp an offset after the layout-triggered command. Correct it
+    // once per measured revision, rather than issuing a command on every scroll frame.
+    if (!fromUser && activity.active && pinToLatest.current && !draggingTranscript.current && !isPinnedToLatest({ ...geometry, threshold: 1 }) && observation.correctedRevision !== observation.revision) {
+      observation.correctedRevision = observation.revision;
+      pinIfNeeded();
+    }
   };
-  const pinIfNeeded = useCallback(() => {
-    if (currentObservation.current !== observation || useWorkspace.getState().accountKey !== accountKey || !pinToLatest.current || draggingTranscript.current) return;
-    userScroll.current = false;
-    if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated: false });
-    else scrollResponderToEnd(list.current?.getScrollResponder(), false);
-  }, [accountKey, observation]);
   useEffect(() => {
+    if (!activity.active) {
+      draggingTranscript.current = false;
+      userScroll.current = false;
+      return;
+    }
     if (!lastId) return;
+    observation.correctedRevision = -1;
+    // Unchanged native geometry may emit no event on return. Reuse observed facts,
+    // never the following scroll command, to confirm a still-visible latest item.
+    reconcileLatest();
     if (pinToLatest.current) pinIfNeeded();
     else setNewMessages(true);
-  }, [accountKey, key, lastId, mode, pinIfNeeded]);
+  }, [accountKey, activity, key, lastId, mode, observation, pinIfNeeded, reconcileLatest]);
   const canRead = !!conversation && (target.kind !== 'topic' || !!topic?.joined);
   const online = ['connected', 'http_sync'].includes(connectionCategory(connection) ?? '');
   useEffect(() => {
@@ -294,7 +312,7 @@ export function ChatScreen({
     // Serialize markers so an older response cannot overwrite a newer read cursor.
     readQueue.current = readQueue.current.then(async () => {
       const state = useWorkspace.getState();
-      if (cancelled || currentObservation.current !== observation || readConfirmation.revision !== observation.revision || !observation.confirmed || !pinToLatest.current || AppState.currentState !== 'active' || state.accountKey !== accountKey || state.messages[key]?.at(-1)?.id !== lastId) return;
+      if (cancelled || currentObservation.current !== observation || currentActivity.current !== activity || readConfirmation.revision !== observation.revision || !observation.confirmed || !pinToLatest.current || AppState.currentState !== 'active' || state.accountKey !== accountKey || state.messages[key]?.at(-1)?.id !== lastId) return;
       const previous = readMarker.current;
       if (previous?.accountKey === accountKey && previous.key === key && previous.messageId === lastId) return;
       const marker = { accountKey, key, messageId: lastId };
@@ -303,7 +321,7 @@ export function ChatScreen({
       catch { if (readMarker.current === marker) readMarker.current = undefined; }
     });
     return () => { cancelled = true; };
-  }, [accountKey, canRead, focused, foreground, key, lastId, lastStatus, observation, online, readConfirmation, runtime, target.id, target.kind]);
+  }, [accountKey, activity, canRead, focused, foreground, key, lastId, lastStatus, observation, online, readConfirmation, runtime, target.id, target.kind]);
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
   const send = (existing?: Message) => {
@@ -447,9 +465,11 @@ export function ChatScreen({
           {topic.canJoin ? <Button title="加入讨论" onPress={() => void runtime.joinTopic(topic.id).then(() => runtime.openTopic(topic.id)).catch(e => setError(errorText(e)))} /> : null}
         </View>
       ) : (
+        <View style={{ flex: 1 }}>
         <FlatList
           key={`${accountKey}:${key}:${mode}`}
           ref={list}
+          style={{ flex: 1 }}
           inverted={mode === 'history'}
           data={listItems}
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
@@ -551,8 +571,13 @@ export function ChatScreen({
             );
           }}
         />
+        {newMessages && (
+          <View testID="transcript-latest-overlay" pointerEvents="box-none" style={{ position: 'absolute', bottom: t.space.sm, left: t.space.md, right: t.space.md, alignItems: 'flex-end' }}>
+            <Button title="回到最新" secondary onPress={() => scrollToLatest(true)} />
+          </View>
+        )}
+        </View>
       )}
-      {newMessages && <Button title="回到最新" secondary onPress={() => scrollToLatest(true)} />}
       {canSend ? (
         <View style={{ paddingBottom: ime.dock.dockBottom }}>
           {echo.available ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: t.space.sm, paddingHorizontal: 16, paddingTop: t.space.sm }}>
