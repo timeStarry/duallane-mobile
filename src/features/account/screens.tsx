@@ -101,7 +101,7 @@ function AccountHomeScreen({ runtime, open }: { runtime: Runtime; open: (name: E
         <SettingGroup title="空间">
           <SettingRow icon={<MessageSquare size={20} color={t.text} />} title="空间信息" detail={bootstrap?.space.name} onPress={() => open('Space')} />
           <SettingRow icon={<Info size={20} color={t.text} />} title="关于与更新" detail={`版本 ${installed.appVersion}`} onPress={() => open('About')} />
-          <SettingRow icon={<RefreshCw size={20} color={t.text} />} title="重新连接" detail="不修复实时通道，只重新拉取会话" onPress={() => void runtime.resume()} />
+          <SettingRow icon={<RefreshCw size={20} color={t.text} />} title="重新连接" detail="恢复连接并同步最新会话" onPress={() => void runtime.resume()} />
           {__DEV__ ? <SettingRow title="组件工作台" detail="仅开发构建" onPress={() => open('Workbench')} /> : null}
         </SettingGroup>
         <SettingGroup title="危险" danger>
