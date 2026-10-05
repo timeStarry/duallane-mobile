@@ -9,6 +9,17 @@
 - 本地通知前台抑制/后台显示、权限拒绝、去重、replay 抑制、点击授权；进程结束后重新打开应用同步。
 - OTA 签名/hash/runtime 不匹配、下载中断、启动崩溃自动回滚；APK 强更 Dialog 不可关闭。
 
+Cronet/WebSocket 修复的实际 Kotlin 分支回归在 `tests/native/CronetRoutingTest.kt`。
+从 `android` 目录显式运行：
+
+```bash
+./gradlew :app:testReleaseUnitTest --rerun --tests com.timestarry.duallane.CronetRoutingTest --init-script ../scripts/test-cronet-routing.gradle
+```
+
+Windows 使用 `gradlew.bat` 和 Java 17。该 init 仅为这次测试添加固定 JUnit 4.13.2
+与合成 fixture，不改变生产依赖；8 项检查复用实际应用 Kotlin，确认完整握手走原生
+chain、普通 HTTP 保留 Cronet、原请求和异常保持。无网络，不替代真机认证通道验收。
+
 ## 版本与发布
 
 使用 `appVersion` SemVer、Android `versionCode`、`runtimeVersion` 和 `protocolMajor` 四个独立字段。

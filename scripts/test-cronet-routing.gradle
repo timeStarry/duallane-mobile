@@ -1,0 +1,12 @@
+// Explicit JVM verification only; the production build has no added test dependency.
+gradle.beforeProject { project ->
+    if (project.path == ':app') {
+        project.pluginManager.withPlugin('com.android.application') {
+            project.extensions.getByName('androidComponents').finalizeDsl { androidDsl ->
+                androidDsl.sourceSets.getByName('test').java.srcDir(
+                    new File(project.rootProject.projectDir, '../tests/native'))
+            }
+            project.dependencies.add('testImplementation', 'junit:junit:4.13.2')
+        }
+    }
+}

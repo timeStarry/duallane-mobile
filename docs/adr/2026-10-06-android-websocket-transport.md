@@ -28,6 +28,7 @@ OkHttp WebSocket 则必须从 Response 的 exchange 创建双向 streams，因�
 生成模板和 checked-in Kotlin 必须一致，重复 prebuild 保持幂等。插件回归先在旧
 实现失败再通过，实际 JVM 分支测试涵盖标准／多 token 握手和非 WebSocket 请求。
 Android 原生编译及正式同签名包构建必须完成。
+实际 JVM fixture 与可重复命令见 [测试与发布](../development/TESTING_AND_RELEASE.md)。
 
 真机覆盖升级后确认登录／草稿保留、实际实时连接、跨端消息和同卡状态刷新，后台
 真实机器人消息仅产生一次内容隐藏的本地通知，点击进入授权会话；断网恢复和 replay
