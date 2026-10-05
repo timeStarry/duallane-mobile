@@ -127,3 +127,19 @@ test('unrecognized transport causes remain unknown and nested causes are not gue
   expect(errorDiagnostic(new Error('fetch failed', { cause: new Error('net::ERR_QUIC_PROTOCOL_ERROR') }))).toBe('net.unknown');
   expect(errorDiagnostic(new Error('java.io.IOException: java.util.concurrent.ExecutionException'))).toBe('net.unknown');
 });
+
+test('workflow conflict errors retain only the validated active ID, never raw server error details', async () => {
+  const client = new ApiClient('https://workspace.example', jest.fn(), jest.fn()); client.session = session;
+  fetchMock.mockResolvedValueOnce(response({ error: { code: 'workflow.active_conflict', message: 'synthetic-private-message', details: { activeWorkflowId: 'wf_synthetic-1', source: 'synthetic-private-content', token: 'synthetic-secret' } } }, 409));
+  const failure = await client.json('/api/workspace/workflows', z.unknown(), {}, 'POST').catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: 'workflow.active_conflict', status: 409, details: { activeWorkflowId: 'wf_synthetic-1' } });
+  expect(Object.keys((failure as ApiError).details!)).toEqual(['activeWorkflowId']);
+  expect(JSON.stringify(failure)).not.toMatch(/synthetic-private|synthetic-secret/);
+  expect(String(jest.mocked(console.warn).mock.calls.at(-1)?.[0])).not.toMatch(/wf_synthetic|activeWorkflowId|synthetic-private|synthetic-secret/);
+});
+
+test.each([null, {}, { activeWorkflowId: 'https://synthetic.example/private?secret=x' }, { activeWorkflowId: 'x'.repeat(257) }, { activeWorkflowId: 123 }])('invalid workflow error metadata is discarded while preserving the HTTP code', async details => {
+  const client = new ApiClient('https://workspace.example', jest.fn(), jest.fn()); client.session = session;
+  fetchMock.mockResolvedValueOnce(response({ error: { code: 'workflow.active_conflict', details } }, 409));
+  await expect(client.json('/api/workspace/workflows', z.unknown(), {}, 'POST')).rejects.toMatchObject({ code: 'workflow.active_conflict', details: undefined });
+});

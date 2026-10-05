@@ -8,6 +8,7 @@ import type { Runtime } from '../src/data/runtime';
 jest.mock('@react-navigation/native', () => ({ useIsFocused: () => true }));
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { extra: { environment: 'test', apiOrigin: '', channel: 'internal' } }, nativeAppVersion: '0.2.0', nativeBuildVersion: '2' } }));
 jest.mock('expo/fetch', () => ({ fetch: jest.fn() }));
+jest.mock('../src/platform/storage', () => ({ cache: { get: jest.fn(), set: jest.fn(), remove: jest.fn() } }));
 
 const file = { id: 'f1', fileName: 'sample.png', mimeType: 'image/png', byteSize: 12, status: 'available', capabilities: { canDownload: true } };
 const topic: Topic = {

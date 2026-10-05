@@ -44,6 +44,9 @@ import {
 } from '../../ui/components';
 import { useTheme } from '../../ui/theme';
 import { useTopicProjections } from './useTopicProjections';
+import { recognizeEchoCommand } from '../../domain/echo-workflows';
+import { useEchoWorkflow } from '../echo/useEchoWorkflow';
+import { EchoWorkflowDialog } from '../echo/EchoWorkflowDialog';
 import { AtSign, Bell, BellOff, ChevronLeft, Info, Search } from 'lucide-react-native';
 
 const emptyMessages: Message[] = [];
@@ -147,6 +150,9 @@ export function ChatScreen({
   const focused = useIsFocused();
   const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '');
   const projections = useTopicProjections(runtime, target, focused);
+  const echo = useEchoWorkflow(runtime, target.kind === 'conversation' ? target.id : undefined, focused);
+  const echoRoute = useRef({ key, accountKey, focused });
+  echoRoute.current = { key, accountKey, focused };
   const [loading, setLoading] = useState(() => useWorkspace.getState().messages[key] === undefined);
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
@@ -276,6 +282,18 @@ export function ChatScreen({
     const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
     if (!existing && !latest.text.trim() && !latest.pendingAttachment) return;
     setError('');
+    const echoCommand = !existing && target.kind === 'conversation' ? recognizeEchoCommand(conversation, latest.text) : null;
+    if (echoCommand) {
+      if (latest.pendingAttachment) { setError('Echo 命令不支持附件，请先移除附件。'); return; }
+      if (!echo.available) { setError('Echo 交互当前不可用，请稍后重试。'); return; }
+      const api = runtime.api;
+      void echo.start(echoCommand).then(accepted => {
+        const state = useWorkspace.getState();
+        const route = echoRoute.current;
+        if (accepted && route.key === key && route.accountKey === accountKey && route.focused && runtime.api === api && state.accountKey === accountKey && state.bootstrap?.permissions.canReadConversations && state.conversations[key]?.capabilities.canSendMessage && state.drafts[key] === latest) runtime.patchDraft(key, { text: '', mentionIds: [], mentionSpans: [], replyToMessageId: undefined });
+      });
+      return;
+    }
     focusInvocation.current += 1;
     setFocusRequest(undefined);
     setResolvedFocus(undefined);
@@ -483,6 +501,11 @@ export function ChatScreen({
       {newMessages && <Button title="回到最新" secondary onPress={() => scrollToLatest(true)} />}
       {canSend ? (
         <View style={{ paddingBottom: ime.dock.dockBottom }}>
+          {echo.available ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: t.space.sm, paddingHorizontal: 16, paddingTop: t.space.sm }}>
+            <Button title="提交需求" secondary disabled={echo.busy} onPress={() => { void echo.start('/need'); }} />
+            <Button title="反馈问题" secondary disabled={echo.busy} onPress={() => { void echo.start('/feedback'); }} />
+            {echo.canResume ? <Button title="继续 Echo 流程" secondary disabled={echo.busy} onPress={() => { void echo.resume(); }} /> : null}
+          </View> : null}
           {draft.mentionSpans === undefined && draft.mentionIds.length > 0 ? (
             <View style={{ paddingHorizontal: 16 }}><Label muted>旧草稿中的提及请重新选择成员</Label></View>
           ) : null}
@@ -570,6 +593,7 @@ export function ChatScreen({
           </View>
         </View>
       ) : <EmptyState title={target.kind === 'topic' ? '当前话题不可发送' : '当前会话不可发送消息'} />}
+      <EchoWorkflowDialog controller={echo} />
     </View>
   );
 }

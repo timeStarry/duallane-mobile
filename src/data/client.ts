@@ -21,7 +21,7 @@ const classified = new Set(['request.timeout', 'request.network', 'response.inva
 
 export class ApiError extends Error {
   diagnostic: string;
-  constructor(public code: string, public status: number, diagnostic?: string) {
+  constructor(public code: string, public status: number, diagnostic?: string, public details?: { activeWorkflowId: string }) {
     super(code);
     this.diagnostic = diagnostic ?? code;
   }
@@ -182,10 +182,11 @@ export class ApiClient {
     if (response.status === 401 && authenticated && retry && this.session) { await this.refresh(); return this.raw(path, init, authenticated, false); }
     if (!response.ok) {
       const error = await response.json().catch(() => null);
-      const parsed = z.object({ error: z.object({ code: z.string() }) }).safeParse(error);
+      const parsed = z.object({ error: z.object({ code: z.string(), details: z.unknown().optional() }) }).safeParse(error);
+      const details = z.object({ activeWorkflowId: z.string().regex(/^[A-Za-z0-9_-]{1,256}$/) }).safeParse(parsed.success ? parsed.data.error.details : undefined);
       if (response.status === 401 && authenticated) { this.invalidate(); this.expired(); }
       const code = (response.status === 404 || response.status === 405) && isMobileSetup(path) ? 'mobile.not_configured' : parsed.success ? parsed.data.error.code : 'request.failed';
-      const wrapped = new ApiError(code, response.status, `http.${response.status}`);
+      const wrapped = new ApiError(code, response.status, `http.${response.status}`, details.success ? details.data : undefined);
       logApiError(path, wrapped, Date.now() - started);
       throw wrapped;
     }
