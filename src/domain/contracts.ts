@@ -121,10 +121,18 @@ export const cardResolutionSchema = z.object({
   revision: z.number().optional(),
   actions: z.array(z.string()).default([]),
 }).passthrough();
+export const mentionSpanSchema = z.object({
+  userId: id,
+  label: z.string().min(1),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+}).refine(span => span.end > span.start);
+export type MentionSpan = z.infer<typeof mentionSpanSchema>;
 export const draftSchema = z.object({
   text: z.string().default(''),
   replyToMessageId: z.string().optional(),
   mentionIds: z.array(z.string()).default([]),
+  mentionSpans: z.array(mentionSpanSchema).optional(),
   pendingAttachment: z.object({ taskId: z.string(), fileName: z.string(), mimeType: z.string(), byteSize: z.number() }).optional(),
 });
 export type Draft = z.infer<typeof draftSchema>;

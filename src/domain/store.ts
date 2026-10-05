@@ -57,22 +57,33 @@ export const useWorkspace = create<State>(set => ({
     const messages = sameAccount ? Object.fromEntries(Object.entries(s.messages).filter(([id]) => {
       if (id.startsWith('topic:')) {
         const topic = s.topics[id.slice(6)];
-        return !!topic && topic.conversationId in conversations;
+        return !!topic?.joined && topic.conversationId in conversations;
       }
       return id in conversations;
     })) : {};
     const drafts = sameAccount ? Object.fromEntries(Object.entries(s.drafts).filter(([id]) => {
       if (id.startsWith('topic:')) {
         const topic = s.topics[id.slice(6)];
-        return !!topic && topic.conversationId in conversations;
+        return !!topic?.joined && topic.conversationId in conversations;
       }
       return id in conversations;
     })) : {};
     const topics = sameAccount ? Object.fromEntries(Object.entries(s.topics).filter(([, topic]) => topic.conversationId in conversations)) : {};
     return { bootstrap: b, accountKey, conversations, messages, drafts, topics, files: b.permissions.canDownload ? b.files : [], ready: true, error: '', cursor: b.eventCursor };
   }),
-  setTopics: topics => set({ topics: Object.fromEntries(topics.map(topic => [topic.id, topic])) }),
-  upsertTopic: topic => set(s => ({ topics: { ...s.topics, [topic.id]: topic } })),
+  setTopics: incoming => set(s => {
+    const topics = Object.fromEntries(incoming.map(topic => [topic.id, topic]));
+    const readable = (id: string) => !id.startsWith('topic:') || (!!topics[id.slice(6)]?.joined && !!s.conversations[topics[id.slice(6)]!.conversationId]);
+    return { topics, messages: Object.fromEntries(Object.entries(s.messages).filter(([id]) => readable(id))), drafts: Object.fromEntries(Object.entries(s.drafts).filter(([id]) => readable(id))) };
+  }),
+  upsertTopic: topic => set(s => {
+    const topics = { ...s.topics, [topic.id]: topic };
+    if (topic.joined && s.conversations[topic.conversationId]) return { topics };
+    const messages = { ...s.messages }, drafts = { ...s.drafts };
+    delete messages[`topic:${topic.id}`];
+    delete drafts[`topic:${topic.id}`];
+    return { topics, messages, drafts };
+  }),
   setMessages: (id, incoming, older) => set(s => ({ messages: { ...s.messages, [id]: older ? mergeMessages(s.messages[id] ?? [], incoming) : mergeMessages(incoming, (s.messages[id] ?? []).filter(m => m.status)) } })),
   upsertMessage: (m, bucket) => set(s => {
     const key = bucket ?? messageBucket(m);

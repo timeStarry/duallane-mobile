@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AppState, BackHandler, Modal, View } from 'react-native';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -20,13 +20,31 @@ import { AccountNavigator } from './src/features/account/screens';
 import { installed } from './src/platform/config';
 import { cache } from './src/platform/storage';
 import { notificationTarget } from './src/platform/notifications';
-import { errorText } from './src/data/client';
+import { ApiError, errorText } from './src/data/client';
+import { canPreviewAttachment } from './src/data/media';
 
-type RootParams = { Workspace: undefined; Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' }; Media: { id: string; fileName: string; mimeType: string; byteSize: number; status: string; canDownload: boolean } };
+type RootParams = { Workspace: undefined; Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' }; Media: { id: string; fileName: string; mimeType: string; byteSize: number; status: string; canDownload: boolean; accountKey: string; conversationId?: string; topicId?: string; messageId?: string } };
 type TabsParams = { 聊天: undefined; 文件: undefined; 成员: undefined; 我的: undefined };
 const Stack = createNativeStackNavigator<RootParams>();
 const Tabs = createBottomTabNavigator<TabsParams>();
 const navigation = createNavigationContainerRef<RootParams>();
+
+function previewSourceMessageId(bucket: string, fileId: string) {
+  return useWorkspace.getState().messages[bucket]?.find(message => message.attachments.some(file => file.id === fileId))?.id;
+}
+
+function AuthorizedMediaScreen({ route, navigation: nav, runtime, transfers }: NativeStackScreenProps<RootParams, 'Media'> & { runtime: Runtime; transfers: Transfers }) {
+  useWorkspace();
+  const params = route.params;
+  const file = useMemo(() => ({ id: params.id, fileName: params.fileName, mimeType: params.mimeType, byteSize: params.byteSize, status: params.status, capabilities: { canDownload: params.canDownload } }), [params]);
+  const context = useMemo(() => ({ accountKey: params.accountKey, conversationId: params.conversationId, topicId: params.topicId, messageId: params.messageId }), [params.accountKey, params.conversationId, params.topicId, params.messageId]);
+  const authorized = canPreviewAttachment(file, context);
+  return <MediaViewer file={file} context={context} authorized={authorized} onClose={() => nav.goBack()} onDownload={async () => {
+    const api = runtime.api;
+    if (!api || !canPreviewAttachment(file, context)) throw new ApiError('permission.denied', 403);
+    await transfers.download(api, context.accountKey, file, 'share');
+  }} />;
+}
 
 export default function App() {
   const [mode, setMode] = useState(z.enum(['system', 'light', 'dark']).catch('system').parse(cache.get('appearance')));
@@ -140,7 +158,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                   const topic = useWorkspace.getState().topics[topicId];
                   nav.navigate('Topic', { id: topicId, conversationId: topic?.conversationId ?? route.params.id });
                 }}
-                onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload })}
+                onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload, accountKey: useWorkspace.getState().accountKey, conversationId: route.params.id, messageId: previewSourceMessageId(route.params.id, file.id) })}
               />
             )}
           </Stack.Screen>
@@ -152,21 +170,12 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                 transfers={transfers}
                 details={() => nav.navigate('Details', { id: route.params.id, kind: 'topic' })}
                 onOpenTopic={topicId => nav.navigate('Topic', { id: topicId, conversationId: route.params.conversationId })}
-                onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload })}
+                onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload, accountKey: useWorkspace.getState().accountKey, conversationId: route.params.conversationId, topicId: route.params.id, messageId: previewSourceMessageId(`topic:${route.params.id}`, file.id) })}
               />
             )}
           </Stack.Screen>
           <Stack.Screen name="Media" options={{ headerShown: false }}>
-            {({ route, navigation: nav }) => (
-              <MediaViewer
-                file={{ id: route.params.id, fileName: route.params.fileName, mimeType: route.params.mimeType, byteSize: route.params.byteSize, status: route.params.status, capabilities: { canDownload: route.params.canDownload } }}
-                onClose={() => nav.goBack()}
-                onDownload={() => {
-                  const api = runtime.api;
-                  if (api && route.params.canDownload) void transfers.download(api, useWorkspace.getState().accountKey, { id: route.params.id, fileName: route.params.fileName, mimeType: route.params.mimeType, byteSize: route.params.byteSize, status: route.params.status, capabilities: { canDownload: true } }, 'share').catch(() => undefined);
-                }}
-              />
-            )}
+            {props => <AuthorizedMediaScreen {...props} runtime={runtime} transfers={transfers} />}
           </Stack.Screen>
           <Stack.Screen name="Details" options={{ title: '详情' }}>
             {({ route, navigation: nav }) => (
@@ -177,7 +186,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                 onCreateTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })}
                 onOpenTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })}
                 onOpenPinnedMessage={messageId => nav.popTo('Chat', { id: route.params.id, focusMessageId: messageId })}
-                onOpenFile={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload })}
+                onOpenFile={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload, accountKey: useWorkspace.getState().accountKey, ...(route.params.kind === 'topic' ? { topicId: route.params.id } : { conversationId: route.params.id }) })}
                 onDownloadFile={file => {
                   const api = runtime.api;
                   if (api && file.capabilities.canDownload) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(error => useWorkspace.setState({ error: errorText(error) }));

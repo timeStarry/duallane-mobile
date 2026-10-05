@@ -5,12 +5,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { z } from 'zod';
 import { useWorkspace } from '../../domain/store';
 import { attachmentSchema, parseMessage, targetKey, type Attachment, type ChatTarget, type Draft, type Emote, type EmoteLibrary, type Message, type Topic } from '../../domain/contracts';
-import { activeMentionQuery, mentionCandidates } from '../../domain/compose';
+import { activeMentionQuery, appendDraftMention, editDraftText, insertDraftMention, mentionCandidates } from '../../domain/compose';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
 import { rememberEmotes } from '../../data/media';
 import { Transfers } from '../../data/transfers';
 import { conversationIdentity } from '../../ui/chrome';
+import { connectionCategory } from '../../ui/connection';
 import { groupHiddenWorkspaceMessages } from '../../domain/hidden-messages';
 import { formatMessageDayLabel, getMessageDayKey, getMessageGroupPositions, workspaceUnreadIndex } from '../../domain/message-grouping';
 import { composerEmotePacks } from '../../domain/emote-catalog';
@@ -42,6 +43,7 @@ import {
   styles,
 } from '../../ui/components';
 import { useTheme } from '../../ui/theme';
+import { useTopicProjections } from './useTopicProjections';
 import { AtSign, Bell, BellOff, ChevronLeft, Info, Search } from 'lucide-react-native';
 
 const emptyMessages: Message[] = [];
@@ -137,12 +139,14 @@ export function ChatScreen({
   const messages = useWorkspace(s => s.messages[key] ?? emptyMessages);
   const draft = useWorkspace(s => s.drafts[key] ?? emptyDraft);
   const connection = useWorkspace(s => s.connection);
+  const accountKey = useWorkspace(s => s.accountKey);
   const bootstrapMembers = useWorkspace(s => s.bootstrap?.members ?? []);
   const members = conversation?.members.length ? conversation.members : bootstrapMembers;
   const mentionQuery = activeMentionQuery(draft.text);
   const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
   const focused = useIsFocused();
   const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '');
+  const projections = useTopicProjections(runtime, target, focused);
   const [loading, setLoading] = useState(() => useWorkspace.getState().messages[key] === undefined);
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
@@ -152,13 +156,20 @@ export function ChatScreen({
   const chatSettings = useWorkspace(s => s.chatSettings);
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList>(null);
-  const pinToLatest = useRef(true);
+  const pinToLatest = useRef(!focusMessageId);
+  const [pinnedToLatest, setPinnedToLatest] = useState(!focusMessageId);
+  const [foreground, setForeground] = useState(AppState.currentState === 'active');
+  const readQueue = useRef(Promise.resolve());
+  const readMarker = useRef<{ accountKey: string; key: string; messageId: string } | undefined>(undefined);
   const draggingTranscript = useRef(false);
   const historyReady = useRef(false);
   const [newMessages, setNewMessages] = useState(false);
-  const [resolvedFocusId, setResolvedFocusId] = useState<string>();
+  const focusInvocation = useRef(0);
+  const [focusRequest, setFocusRequest] = useState<{ key: string; accountKey: string; messageId: string; invocation: number }>();
+  const [resolvedFocus, setResolvedFocus] = useState<typeof focusRequest>();
   const targetId = target.id;
   const targetKind = target.kind;
+  const targetConversationId = target.kind === 'topic' ? target.conversationId : target.id;
   useEffect(() => {
     let active = true;
     setLoading(useWorkspace.getState().messages[key] === undefined);
@@ -172,12 +183,20 @@ export function ChatScreen({
     return () => { active = false; };
   }, [runtime, targetId, targetKind, key]);
   useEffect(() => {
-    pinToLatest.current = true;
+    pinToLatest.current = !focusMessageId;
+    setPinnedToLatest(!focusMessageId);
     draggingTranscript.current = false;
     historyReady.current = false;
-    setNewMessages(false);
+    setNewMessages(!!focusMessageId);
+    setResolvedFocus(undefined);
+    const invocation = ++focusInvocation.current;
+    setFocusRequest(focusMessageId ? { key, accountKey, messageId: focusMessageId, invocation } : undefined);
     setHasOlder(hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
-  }, [key]);
+  }, [accountKey, focusMessageId, key]);
+  useEffect(() => {
+    const listener = AppState.addEventListener('change', state => setForeground(state === 'active'));
+    return () => listener.remove();
+  }, []);
   useEffect(() => {
     void Promise.all([runtime.emotes(), runtime.emoteLibrary()]).then(([list, nextLibrary]) => {
       const collected = [...list.items, ...nextLibrary.emotes, ...nextLibrary.collections.flatMap(collection => collection.items)];
@@ -194,11 +213,16 @@ export function ChatScreen({
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const identity = conversation ? conversationIdentity(conversation, selfId, members) : undefined;
   const lastId = messages.at(-1)?.id;
+  const lastStatus = messages.at(-1)?.status;
   const mode = transcriptMode(hasOlder);
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const scrollToLatest = useCallback((animated: boolean) => {
+    focusInvocation.current += 1;
+    setFocusRequest(undefined);
+    setResolvedFocus(undefined);
     pinToLatest.current = true;
+    setPinnedToLatest(true);
     setNewMessages(false);
     if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated });
     else list.current?.scrollToEnd({ animated });
@@ -212,6 +236,7 @@ export function ChatScreen({
       layoutHeight: layoutMeasurement.height,
     });
     pinToLatest.current = pinned;
+    setPinnedToLatest(pinned);
     setNewMessages(show => {
       const next = !pinned;
       return show === next ? show : next;
@@ -226,18 +251,36 @@ export function ChatScreen({
     if (!lastId) return;
     if (pinToLatest.current) pinIfNeeded();
     else setNewMessages(true);
-    if (pinToLatest.current && focused && AppState.currentState === 'active') {
-      const last = useWorkspace.getState().messages[key]?.at(-1);
-      if (last && !last.status) void runtime.markRead(target.id, last.id, target.kind === 'topic').catch(() => undefined);
-    }
-  }, [focused, key, lastId, runtime, target.id, target.kind]);
+  }, [key, lastId]);
+  const canRead = !!conversation && (target.kind !== 'topic' || !!topic?.joined);
+  const online = ['connected', 'http_sync'].includes(connectionCategory(connection) ?? '');
+  useEffect(() => {
+    if (!lastId || lastStatus || !canRead || !focused || !foreground || !online || !pinnedToLatest || !pinToLatest.current) return;
+    let cancelled = false;
+    // Serialize markers so an older response cannot overwrite a newer read cursor.
+    readQueue.current = readQueue.current.then(async () => {
+      const state = useWorkspace.getState();
+      if (cancelled || !pinToLatest.current || AppState.currentState !== 'active' || state.accountKey !== accountKey || state.messages[key]?.at(-1)?.id !== lastId) return;
+      const previous = readMarker.current;
+      if (previous?.accountKey === accountKey && previous.key === key && previous.messageId === lastId) return;
+      const marker = { accountKey, key, messageId: lastId };
+      readMarker.current = marker;
+      try { await runtime.markRead(target.id, lastId, target.kind === 'topic'); }
+      catch { if (readMarker.current === marker) readMarker.current = undefined; }
+    });
+    return () => { cancelled = true; };
+  }, [accountKey, canRead, focused, foreground, key, lastId, lastStatus, online, pinnedToLatest, runtime, target.id, target.kind]);
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
   const send = (existing?: Message) => {
     const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
     if (!existing && !latest.text.trim() && !latest.pendingAttachment) return;
     setError('');
+    focusInvocation.current += 1;
+    setFocusRequest(undefined);
+    setResolvedFocus(undefined);
     pinToLatest.current = true;
+    setPinnedToLatest(true);
     setNewMessages(false);
     const uploadTaskId = existing?.pendingUploadTaskId ?? latest.pendingAttachment?.taskId;
     const task = uploadTaskId ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === uploadTaskId) : undefined;
@@ -246,6 +289,7 @@ export function ChatScreen({
       topicId: target.kind === 'topic' ? target.id : undefined,
       replyToMessageId: existing?.replyToMessageId ?? latest.replyToMessageId,
       mentionIds: latest.mentionIds,
+      mentionSpans: latest.mentionSpans,
       syncToGroup: target.kind === 'topic' && (existing?.pendingSyncToGroup ?? syncToGroup),
       uploadTaskId,
       upload: needsUpload ? () => {
@@ -264,37 +308,71 @@ export function ChatScreen({
   const displayItems = useMemo(() => groupHiddenWorkspaceMessages(messages), [messages]);
   const transcriptItems = useMemo(() => newestFirstTranscript(displayItems), [displayItems]);
   const listItems = mode === 'history' ? transcriptItems : displayItems;
+  const replyToMessage = (message: Message) => {
+    const current = useWorkspace.getState().drafts[key] ?? draft;
+    const next = { ...current, replyToMessageId: message.id };
+    runtime.patchDraft(key, conversation && useWorkspace.getState().chatSettings?.replyAutoMention && message.authorId && message.authorName
+      ? appendDraftMention(next, { id: message.authorId, displayName: message.authorName })
+      : next);
+  };
+  const locateMessage = (messageId: string) => {
+    pinToLatest.current = false;
+    setPinnedToLatest(false);
+    setNewMessages(true);
+    setError('');
+    setResolvedFocus(undefined);
+    setFocusRequest({ key, accountKey, messageId, invocation: ++focusInvocation.current });
+  };
   useEffect(() => {
-    if (!focusMessageId || loading) return;
+    if (!focusRequest || focusRequest.key !== key || focusRequest.accountKey !== accountKey || loading) return;
     let cancelled = false;
+    const { messageId, invocation } = focusRequest;
+    const current = () => !cancelled && invocation === focusInvocation.current && useWorkspace.getState().accountKey === accountKey;
     const locate = async () => {
-      if (!useWorkspace.getState().messages[key]?.some(message => message.id === focusMessageId)) {
+      if (!useWorkspace.getState().messages[key]?.some(message => message.id === messageId)) {
         const api = runtime.api;
-        if (!api) return;
+        if (!api) { if (current()) setError('原消息不可用'); return; }
         const path = target.kind === 'topic'
-          ? `/api/workspace/topics/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(focusMessageId)}&limit=50`
-          : `/api/workspace/conversations/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(focusMessageId)}&limit=50`;
-        const response = await api.json(path, z.object({ messages: z.array(z.unknown()) }));
-        if (cancelled) return;
-        const found = response.messages.map(parseMessage).filter((message): message is Message => !!message && (target.kind === 'topic' ? message.topicId === target.id : message.conversationId === target.id && !message.topicId));
-        useWorkspace.getState().setMessages(key, found, true);
+          ? `/api/workspace/topics/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(messageId)}&limit=50`
+          : `/api/workspace/conversations/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(messageId)}&limit=50`;
+        let loaded = false;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const previous = useWorkspace.getState().messages[key];
+          const response = await api.json(path, z.object({ messages: z.array(z.unknown()) }));
+          const state = useWorkspace.getState();
+          if (!current() || runtime.api !== api || !state.bootstrap?.permissions.canReadConversations || !state.conversations[targetConversationId] || (target.kind === 'topic' && !state.topics[target.id]?.joined)) return;
+          // A delayed history page must not restore content changed by a canonical event.
+          if (state.messages[key] !== previous) {
+            if (state.messages[key]?.some(message => message.id === messageId)) { loaded = true; break; }
+            continue;
+          }
+          const found = response.messages.map(parseMessage).filter((message): message is Message => !!message && message.conversationId === targetConversationId && (target.kind === 'topic' ? message.topicId === target.id : !message.topicId));
+          if (!found.some(message => message.id === messageId)) { setError('原消息不可用'); return; }
+          useWorkspace.getState().setMessages(key, found, true);
+          loaded = true;
+          break;
+        }
+        if (!loaded) { setError('消息正在同步，请重试定位。'); return; }
       }
-      if (!cancelled) setResolvedFocusId(focusMessageId);
+      if (!current()) return;
+      const message = useWorkspace.getState().messages[key]?.find(item => item.id === messageId);
+      if (!message || message.hiddenByCurrentUser) { setError(message ? '原消息已隐藏，请先恢复后再定位。' : '原消息不可用'); return; }
+      setResolvedFocus(focusRequest);
     };
-    void locate().catch(error => { if (!cancelled) setError(errorText(error)); });
+    void locate().catch(() => { if (current()) setError('原消息不可用'); });
     return () => { cancelled = true; };
-  }, [focusMessageId, key, loading, runtime, target.id, target.kind]);
+  }, [accountKey, focusRequest, key, loading, runtime, target.id, target.kind, targetConversationId]);
   useEffect(() => {
-    if (!resolvedFocusId) return;
-    const index = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === resolvedFocusId);
+    if (!resolvedFocus || resolvedFocus.key !== key || resolvedFocus.invocation !== focusInvocation.current) return;
+    const index = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === resolvedFocus.messageId);
     if (index < 0) return;
     const frame = requestAnimationFrame(() => {
-      pinToLatest.current = false;
+      if (resolvedFocus.invocation !== focusInvocation.current) return;
       list.current?.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
-      setResolvedFocusId(undefined);
+      setResolvedFocus(undefined);
     });
     return () => cancelAnimationFrame(frame);
-  }, [listItems, resolvedFocusId]);
+  }, [key, listItems, resolvedFocus]);
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader
@@ -314,7 +392,7 @@ export function ChatScreen({
         )}
         banner={<ConnectionBanner connection={connection} />}
       />
-      <InlineFeedback text={error || progress} tone={error ? 'danger' : 'info'} />
+      <InlineFeedback text={error || progress || projections.feedback.text} tone={error ? 'danger' : progress ? 'info' : projections.feedback.tone} />
       {loading && <Loading />}
       {target.kind === 'topic' && topic && !topic.joined ? (
         <View>
@@ -330,6 +408,9 @@ export function ChatScreen({
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
           onScrollBeginDrag={() => {
+            focusInvocation.current += 1;
+            setFocusRequest(undefined);
+            setResolvedFocus(undefined);
             draggingTranscript.current = true;
             historyReady.current = true;
           }}
@@ -383,12 +464,12 @@ export function ChatScreen({
                 dayLabel={dayKey && dayKey !== previousDay ? formatMessageDayLabel(item.message.createdAt) : undefined}
                 runtime={runtime}
                 retry={() => send(item.message)}
-                onReply={targetMessage => runtime.patchDraft(key, { replyToMessageId: targetMessage.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorId ? Array.from(new Set([...draft.mentionIds, targetMessage.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorName && !draft.text.includes(`@${targetMessage.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${targetMessage.authorName} ` : draft.text })}
+                onReply={replyToMessage}
                 onOpenTopic={onOpenTopic}
-                locate={id => {
-                  const at = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
-                  if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
-                }}
+                locate={locateMessage}
+                onToggleProjection={projections.canToggle(item.message) ? () => { setError(''); void projections.toggle(item.message.id); } : undefined}
+                isProjected={projections.isProjected(item.message.id)}
+                projectionBusy={projections.isBusy(item.message.id)}
                 onPreview={onPreview}
                 download={file => {
                   const api = runtime.api;
@@ -402,6 +483,9 @@ export function ChatScreen({
       {newMessages && <Button title="回到最新" secondary onPress={() => scrollToLatest(true)} />}
       {canSend ? (
         <View style={{ paddingBottom: ime.dock.dockBottom }}>
+          {draft.mentionSpans === undefined && draft.mentionIds.length > 0 ? (
+            <View style={{ paddingHorizontal: 16 }}><Label muted>旧草稿中的提及请重新选择成员</Label></View>
+          ) : null}
           {target.kind === 'topic' && topic?.allowSyncToGroup ? (
             <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: 40, justifyContent: 'center' }}>
               <Label muted>{syncToGroup ? '将同步到群聊' : '默认只发到话题，点按改为同步到群'}</Label>
@@ -409,7 +493,7 @@ export function ChatScreen({
           ) : null}
           <Composer
             value={draft.text}
-            onChangeText={text => runtime.patchDraft(key, { text })}
+            onChangeText={text => runtime.patchDraft(key, editDraftText(useWorkspace.getState().drafts[key] ?? draft, text))}
             onSend={() => send()}
             sendDisabled={!draft.text.trim() && !draft.pendingAttachment}
             attachDisabled={!conversation?.capabilities.canUploadFile || !!progress}
@@ -435,13 +519,13 @@ export function ChatScreen({
                   const token = item.token ?? item.value ?? `[${packId}:${item.id}]`;
                   const enabled = useWorkspace.getState().chatSettings?.clickImageEmoteToSend ?? false;
                   if (shouldDirectSendWorkspaceEmote(item, packId, enabled)) {
-                    runtime.patchDraft(key, { text: token, mentionIds: draft.mentionIds });
+                    runtime.patchDraft(key, editDraftText(useWorkspace.getState().drafts[key] ?? draft, token));
                     send();
                     ime.closePanel();
                     return;
                   }
-                  const next = `${useWorkspace.getState().drafts[key]?.text ?? draft.text}${token}`;
-                  runtime.patchDraft(key, { text: next, mentionIds: draft.mentionIds });
+                  const current = useWorkspace.getState().drafts[key] ?? draft;
+                  runtime.patchDraft(key, editDraftText(current, `${current.text}${token}`));
                 }}
               />
             ) : null}
@@ -473,8 +557,7 @@ export function ChatScreen({
                 accessibilityRole="button"
                 accessibilityLabel={`提及${member.displayName}`}
                 onPress={() => {
-                  const prefix = draft.text.replace(/@([^\s@]*)$/, '');
-                  runtime.patchDraft(key, { text: `${prefix}@${member.displayName} `, mentionIds: Array.from(new Set([...draft.mentionIds, member.id])) });
+                  runtime.patchDraft(key, insertDraftMention(useWorkspace.getState().drafts[key] ?? draft, member));
                   ime.closePanel();
                 }}
                 style={{ minHeight: t.hit, paddingHorizontal: 16, justifyContent: 'center' }}

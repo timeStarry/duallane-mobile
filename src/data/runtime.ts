@@ -6,7 +6,8 @@ import { ApiClient, ApiError, errorDiagnostic, errorText } from './client';
 import { hideResultSchema, reactionResultSchema, topicCreatedRef } from '../domain/command-results';
 import { setMediaAccount, setMediaClient, clearAccountPreviewCache, rememberEmotes } from './media';
 import { topicReadResultSchema } from './inbox-read';
-import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteCollectionSchema, emoteLibrarySchema, emoteListSchema, emoteSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type Message, type WorkspaceEvent } from '../domain/contracts';
+import { topicProjectionLimit, topicProjectionResultSchema, topicProjectionsSchema } from '../domain/topic-projections';
+import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteCollectionSchema, emoteLibrarySchema, emoteListSchema, emoteSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type MentionSpan, type Message, type WorkspaceEvent } from '../domain/contracts';
 import { composeBlocks } from '../domain/compose';
 import { assertAllowedCardAction } from '../domain/actions';
 import { clearAccountFiles } from './transfers';
@@ -123,6 +124,7 @@ export class Runtime {
     const previous=bootstrapSchema.safeParse(cache.get(`${key}:bootstrap`));
     if(previous.success)for(const conversation of previous.data.conversations)if(!b.permissions.canReadConversations||!b.conversations.some(item=>item.id===conversation.id))cache.remove(`${key}:messages:${conversation.id}`);
     useWorkspace.getState().applyBootstrap(b,key);setMediaAccount(key);cache.set(`${key}:bootstrap`,b);this.restoreLocal(key);
+    for(const bucket of loaded)if(bucket.startsWith('topic:')&&!this.canReadBucket(bucket))cache.remove(`${key}:messages:${bucket}`);
     if(api.session)await credentials.save({origin:api.origin,refreshToken:api.session.refreshToken,userId:b.auth.currentUser.id});
     if(!this.current(epoch))return;
     void this.chatSettings().then(result=>{if(this.current(epoch))useWorkspace.getState().setChatSettings(result.settings);}).catch(()=>undefined);
@@ -131,15 +133,49 @@ export class Runtime {
   }
   draft(id:string,text:string){this.patchDraft(id,{text});}
   patchDraft(id:string,patch:Partial<Draft>){useWorkspace.getState().setDraft(id,patch);const s=useWorkspace.getState();cache.set(`${s.accountKey}:drafts`,s.drafts);}
-  async messages(id:string,before?:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/messages?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&m.conversationId===id&&!m.topicId);if(this.current(epoch)){useWorkspace.getState().setMessages(id,messages,!!before);cache.set(`${useWorkspace.getState().accountKey}:messages:${id}`,useWorkspace.getState().messages[id]);}return messages.length;}
-  async topicMessages(id:string,before?:string){const epoch=this.epoch;const bucket=`topic:${id}`;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/messages?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&m.topicId===id);if(this.current(epoch)){useWorkspace.getState().setMessages(bucket,messages,!!before);cache.set(`${useWorkspace.getState().accountKey}:messages:${bucket}`,useWorkspace.getState().messages[bucket]);}return messages.length;}
+  private canReadBucket(bucket:string){
+    const s=useWorkspace.getState();
+    if(!s.bootstrap?.permissions.canReadConversations)return false;
+    if(!bucket.startsWith('topic:'))return !!s.conversations[bucket];
+    const topic=s.topics[bucket.slice(6)];
+    return !!topic?.joined&&!!s.conversations[topic.conversationId];
+  }
+  private messagePath(bucket:string){return bucket.startsWith('topic:')?`/api/workspace/topics/${encodeURIComponent(bucket.slice(6))}/messages`:`/api/workspace/conversations/${encodeURIComponent(bucket)}/messages`;}
+  private belongsToBucket(message:Message,bucket:string){return bucket.startsWith('topic:')?message.topicId===bucket.slice(6)&&message.conversationId===useWorkspace.getState().topics[bucket.slice(6)]?.conversationId:message.conversationId===bucket&&!message.topicId;}
+  private async loadMessages(bucket:string,before?:string){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    for(let attempt=0;attempt<3;attempt++){
+      if(!this.canReadBucket(bucket))return 0;
+      const previous=useWorkspace.getState().messages[bucket];
+      const result=await api.json(`${this.messagePath(bucket)}?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));
+      if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account||!this.canReadBucket(bucket))return 0;
+      // A page cannot overwrite a canonical event or command that arrived while it was loading.
+      // Refetch instead of retaining arbitrary old rows: a fresh stable page still applies retention.
+      if(useWorkspace.getState().messages[bucket]!==previous)continue;
+      const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&this.belongsToBucket(m,bucket));
+      useWorkspace.getState().setMessages(bucket,messages,!!before);
+      cache.set(`${account}:messages:${bucket}`,useWorkspace.getState().messages[bucket]);
+      return messages.length;
+    }
+    throw new Error('消息正在同步，请重试');
+  }
+  async messages(id:string,before?:string){return this.loadMessages(id,before);}
+  async topicMessages(id:string,before?:string){return this.loadMessages(`topic:${id}`,before);}
   async open(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}));if(!this.current(epoch))return;useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));return this.messages(id);}
   async openTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}`,z.object({topic:topicSchema}));if(!this.current(epoch))return;useWorkspace.getState().upsertTopic(result.topic);if(result.topic.joined)return this.topicMessages(id);}
-  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;}){
+  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];mentionSpans?:MentionSpan[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;}){
     const s=useWorkspace.getState();const topicId=options?.topicId??existing?.topicId;const conversationId=existing?.conversationId??id;
+    const bucket=topicId?`topic:${topicId}`:conversationId;
     const topic=topicId?s.topics[topicId]:undefined;
-    const canSend=topicId?!!topic&&topic.joined&&topic.status==='open':!!s.conversations[conversationId]?.capabilities.canSendMessage;
-    if(!s.bootstrap||!canSend||this.forced())throw new Error('Cannot send');
+    const canSend=topicId?!!topic&&topic.conversationId===conversationId&&topic.joined&&topic.status==='open':!!s.conversations[conversationId]?.capabilities.canSendMessage;
+    if(!s.bootstrap||!this.canReadBucket(bucket)||!canSend||this.forced())throw new Error('Cannot send');
+    const api=this.requireApi(),epoch=this.epoch,account=s.accountKey;
+    // Membership can be revoked without changing the login epoch while an upload or command is pending.
+    const readable=()=>this.current(epoch)&&this.api===api&&useWorkspace.getState().accountKey===account&&this.canReadBucket(bucket)&&(!topicId||useWorkspace.getState().topics[topicId]?.conversationId===conversationId);
+    const canStillSend=()=>{
+      const state=useWorkspace.getState(),currentTopic=topicId?state.topics[topicId]:undefined;
+      return readable()&&!this.forced()&&(topicId?currentTopic?.status==='open':!!state.conversations[conversationId]?.capabilities.canSendMessage);
+    };
     const clientMessageId=existing?.clientMessageId??Crypto.randomUUID();if(this.inFlight.has(clientMessageId))return;
     const members=s.conversations[conversationId]?.members??s.bootstrap.members;
     const replyTo=options?.replyToMessageId===undefined?existing?.replyToMessageId??null:options.replyToMessageId;
@@ -147,38 +183,48 @@ export class Runtime {
     let fileId=attachmentId??existing?.attachments[0]?.id;
     const uploadTaskId=options?.uploadTaskId??existing?.pendingUploadTaskId;
     const syncToGroup=existing?.pendingSyncToGroup??options?.syncToGroup??false;
-    let blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,fileId);
+    let blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,fileId,options?.mentionSpans);
     if(!blocks.length&&!options?.upload&&!uploadTaskId)return;
     let pending:Message=existing??{id:clientMessageId,conversationId,topicId,authorId:s.bootstrap.auth.currentUser.id,authorName:s.bootstrap.auth.currentUser.displayName,kind:'user',clientMessageId,createdAt:new Date().toISOString(),plainText:text,replyToMessageId:replyTo,hiddenByCurrentUser:false,attachments:[],reactions:[],blocks,fallback:false};
     pending={...pending,pendingUploadTaskId:uploadTaskId,pendingSyncToGroup:topicId?syncToGroup:undefined};
-    this.inFlight.add(clientMessageId);s.upsertMessage({...pending,status:'sending'});if(!existing)this.patchDraft(topicId?`topic:${topicId}`:conversationId,{text:'',mentionIds:[],replyToMessageId:undefined,pendingAttachment:undefined});const epoch=this.epoch;
+    this.inFlight.add(clientMessageId);s.upsertMessage({...pending,status:'sending'},bucket);if(!existing)this.patchDraft(bucket,{text:'',mentionIds:[],mentionSpans:[],replyToMessageId:undefined,pendingAttachment:undefined});
     try{
       if(uploadTaskId&&!fileId&&!options?.upload)throw new Error('Upload unavailable');
       if(options?.upload&&!fileId){
         const file=await options.upload();
-        if(!this.current(epoch))return;
+        if(!readable())return;
+        if(!canStillSend())throw new Error('Cannot send');
         if(!file)throw new Error('Upload paused');
         fileId=file.id;
-        blocks=existing?.blocks.length?[...existing.blocks.filter(block=>block.type!=='attachment'),{type:'attachment',attachmentId:file.id}]:composeBlocks(text,members,mentionIds,file.id);
+        blocks=existing?.blocks.length?[...existing.blocks.filter(block=>block.type!=='attachment'),{type:'attachment',attachmentId:file.id}]:composeBlocks(text,members,mentionIds,file.id,options?.mentionSpans);
         pending={...pending,attachments:[file],blocks,plainText:text||file.fileName};
-        useWorkspace.getState().upsertMessage({...pending,status:'sending'});
+        useWorkspace.getState().upsertMessage({...pending,status:'sending'},bucket);
       }
+      if(!readable())return;
+      if(!canStillSend())throw new Error('Cannot send');
       if(!blocks.length)throw new Error('Cannot send');
       const body={clientMessageId,content:{format:'duallane.message+json;v=1',blocks},replyToMessageId:replyTo,...(topicId?{syncToGroup}:{conversationId})};
       const path=topicId?`/api/workspace/topics/${encodeURIComponent(topicId)}/messages`:'/api/workspace/messages';
-      const r=await this.requireApi().json(path,z.object({message:z.unknown()}).passthrough(),body);const parsed=parseMessage('message' in r?r.message:r);if(!parsed)throw new Error('Invalid message');if(this.current(epoch))useWorkspace.getState().upsertMessage(parsed);}
-    catch(error){if(this.current(epoch))useWorkspace.getState().upsertMessage({...pending,status:'failed',error:errorText(error)});throw error;}finally{this.inFlight.delete(clientMessageId);}
+      const r=await api.json(path,z.object({message:z.unknown()}).passthrough(),body);
+      if(!readable())return;
+      const parsed=parseMessage('message' in r?r.message:r);if(!parsed||!this.belongsToBucket(parsed,bucket))throw new Error('Invalid message');useWorkspace.getState().upsertMessage(parsed,bucket);}
+    catch(error){if(readable())useWorkspace.getState().upsertMessage({...pending,status:'failed',error:errorText(error)},bucket);throw error;}finally{this.inFlight.delete(clientMessageId);}
   }
   isForced(){ return this.forced(); }
   async markRead(id:string,messageId:string,topic=false){
-    if(!this.foreground)return;const epoch=this.epoch;
+    if(!this.foreground)return;const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,key=topic?`topic:${id}`:id;
+    if(!this.canReadBucket(key))return;
     if(topic){
-      const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/read`,topicReadResultSchema,{messageId},'POST');
-      if(this.current(epoch))useWorkspace.setState(s=>{const current=s.topics[id];return current?{topics:{...s.topics,[id]:{...current,lastReadMessageId:result.read.lastReadMessageId,unreadCount:result.read.unreadCount??0}}}:s;});
+      const result=await api.json(`/api/workspace/topics/${encodeURIComponent(id)}/read`,topicReadResultSchema,{messageId},'POST');
+      if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(key))return;
+      if(result.read.topicId!==id)throw new ApiError('response.invalid',0,'body.schema');
+      useWorkspace.setState(s=>{const current=s.topics[id];return current?{topics:{...s.topics,[id]:{...current,lastReadMessageId:result.read.lastReadMessageId,unreadCount:result.read.unreadCount??0}}}:s;});
       return;
     }
-    const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/read`,z.object({conversation:conversationSchema}),{messageId});
-    if(this.current(epoch))useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));
+    const result=await api.json(`/api/workspace/conversations/${encodeURIComponent(id)}/read`,z.object({conversation:conversationSchema}),{messageId});
+    if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(key))return;
+    if(result.conversation.id!==id)throw new ApiError('response.invalid',0,'body.schema');
+    useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));
   }
   async notification(id:string,level:'all'|'mentions'|'muted'){await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/notification`,z.unknown(),{level},'PATCH');await this.bootstrap();}
   async updateProfile(patch:{nickname?:string|null;searchDiscoverable?:boolean;recallReason?:string}){
@@ -208,11 +254,15 @@ export class Runtime {
     const path=conversationId?`/api/workspace/conversations/${encodeURIComponent(conversationId)}/topics`:'/api/workspace/topics/mine';
     const result=await this.requireApi().json(path,z.object({topics:z.array(topicSchema)}));
     if(this.current(epoch)){
-      if(conversationId)useWorkspace.setState(s=>({topics:{...s.topics,...Object.fromEntries(result.topics.map(topic=>[topic.id,topic]))}}));
+      const previous=useWorkspace.getState().topics;
+      if(conversationId)for(const topic of result.topics)useWorkspace.getState().upsertTopic(topic);
       else {
         useWorkspace.getState().setTopics(result.topics);
         useWorkspace.getState().pruneTopics(new Set(result.topics.map(topic=>topic.id)));
       }
+      const current=useWorkspace.getState();
+      for(const topic of Object.values(previous))if(topic.joined&&!current.topics[topic.id]?.joined)cache.remove(`${current.accountKey}:messages:topic:${topic.id}`);
+      cache.set(`${current.accountKey}:drafts`,current.drafts);
     }
     return result.topics;
   }
@@ -224,24 +274,87 @@ export class Runtime {
     return result.topic;
   }
   async joinTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/join`,z.object({topic:topicSchema}),{});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.getState().upsertTopic(result.topic);return result.topic;}
-  async leaveTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/leave`,z.object({topic:topicSchema}),{});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.getState().upsertTopic(result.topic);useWorkspace.setState(s=>{const drafts={...s.drafts};delete drafts[`topic:${id}`];return {drafts};});return result.topic;}
+  async leaveTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/leave`,z.object({topic:topicSchema}),{});if(!this.current(epoch))throw new Error('Stale session');useWorkspace.getState().upsertTopic(result.topic);const current=useWorkspace.getState();cache.remove(`${current.accountKey}:messages:topic:${id}`);cache.set(`${current.accountKey}:drafts`,current.drafts);return result.topic;}
   async topicNotification(id:string,level:'all'|'mentions'|'muted'){const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}/notification`,z.object({topic:topicSchema}),{level},'PATCH');useWorkspace.getState().upsertTopic(result.topic);}
-  async recall(messageId:string){const r=await this.requireApi().json(`/api/workspace/messages/${encodeURIComponent(messageId)}/recall`,z.object({message:z.unknown()}),{},'POST');const parsed=parseMessage(r.message);if(parsed)useWorkspace.getState().upsertMessage(parsed);}
+  async topicProjections(id:string){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const result=await api.json(`/api/workspace/topics/${encodeURIComponent(id)}/projections?limit=${topicProjectionLimit}`,topicProjectionsSchema);
+    if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(`topic:${id}`))throw new Error('Stale session');
+    return result.projections;
+  }
+  async setTopicProjection(id:string,messageId:string,enabled:boolean){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const result=await api.json(`/api/workspace/topics/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}/sync`,topicProjectionResultSchema,enabled?{}:undefined,enabled?'POST':'DELETE');
+    if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(`topic:${id}`))throw new Error('Stale session');
+    if(result.projection&&result.projection.topicMessageId!==messageId)throw new Error('Invalid topic projection');
+    return result.projection;
+  }
+  async recall(messageId:string){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,key=this.messageBucketById(messageId);
+    const r=await api.json(`/api/workspace/messages/${encodeURIComponent(messageId)}/recall`,z.object({message:z.unknown()}),{},'POST');
+    if(!key||!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(key))return;
+    const parsed=parseMessage(r.message);
+    if(!parsed||parsed.id!==messageId||!this.belongsToBucket(parsed,key))throw new ApiError('response.invalid',0,'body.schema');
+    useWorkspace.getState().upsertMessage(parsed,key);
+    cache.set(`${account}:messages:${key}`,useWorkspace.getState().messages[key]);
+  }
   async hide(messageId:string,hidden:boolean,bucket?:string){
-    const r=await this.requireApi().json(`/api/workspace/messages/${encodeURIComponent(messageId)}/hidden`,hideResultSchema,hidden?{}:undefined,hidden?'PUT':'DELETE');
-    const key=bucket??this.messageBucketById(r.messageId);
-    if(key)useWorkspace.getState().patchMessage(key,r.messageId,{hiddenByCurrentUser:r.hidden});
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const key=bucket??this.messageBucketById(messageId);
+    const r=await api.json(`/api/workspace/messages/${encodeURIComponent(messageId)}/hidden`,hideResultSchema,hidden?{}:undefined,hidden?'PUT':'DELETE');
+    if(r.messageId!==messageId)throw new ApiError('response.invalid',0,'body.schema');
+    if(!key||!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account||!this.canReadBucket(key))return;
+    if(r.hidden){
+      useWorkspace.getState().patchMessage(key,messageId,{hiddenByCurrentUser:true,plainText:'消息已不可用',attachments:[],blocks:[]});
+      cache.set(`${account}:messages:${key}`,useWorkspace.getState().messages[key]);
+      return;
+    }
+    for(let attempt=0;attempt<3;attempt++){
+      const previous=useWorkspace.getState().messages[key]?.find(message=>message.id===messageId);
+      const result=await api.json(`${this.messagePath(key)}?around=${encodeURIComponent(messageId)}&limit=1`,z.object({messages:z.array(z.unknown())}));
+      if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account||!this.canReadBucket(key))return;
+      if(useWorkspace.getState().messages[key]?.find(message=>message.id===messageId)!==previous)continue;
+      const message=result.messages.map(parseMessage).find((item):item is Message=>!!item&&item.id===messageId&&this.belongsToBucket(item,key));
+      if(!message)throw new ApiError('message.not_found',404);
+      useWorkspace.getState().upsertMessage(message,key);
+      cache.set(`${account}:messages:${key}`,useWorkspace.getState().messages[key]);
+      return;
+    }
+    throw new Error('消息正在同步，请重试');
   }
   async react(messageId:string,emoteKey:string,remove=false,bucket?:string){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,key=bucket??this.messageBucketById(messageId);
     const path=`/api/workspace/messages/${encodeURIComponent(messageId)}/reactions${remove?`/${encodeURIComponent(emoteKey)}`:''}`;
-    const r=await this.requireApi().json(path,reactionResultSchema,remove?undefined:{emoteKey},remove?'DELETE':'POST');
-    const key=bucket??this.messageBucketById(r.messageId);
-    if(key)useWorkspace.getState().patchMessage(key,r.messageId,{reactions:r.reactions});
+    const r=await api.json(path,reactionResultSchema,remove?undefined:{emoteKey},remove?'DELETE':'POST');
+    if(r.messageId!==messageId)throw new ApiError('response.invalid',0,'body.schema');
+    if(!key||!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(key))return;
+    useWorkspace.getState().patchMessage(key,messageId,{reactions:r.reactions});
+    cache.set(`${account}:messages:${key}`,useWorkspace.getState().messages[key]);
   }
   async pin(conversationId:string,messageId:string,remove=false){
-    if(remove)await this.requireApi().json(`/api/workspace/groups/${encodeURIComponent(conversationId)}/pins/${encodeURIComponent(messageId)}`,z.unknown(),undefined,'DELETE');
-    else await this.requireApi().json(`/api/workspace/groups/${encodeURIComponent(conversationId)}/pins`,z.unknown(),{messageId});
-    await this.open(conversationId);
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,key=this.messageBucketById(messageId)??conversationId;
+    if(remove)await api.json(`/api/workspace/groups/${encodeURIComponent(conversationId)}/pins/${encodeURIComponent(messageId)}`,z.unknown(),undefined,'DELETE');
+    else await api.json(`/api/workspace/groups/${encodeURIComponent(conversationId)}/pins`,z.unknown(),{messageId});
+    if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(key))return;
+    if(key.startsWith('topic:')){
+      // Refresh only the changed canonical row so pinning does not discard a historical reading window.
+      for(let attempt=0;attempt<3;attempt++){
+        const previous=useWorkspace.getState().messages[key]?.find(message=>message.id===messageId);
+        const result=await api.json(`${this.messagePath(key)}?around=${encodeURIComponent(messageId)}&limit=1`,z.object({messages:z.array(z.unknown())}));
+        if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(key))return;
+        if(useWorkspace.getState().messages[key]?.find(message=>message.id===messageId)!==previous)continue;
+        const message=result.messages.map(parseMessage).find((item):item is Message=>!!item&&item.id===messageId&&this.belongsToBucket(item,key));
+        if(!message)throw new ApiError('message.not_found',404);
+        useWorkspace.getState().upsertMessage(message,key);
+        cache.set(`${account}:messages:${key}`,useWorkspace.getState().messages[key]);
+        return;
+      }
+      throw new Error('消息正在同步，请重试');
+    }
+    const result=await api.json(`/api/workspace/conversations/${encodeURIComponent(conversationId)}`,z.object({conversation:conversationSchema}));
+    if(!this.current(epoch)||this.api!==api||account!==useWorkspace.getState().accountKey||!this.canReadBucket(key))return;
+    useWorkspace.setState(s=>({conversations:{...s.conversations,[conversationId]:result.conversation}}));
+    await this.messages(conversationId);
   }
   async emotes(){return this.requireApi().json('/api/workspace/me/emotes',emoteListSchema);}
   async emoteLibrary(){return this.requireApi().json('/api/workspace/me/emote-library',emoteLibrarySchema);}
@@ -288,14 +401,18 @@ export class Runtime {
       const ref=topicCreatedRef(event.payload);
       const parsed=parseMessage(event.payload.message);
       if(parsed&&(parsed.topicId||ref.topicId)){
-        s.upsertMessage(parsed,`topic:${parsed.topicId??ref.topicId}`);
+        const bucket=`topic:${parsed.topicId??ref.topicId}`,epoch=this.epoch;
         await this.listTopics().catch(()=>undefined);
+        if(!this.current(epoch)||!this.canReadBucket(bucket))return;
+        useWorkspace.getState().upsertMessage(parsed,bucket);
         await this.notifyIfNeeded(parsed,replay,true);
         return;
       }
       if(ref.topicId){
         const epoch=this.epoch;
-        await Promise.all([this.listTopics().catch(()=>undefined),this.topicMessages(ref.topicId).catch(()=>undefined)]);
+        await this.listTopics().catch(()=>undefined);
+        if(!this.current(epoch)||!this.canReadBucket(`topic:${ref.topicId}`))return;
+        await this.topicMessages(ref.topicId).catch(()=>undefined);
         if(!this.current(epoch))return;
         const created=useWorkspace.getState().messages[`topic:${ref.topicId}`]?.find(item=>item.id===ref.topicMessageId);
         if(created)await this.notifyIfNeeded(created,replay,true);
@@ -304,6 +421,7 @@ export class Runtime {
     }
     const message=parseMessage(event.payload.message);
     if(message){
+      if(!this.canReadBucket(message.topicId?`topic:${message.topicId}`:message.conversationId))return;
       s.upsertMessage(message);
       if(!message.topicId){
         const current=s.conversations[message.conversationId];
