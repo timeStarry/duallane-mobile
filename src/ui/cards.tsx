@@ -288,6 +288,13 @@ function projectCardModel(card: CardResolution, block: CardBlock): CardModel {
 
 function requirementStateLabel(payload: Record<string, unknown>) {
   const state = stringValue(payload.status) || stringValue(payload.state) || stringValue(payload.phase);
+  if (state === 'archived') {
+    const outcomes: Record<string, string> = {
+      implemented: '已实现', rejected: '已驳回', duplicate: '重复提案', withdrawn: '已撤回', cancelled: '已取消',
+    };
+    const outcome = stringValue(payload.archiveOutcome);
+    return (Object.prototype.hasOwnProperty.call(outcomes, outcome) ? outcomes[outcome] : undefined) ?? '已归档';
+  }
   const labels: Record<string, string> = {
     pending_review: '待处理', planned: '已计划', in_progress: '进行中', delivered: '已交付', archived: '已归档',
     submitted: '待处理', collected: '已计划', implemented: '已交付', rejected: '已归档',

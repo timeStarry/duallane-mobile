@@ -82,6 +82,62 @@ function requirementCard(payload: Record<string, unknown> = requirementPayload, 
   return { block: requirementBlock, status, revision: 4, actions: [], payload };
 }
 
+test.each([
+  ['implemented', '已实现'],
+  ['rejected', '已驳回'],
+  ['duplicate', '重复提案'],
+  ['withdrawn', '已撤回'],
+  ['cancelled', '已取消'],
+])('canonical archived requirement keeps the %s outcome visible', async (archiveOutcome, label) => {
+  const runtime = {
+    resolveCard: jest.fn().mockResolvedValue(requirementCard({
+      ...requirementPayload, phase: 'archived', status: 'archived', archiveOutcome,
+    })),
+  } as unknown as Runtime;
+  const view = render(<WorkspaceCard block={requirementBlock} runtime={runtime} />);
+
+  await waitFor(() => expect(view.getByText(label)).toBeTruthy());
+  expect(view.queryByText('已交付')).toBeNull();
+  expect(view.queryByText('已归档')).toBeNull();
+});
+
+test.each([undefined, null, { status: 'implemented' }, 'future_outcome', '__proto__'])('unknown archived outcome %p keeps a safe archived label', async archiveOutcome => {
+  const runtime = {
+    resolveCard: jest.fn().mockResolvedValue(requirementCard({
+      ...requirementPayload, phase: 'archived', status: 'archived', archiveOutcome,
+    })),
+  } as unknown as Runtime;
+  const view = render(<WorkspaceCard block={requirementBlock} runtime={runtime} />);
+
+  await waitFor(() => expect(view.getByText('已归档')).toBeTruthy());
+  expect(view.queryByText('future_outcome')).toBeNull();
+  expect(view.queryByText('__proto__')).toBeNull();
+});
+
+test('an archive outcome cannot replace a canonical delivered state', async () => {
+  const runtime = {
+    resolveCard: jest.fn().mockResolvedValue(requirementCard({
+      ...requirementPayload, archiveOutcome: 'implemented',
+    })),
+  } as unknown as Runtime;
+  const view = render(<WorkspaceCard block={requirementBlock} runtime={runtime} />);
+
+  await waitFor(() => expect(view.getByText('已交付')).toBeTruthy());
+  expect(view.queryByText('已实现')).toBeNull();
+});
+
+test('legacy implemented state still means delivered rather than canonical archive outcome', async () => {
+  const runtime = {
+    resolveCard: jest.fn().mockResolvedValue(requirementCard({
+      title: '合成旧协议需求', state: 'implemented', archiveOutcome: 'implemented',
+    })),
+  } as unknown as Runtime;
+  const view = render(<WorkspaceCard block={requirementBlock} runtime={runtime} />);
+
+  await waitFor(() => expect(view.getByText('已交付')).toBeTruthy());
+  expect(view.queryByText('已实现')).toBeNull();
+});
+
 test('canonical Go requirement status cards show member-readable state and response without summary fields', async () => {
   const runtime = { resolveCard: jest.fn().mockResolvedValue(requirementCard()) } as unknown as Runtime;
   const view = render(<WorkspaceCard block={requirementBlock} runtime={runtime} />);
