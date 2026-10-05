@@ -11,6 +11,7 @@ import * as Notifications from 'expo-notifications';
 import { ThemeProvider, useTheme, type AppearanceMode } from './src/ui/theme';
 import { DualLaneTabBar, Loading, Notice } from './src/ui/components';
 import { MediaViewer } from './src/ui/MediaViewer';
+import { StackHeader } from './src/ui/StackHeader';
 import { Runtime } from './src/data/runtime';
 import { Transfers } from './src/data/transfers';
 import { useWorkspace } from './src/domain/store';
@@ -139,6 +140,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
       <NavigationContainer ref={navigation}>
         <Stack.Navigator
           screenOptions={{
+            header: props => <StackHeader {...props} />,
             headerStyle: { backgroundColor: t.surface },
             headerTintColor: t.text,
             headerShadowVisible: false,

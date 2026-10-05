@@ -31,6 +31,7 @@ import {
 import { Bell, Info, LogOut, MessageSquare, Palette, RefreshCw, Smile, UserRound } from 'lucide-react-native';
 import { catalogPacks } from '../../domain/emote-catalog';
 import { useTheme, type AppearanceMode } from '../../ui/theme';
+import { StackHeader } from '../../ui/StackHeader';
 import { WorkbenchScreen } from '../workbench/WorkbenchScreen';
 
 export type AccountParams = {
@@ -60,6 +61,7 @@ export function AccountNavigator({
   return (
     <Stack.Navigator
       screenOptions={{
+        header: props => <StackHeader {...props} />,
         headerStyle: { backgroundColor: t.surface },
         headerTintColor: t.text,
         headerShadowVisible: false,
