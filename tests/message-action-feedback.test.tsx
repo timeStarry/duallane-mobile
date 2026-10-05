@@ -172,7 +172,7 @@ test('system and recalled rows expose no shared mutation or stale-body controls'
   expect(recalled.view.queryByText(text)).toBeNull();
 });
 
-test('complete catalog selection sends a non-quick emoji key and custom library identity', async () => {
+test('complete reaction catalog sends canonical non-quick emoji and built-in image keys', async () => {
   const customId = '11111111-1111-4111-8111-111111111111';
   const emote = { id: customId, kind: 'image', label: '合成收藏', token: `[custom:${customId}]`, src: '/api/workspace/emotes/synthetic/content' };
   const runtime = {
@@ -190,41 +190,86 @@ test('complete catalog selection sends a non-quick emoji key and custom library 
   expect(runtime.react).toHaveBeenCalledWith(original.id, 'emoji:grinning', false);
   openMore();
   await act(async () => fireEvent.press(view.getByRole('button', { name: '添加表情回复' })));
-  await waitFor(() => expect(runtime.emoteLibrary).toHaveBeenCalled());
-  fireEvent.press(view.getByRole('tab', { name: '收藏' }));
-  const customCatalog = within(view.getByLabelText('选择消息表情回复'));
-  await waitFor(() => expect(customCatalog.getAllByRole('button', { name: '合成收藏' }).length).toBeGreaterThan(0));
-  fireEvent.press(customCatalog.getAllByRole('button', { name: '合成收藏' })[0]!);
-  expect(runtime.react).toHaveBeenCalledWith(original.id, `custom:${customId}`, false);
+  fireEvent.press(view.getByRole('tab', { name: 'B站' }));
+  const builtInCatalog = within(view.getByLabelText('选择消息表情回复'));
+  fireEvent.press(builtInCatalog.getByRole('button', { name: 'doge' }));
+  expect(runtime.react).toHaveBeenCalledWith(original.id, 'bili:doge', false);
+  expect(runtime.emoteLibrary).not.toHaveBeenCalled();
 });
 
-test('catalog toggles an already selected reaction and a library failure remains safely visible', async () => {
+test('reaction picker excludes custom collections which the canonical server cannot accept', async () => {
+  const emote = { id: '11111111-1111-4111-8111-111111111111', kind: 'custom', label: '合成001', token: '[custom:11111111-1111-4111-8111-111111111111]', src: '/api/workspace/emotes/synthetic/content' };
   const runtime = {
     react: jest.fn().mockResolvedValue(undefined),
-    emoteLibrary: jest.fn().mockRejectedValue(new ApiError('permission.denied', 403)),
+    emoteLibrary: jest.fn().mockResolvedValue({ emotes: [emote], collections: [{ id: 'collection-synthetic', name: '合成小猫合集', items: [emote] }], entries: [] }),
   } as unknown as Runtime;
-  const message = { ...original, reactions: [{ emoteKey: 'emoji:grinning', count: 1, reactedByCurrentUser: true }] };
+  const { view, openMore } = renderRow(runtime);
+  openMore();
+  await act(async () => fireEvent.press(view.getByRole('button', { name: '添加表情回复' })));
+  expect(view.queryByRole('tab', { name: '收藏' })).toBeNull();
+  expect(view.queryByRole('tab', { name: '合成小猫合集' })).toBeNull();
+  expect(runtime.emoteLibrary).not.toHaveBeenCalled();
+  expect(runtime.react).not.toHaveBeenCalled();
+  expect(view.getByText('表情回复支持可用的内置表情；收藏和自定义合集可在输入框发送。')).toBeTruthy();
+});
+
+test('catalog toggles the same selected image reaction and shows safe command rejection', async () => {
+  const runtime = {
+    react: jest.fn().mockRejectedValue(new ApiError('permission.denied', 403)),
+    emoteLibrary: jest.fn(),
+  } as unknown as Runtime;
+  const message = { ...original, reactions: [{ emoteKey: 'bili:doge', count: 1, reactedByCurrentUser: true }] };
   const { view, openMore } = renderRow(runtime, message);
   openMore();
   fireEvent.press(view.getByRole('button', { name: '添加表情回复' }));
-  await waitFor(() => expect(view.getByText('你当前不能执行此操作')).toBeTruthy());
+  fireEvent.press(view.getByRole('tab', { name: 'B站' }));
   const catalog = within(view.getByLabelText('选择消息表情回复'));
-  fireEvent.press(catalog.getAllByRole('button', { name: '笑脸' }).find(item => within(item).queryByText('😀'))!);
-  expect(runtime.react).toHaveBeenCalledWith(original.id, 'emoji:grinning', true);
+  fireEvent.press(catalog.getByRole('button', { name: 'doge' }));
+  expect(runtime.react).toHaveBeenCalledWith(original.id, 'bili:doge', true);
+  await waitFor(() => expect(view.getByText('你当前不能执行此操作')).toBeTruthy());
+  expect(runtime.emoteLibrary).not.toHaveBeenCalled();
 });
 
-test('an account switch closes the catalog and rejects a late private-library result', async () => {
-  let resolveLibrary: (value: unknown) => void = () => undefined;
-  const library = new Promise(resolve => { resolveLibrary = resolve; });
-  const runtime = { react: jest.fn(), emoteLibrary: jest.fn().mockReturnValue(library) } as unknown as Runtime;
+test('an account switch closes the reaction catalog without loading a private library', async () => {
+  const runtime = { react: jest.fn(), emoteLibrary: jest.fn() } as unknown as Runtime;
   const { view, openMore } = renderRow(runtime);
   openMore();
   fireEvent.press(view.getByRole('button', { name: '添加表情回复' }));
   await act(async () => useWorkspace.getState().reset());
-  await act(async () => resolveLibrary({ emotes: [{ id: 'synthetic-private-emote', kind: 'image', label: '上个账号的合成收藏', token: '[custom:synthetic-private-emote]' }], collections: [], entries: [] }));
   expect(view.queryByText('选择消息表情回复')).toBeNull();
-  expect(view.queryByText('上个账号的合成收藏')).toBeNull();
   expect(runtime.react).not.toHaveBeenCalled();
+  expect(runtime.emoteLibrary).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['emoji:thumbs-up', '👍'], ['emoji:heart', '❤️'], ['emoji:smile', '😄'],
+])('quick reaction %s uses the same canonical key to add and remove', async (emoteKey, glyph) => {
+  const runtime = { react: jest.fn().mockResolvedValue(undefined) } as unknown as Runtime;
+  const { view, rerender } = renderRow(runtime);
+  const chooseQuick = async () => {
+    fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
+    fireEvent.press(view.getByRole('button', { name: '反应' }));
+    await act(async () => fireEvent.press(view.getByRole('button', { name: `反应 ${glyph}` })));
+  };
+  await chooseQuick();
+  expect(runtime.react).toHaveBeenLastCalledWith(original.id, emoteKey, false);
+  rerender({ ...original, reactions: [{ emoteKey, count: 1, reactedByCurrentUser: true }] });
+  await chooseQuick();
+  expect(runtime.react).toHaveBeenLastCalledWith(original.id, emoteKey, true);
+});
+
+test('a full-catalog image uses one canonical key for selection and the resulting selected pill', async () => {
+  const runtime = { react: jest.fn().mockResolvedValue(undefined) } as unknown as Runtime;
+  const { view, openMore, rerender } = renderRow(runtime);
+  openMore();
+  fireEvent.press(view.getByRole('button', { name: '添加表情回复' }));
+  fireEvent.press(view.getByRole('tab', { name: 'B站' }));
+  const catalog = within(view.getByLabelText('选择消息表情回复'));
+  await act(async () => fireEvent.press(catalog.getByRole('button', { name: 'doge' })));
+  expect(runtime.react).toHaveBeenLastCalledWith(original.id, 'bili:doge', false);
+  rerender({ ...original, reactions: [{ emoteKey: 'bili:doge', count: 1, reactedByCurrentUser: true }] });
+  await act(async () => fireEvent.press(view.getByRole('button', { name: 'bili:doge 1，已选择' })));
+  expect(runtime.react).toHaveBeenLastCalledWith(original.id, 'bili:doge', true);
 });
 
 test.each([

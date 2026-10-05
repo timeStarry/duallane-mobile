@@ -28,6 +28,8 @@ const imageByKey = new Map<string, CatalogImage>();
 const unicodeByKey = new Map<string, string>();
 const imagePackIds: string[] = [];
 const catalogPackList: CatalogPack[] = [];
+const reactionKeys = new Set<string>();
+const reactionKeyPattern = /^[a-z0-9_+\-]{1,64}:[a-z0-9_+\-]{1,128}$/;
 
 const parsed = z.array(catalogPackSchema).safeParse(rawCatalog);
 if (!parsed.success) {
@@ -50,6 +52,11 @@ for (const pack of parsed.success ? parsed.data : []) {
   });
   if (pack.id !== 'emoji' && pack.id !== 'custom') imagePackIds.push(pack.id);
   for (const item of pack.items) {
+    const key = `${pack.id}:${item.id}`;
+    if (pack.id !== 'custom' && pack.id !== 'douyin' && pack.id !== 'qq' &&
+      (item.kind === 'unicode' || item.kind === 'image') && reactionKeyPattern.test(key)) {
+      reactionKeys.add(key);
+    }
     if (item.kind === 'unicode' && item.value) {
       unicodeByKey.set(`${pack.id}:${item.id}`, item.value);
       continue;
@@ -156,4 +163,18 @@ export function enabledCatalogPacks(enabledIds?: string[]): CatalogPack[] {
   const visible = catalogPacks();
   if (!enabledIds?.length) return visible.filter(pack => pack.defaultEnabled !== false);
   return visible.filter(pack => enabledIds.includes(pack.id));
+}
+
+// Reactions use the Go message service's built-in catalog keys, not composer
+// tokens or private collection IDs. Keep its key grammar and visibility gate.
+export function catalogReactionKey(packId: string, itemId: string): string | undefined {
+  const key = `${packId}:${itemId}`;
+  return reactionKeys.has(key) ? key : undefined;
+}
+
+export function reactionEmotePacks(enabledIds?: string[]): CatalogPack[] {
+  return enabledCatalogPacks(enabledIds).flatMap(pack => {
+    const items = pack.items.filter(item => !!catalogReactionKey(pack.id, item.id));
+    return items.length ? [{ ...pack, items }] : [];
+  });
 }

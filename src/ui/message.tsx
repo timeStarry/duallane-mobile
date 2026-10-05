@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Keyboard, Pressable, Text, View } from 'react-native';
 import { Copy, EllipsisVertical, EyeOff, MessageSquare, Pin, Smile, SmilePlus, Undo2 } from 'lucide-react-native';
-import type { Attachment, EmoteLibrary, Message } from '../domain/contracts';
+import type { Attachment, Message } from '../domain/contracts';
 import { messageActions } from '../domain/message-actions';
 import type { MessageGroupPosition } from '../domain/message-grouping';
 import { recalledNotice } from '../domain/recall';
@@ -16,18 +16,10 @@ import { Avatar } from './chrome';
 import { Button, Dialog, InlineFeedback, Label, ObjectActionSheet } from './primitives';
 import { MessageContent, ReactionGlyph } from './MessageContent';
 import { CatalogEmoteGrid } from './CatalogEmoteGrid';
-import { catalogUnicodeGlyph, composerEmotePacks, type CatalogPackItem } from '../domain/emote-catalog';
+import { catalogReactionKey, catalogUnicodeGlyph, reactionEmotePacks } from '../domain/emote-catalog';
 import { useTheme } from './theme';
 
 const quickReactions = ['emoji:thumbs-up', 'emoji:heart', 'emoji:smile'];
-
-function reactionKey(item: CatalogPackItem, packId: string): string {
-  if (packId === 'custom' || packId.startsWith('collection:')) {
-    const tokenKey = /^:?\[([^\]\s]+)\]:?$/.exec(item.token ?? '')?.[1];
-    return tokenKey ?? `custom:${item.id}`;
-  }
-  return `${packId}:${item.id}`;
-}
 
 function actionIcon(id: string, color: string) {
   if (id === 'reply') return <MessageSquare size={18} color={color} />;
@@ -105,8 +97,6 @@ export function MessageRow({
   const [reactOpen, setReactOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [reactionPack, setReactionPack] = useState('emoji');
-  const [loadedLibrary, setLoadedLibrary] = useState<{ accountKey: string; userId: string; messageId: string; value: EmoteLibrary } | null>(null);
-  const [libraryError, setLibraryError] = useState('');
   const [confirmRecall, setConfirmRecall] = useState(false);
   const [actionError, setActionError] = useState('');
   const actionInvocation = useRef(0);
@@ -117,7 +107,6 @@ export function MessageRow({
     const scope = { active: true };
     actionScope.current = scope;
     setActionError('');
-    setLibraryError('');
     setCatalogOpen(false);
     setCluster(false);
     setReactOpen(false);
@@ -131,21 +120,6 @@ export function MessageRow({
   useEffect(() => {
     if (!canReact) { setCatalogOpen(false); setReactOpen(false); }
   }, [canReact]);
-  useEffect(() => {
-    if (!catalogOpen || !canReact || !runtime || !userId || !accountKey) return;
-    let active = true;
-    const current = () => {
-      const state = useWorkspace.getState();
-      return active && state.accountKey === accountKey && state.bootstrap?.auth.currentUser.id === userId;
-    };
-    setLibraryError('');
-    void runtime.emoteLibrary().then(value => {
-      if (current()) {
-        setLoadedLibrary({ accountKey, userId, messageId: message.id, value });
-      }
-    }).catch(error => { if (current()) setLibraryError(errorText(error)); });
-    return () => { active = false; };
-  }, [catalogOpen, canReact, runtime, userId, accountKey, message.id]);
   const runAction = async (operation: () => Promise<unknown>) => {
     const invocation = ++actionInvocation.current;
     const scope = actionScope.current;
@@ -160,6 +134,10 @@ export function MessageRow({
   const react = (emoteKey: string, remove: boolean) => {
     if (!runtime || !canReact) return;
     void runAction(() => runtime.react(message.id, emoteKey, remove));
+  };
+  const toggleReaction = (emoteKey: string) => {
+    const remove = message.reactions.some(reaction => reaction.emoteKey === emoteKey && reaction.reactedByCurrentUser);
+    react(emoteKey, remove);
   };
   const grouped = groupPosition ? groupPosition === 'middle' || groupPosition === 'end' : previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
   const position = groupPosition ?? (grouped ? 'end' : 'single');
@@ -187,8 +165,6 @@ export function MessageRow({
   const accessibilityActions = actions.filter(action => action.id === 'copy' || action.id === 'reply')
     .map(action => ({ name: action.id, label: action.title }));
   if (actions.length) accessibilityActions.push({ name: 'more', label: '更多消息操作' });
-  const library = loadedLibrary?.accountKey === accountKey && loadedLibrary.userId === userId && loadedLibrary.messageId === message.id
-    ? loadedLibrary.value : null;
   const favoriteAttachment = canAccessMessage && message.status !== 'sending' && message.status !== 'failed' && !message.recalledAt && !message.deletedAt
     ? message.attachments.find(file => file.status === 'available' && file.mimeType.startsWith('image/') && file.capabilities.canDownload)
     : undefined;
@@ -312,7 +288,7 @@ export function MessageRow({
                 key={emoteKey}
                 accessibilityRole="button"
                 accessibilityLabel={`反应 ${catalogUnicodeGlyph(emoteKey) ?? emoteKey}`}
-                onPress={() => { react(emoteKey, false); setReactOpen(false); setCluster(false); }}
+                onPress={() => { toggleReaction(emoteKey); setReactOpen(false); setCluster(false); }}
                 style={{ minWidth: t.hit, minHeight: t.hit, alignItems: 'center', justifyContent: 'center' }}
               >
                 <ReactionGlyph emoteKey={emoteKey} />
@@ -350,17 +326,17 @@ export function MessageRow({
       />
       <Dialog visible={catalogOpen && canReact} title="选择消息表情回复" onRequestClose={() => setCatalogOpen(false)} actions={[{ title: '取消', variant: 'secondary', onPress: () => setCatalogOpen(false) }]}>
         <CatalogEmoteGrid
-          packs={composerEmotePacks(library, chatSettings?.enabledPackIds)}
+          packs={reactionEmotePacks(chatSettings?.enabledPackIds)}
           selectedPackId={reactionPack}
           onSelectPack={setReactionPack}
           onPick={(item, packId) => {
-            const emoteKey = reactionKey(item, packId);
-            const remove = message.reactions.some(reaction => reaction.emoteKey === emoteKey && reaction.reactedByCurrentUser);
-            react(emoteKey, remove);
+            const emoteKey = catalogReactionKey(packId, item.id);
+            if (!emoteKey) return;
+            toggleReaction(emoteKey);
             setCatalogOpen(false);
           }}
         />
-        <InlineFeedback text={libraryError} tone="danger" />
+        <Label muted>表情回复支持可用的内置表情；收藏和自定义合集可在输入框发送。</Label>
       </Dialog>
       <Dialog
         visible={confirmRecall && canRecall}
