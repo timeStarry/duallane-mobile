@@ -19,9 +19,9 @@ test('concurrent requests share one token rotation and send the installed protoc
   client.session={...session,accessTokenExpiresAt:'2000-01-01T00:00:00.000Z'};
   const a=client.json('/api/workspace/bootstrap',z.unknown()),b=client.json('/api/workspace/bootstrap',z.unknown());
   rotation.resolve(response(session));await Promise.all([a,b]);
-  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/refresh'))).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([url])=>typeof url==='string'&&url.endsWith('/refresh'))).toHaveLength(1);
   expect(persist).toHaveBeenCalledTimes(1);
-  const request=fetchMock.mock.calls.find(([url])=>url.endsWith('/bootstrap'))?.[1];
+  const request=fetchMock.mock.calls.find(([url])=>typeof url==='string'&&url.endsWith('/bootstrap'))?.[1];
   expect(new Headers(request?.headers).get('Authorization')).toBe(`Bearer ${session.accessToken}`);
   expect(new Headers(request?.headers).get('X-DualLane-Client-Version')).toBe('0.2.3');
   expect(new Headers(request?.headers).get('X-DualLane-Protocol-Version')).toBe('1');

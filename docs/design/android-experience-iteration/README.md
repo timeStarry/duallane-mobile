@@ -351,7 +351,7 @@ useFocusEffect(useCallback(() => {
 }, [setEnabled]));
 ```
 
-**禁止** `setInputMode(SOFT_INPUT_ADJUST_RESIZE)`。**禁止**写成 `KeyboardController.setEnabled`（SDK 54 无此静态方法）。非 Chat 路由 **不得** 订阅 `imeBottom` 改 padding。
+**禁止** `setInputMode(SOFT_INPUT_ADJUST_RESIZE)`。**禁止**写成 `KeyboardController.setEnabled`（当前 SDK 55 配套模块无此静态方法）。非 Chat 路由 **不得** 订阅 `imeBottom` 改 padding。
 
 Chat **独占 inset** 时的完整 dock 方程（`imeBottom === 0` 当键盘收起）：
 
@@ -512,10 +512,13 @@ flowchart LR
 | 库 | 谁引入 | 用途 |
 | --- | --- | --- |
 | `react-native-keyboard-controller` | **PR4**（APK） | IME inset；通常需要 Reanimated 4 |
-| `react-native-reanimated`（Expo 54 = **v4**，不是 v3） | 随 KeyboardController 或首次需要 worklet 的 PR | 禁止为「高度插值」再塞 RNGH |
+| `react-native-reanimated`（当前 Expo 55 配套 **v4**） | 随 KeyboardController 或首次需要 worklet 的 PR | 禁止为「高度插值」再塞 RNGH |
 | `react-native-gesture-handler` | **PR6 长按**（本轮列表不滑动） | `GestureHandlerRootView`；`index.ts` **先** `import 'react-native-gesture-handler'` 再 `registerRootComponent` |
 
-安装：`npx expo install react-native-keyboard-controller react-native-reanimated react-native-gesture-handler`（锁 SDK 54 版本）。Babel/worklets、Proguard（已有 leftover keep）写入 ADR。ADR 必须记录 **同一 ABI 集合** 下引入前后 APK 体积（不减包是非目标，但不能不记账）。
+安装：`npx expo install react-native-keyboard-controller react-native-reanimated react-native-gesture-handler`，
+依当前 Expo SDK 的官方兼容检查锁定精确版本。当前 SDK 55 配套和原生字体布局变更见
+[运行时 ADR](../../adr/2026-10-06-android-font-layout-runtime.md)。Babel/worklets、Proguard（已有 leftover keep）写入 ADR。
+ADR 必须记录 **同一 ABI 集合** 下引入前后 APK 体积（不减包是非目标，但不能不记账）。
 
 返回优先级不变：IME → 面板 → Dialog/Sheet/MediaViewer → 详情 → 聊天 → 列表 → 设置子页 → 根 Tab `moveTaskToBack` → 强更拦截。
 

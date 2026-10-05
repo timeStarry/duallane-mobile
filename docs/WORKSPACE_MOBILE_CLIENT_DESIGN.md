@@ -328,6 +328,9 @@ type FallbackMessage = {
 
 移动端同时维护以下字段：
 
+下表及响应是协议示例；当前 SDK 55 配套 APK 使用 `runtimeVersion: android-2`，
+与旧 `android-1` 原生 ABI 分组隔离，详见 [运行时 ADR](adr/2026-10-06-android-font-layout-runtime.md)。
+
 | 字段 | 示例 | 用途 |
 | --- | --- | --- |
 | `appVersion` | `0.1.0` | 用户可见 SemVer；与发布说明对应 |

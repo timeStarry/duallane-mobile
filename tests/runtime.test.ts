@@ -26,7 +26,10 @@ const bootstrap={auth:{currentUser:{id:'u1',displayName:'Test'}},space:{id:'s1',
 const message={id:'m1',conversationId:'c1',authorId:'u1',authorName:'Test',kind:'user',createdAt:'2026-01-01T00:00:00Z',plainText:'old',content:{format:'duallane.message+json;v=1',blocks:[{type:'text',text:'old'}]}};
 function deferred<T>(){let resolve!:(v:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};}
 function response(body:unknown,status=200){return {ok:status<400,status,json:async()=>body} as Awaited<ReturnType<typeof fetch>>;}
-function serve(){fetchMock.mockImplementation(async url=>response(url.endsWith('/release-policy')?policy:url.endsWith('/refresh')?session:url.endsWith('/bootstrap')?bootstrap:url.includes('/messages?')?{messages:[{...message,plainText:'edited'}]}:{authorizationUrl:`${new URL(url).origin}/api/auth/mobile/github/authorize?flow=test`}));}
+function serve(){fetchMock.mockImplementation(async url=>{
+  if(typeof url!=='string')throw new Error('Expected a string API URL');
+  return response(url.endsWith('/release-policy')?policy:url.endsWith('/refresh')?session:url.endsWith('/bootstrap')?bootstrap:url.includes('/messages?')?{messages:[{...message,plainText:'edited'}]}:{authorizationUrl:`${new URL(url).origin}/api/auth/mobile/github/authorize?flow=test`});
+});}
 let runtime:Runtime;
 beforeEach(()=>{config.apiOrigin='';jest.spyOn(console,'warn').mockImplementation(()=>undefined);jest.spyOn(AppState,'addEventListener').mockReturnValue({remove:jest.fn()});useWorkspace.getState().reset();jest.mocked(cache.get).mockReturnValue(null);read.mockResolvedValue(saved);serve();runtime=new Runtime();jest.spyOn(runtime,'connect').mockImplementation(()=>undefined);});
 afterEach(()=>{runtime.dispose();jest.restoreAllMocks();jest.useRealTimers();});
@@ -50,15 +53,15 @@ test('Strict Mode cleanup and setup share one refresh and restore the AppState l
   const pending=deferred<typeof saved>();read.mockImplementationOnce(()=>pending.promise);
   const listener=jest.spyOn(AppState,'addEventListener');
   const a=runtime.start();runtime.dispose();const b=runtime.start();expect(b).toBe(a);pending.resolve(saved);await b;
-  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/refresh'))).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([url])=>typeof url==='string'&&url.endsWith('/refresh'))).toHaveLength(1);
   expect(listener).toHaveBeenCalledTimes(2);expect(useWorkspace.getState().ready).toBe(true);
 });
 
 test('reconnect refetches loaded messages before advancing to a fresh snapshot',async()=>{
   await runtime.start();useWorkspace.getState().upsertMessage(parseMessage(message)!);
   await runtime.resume();expect(useWorkspace.getState().messages.c1?.[0]?.plainText).toBe('edited');
-  expect(fetchMock.mock.calls.some(([url])=>url.includes('/c1/messages?'))).toBe(true);
-  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/refresh'))).toHaveLength(1);
+  expect(fetchMock.mock.calls.some(([url])=>typeof url==='string'&&url.includes('/c1/messages?'))).toBe(true);
+  expect(fetchMock.mock.calls.filter(([url])=>typeof url==='string'&&url.endsWith('/refresh'))).toHaveLength(1);
 });
 
 test('a transient reconnect failure schedules another attempt without user intervention',async()=>{
@@ -69,7 +72,10 @@ test('a transient reconnect failure schedules another attempt without user inter
 
 test('disabled Workspace clears retained content instead of restoring cached authorization',async()=>{
   await runtime.start();useWorkspace.getState().upsertMessage(parseMessage(message)!);
-  fetchMock.mockImplementation(async url=>url.endsWith('/bootstrap')?response({error:{code:'workspace.disabled'}},503):response(url.endsWith('/refresh')?session:policy));
+  fetchMock.mockImplementation(async url=>{
+    if(typeof url!=='string')throw new Error('Expected a string API URL');
+    return url.endsWith('/bootstrap')?response({error:{code:'workspace.disabled'}},503):response(url.endsWith('/refresh')?session:policy);
+  });
   await runtime.resume();expect(useWorkspace.getState().ready).toBe(false);expect(useWorkspace.getState().messages).toEqual({});expect(credentials.clear).toHaveBeenCalled();
 });
 
