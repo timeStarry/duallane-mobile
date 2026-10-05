@@ -29,7 +29,7 @@ const config: ExpoConfig = {
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#F7F2EA' },
     permissions: ['POST_NOTIFICATIONS'], blockedPermissions: ['android.permission.RECORD_AUDIO', 'android.permission.SCHEDULE_EXACT_ALARM', 'android.permission.USE_EXACT_ALARM', 'android.permission.FOREGROUND_SERVICE'] },
   plugins: [['expo-build-properties', { android: { minSdkVersion: 26, compileSdkVersion: 36, targetSdkVersion: 36 } }],
-    'expo-secure-store', 'expo-document-picker', ['expo-notifications', { defaultChannel: 'messages' }], './plugins/android-signing.cjs', './plugins/android-build-memory.cjs', './plugins/android-cronet.cjs'],
+    'expo-secure-store', 'expo-document-picker', ['expo-notifications', { defaultChannel: 'messages' }], './plugins/android-signing.cjs', './plugins/android-build-memory.cjs', './plugins/android-cronet.cjs', './plugins/android-font-scale.cjs'],
   updates: updateUrl ? { url: updateUrl, enabled: true, checkAutomatically: 'NEVER',
     codeSigningCertificate: certificate, codeSigningMetadata: { keyid: keyId!, alg: 'rsa-v1_5-sha256' } } : { enabled: false },
   extra: { environment, apiOrigin: origin, channel: 'internal', protocolMajor: 1 },

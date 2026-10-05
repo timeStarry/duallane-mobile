@@ -17,6 +17,9 @@ import expo.modules.ApplicationLifecycleDispatcher
 import expo.modules.ReactNativeHostWrapper
 
 class MainApplication : Application(), ReactApplication {
+  // @generated begin duallane-font-scale-state
+  private var duallaneFontScale: Float? = null
+  // @generated end duallane-font-scale-state
 
   override val reactNativeHost: ReactNativeHost = ReactNativeHostWrapper(
       this,
@@ -39,6 +42,9 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     super.onCreate()
+    // @generated begin duallane-font-scale-initial
+    duallaneFontScale = resources.configuration.fontScale
+    // @generated end duallane-font-scale-initial
     CronetNetworking.install(this)
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())
@@ -52,5 +58,13 @@ class MainApplication : Application(), ReactApplication {
   override fun onConfigurationChanged(newConfig: Configuration) {
     super.onConfigurationChanged(newConfig)
     ApplicationLifecycleDispatcher.onConfigurationChanged(this, newConfig)
+    // @generated begin duallane-font-scale-change
+    val previousFontScale = duallaneFontScale
+    duallaneFontScale = newConfig.fontScale
+    if (previousFontScale != null && previousFontScale != newConfig.fontScale) {
+      // RN 0.81 retains text measurements across Activity recreation.
+      reactHost.reload("duallane_font_scale_changed")
+    }
+    // @generated end duallane-font-scale-change
   }
 }
