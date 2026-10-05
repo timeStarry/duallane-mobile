@@ -1,4 +1,6 @@
-const { withMainApplication } = require('expo/config-plugins');
+const { withAndroidManifest, withMainApplication } = require('expo/config-plugins');
+
+const BASE_CONFIG_CHANGES = ['keyboard', 'keyboardHidden', 'orientation', 'screenSize', 'screenLayout', 'uiMode'];
 
 const BLOCKS = [
   {
@@ -58,12 +60,39 @@ function installInMainApplication(contents) {
   return newline === '\r\n' ? result.replace(/\n/g, '\r\n') : result;
 }
 
+function configureMainActivity(manifest) {
+  const applications = manifest?.manifest?.application;
+  if (!Array.isArray(applications) || applications.length !== 1 ||
+      !['.MainApplication', 'com.timestarry.duallane.MainApplication'].includes(applications[0].$?.['android:name'])) {
+    fail('missing or ambiguous MainApplication manifest entry');
+  }
+  const activities = applications[0].activity;
+  const main = Array.isArray(activities) ? activities.filter(activity =>
+    ['.MainActivity', 'com.timestarry.duallane.MainActivity'].includes(activity.$?.['android:name'])) : [];
+  if (main.length !== 1) fail('missing or ambiguous MainActivity manifest entry');
+  const value = main[0].$['android:configChanges'];
+  const changes = typeof value === 'string' ? value.split('|') : [];
+  if (new Set(changes).size !== changes.length ||
+      BASE_CONFIG_CHANGES.some(change => !changes.includes(change)) ||
+      changes.some(change => !BASE_CONFIG_CHANGES.includes(change) && change !== 'fontScale')) {
+    fail('unsupported MainActivity configChanges');
+  }
+  // Keep one font-change owner: do not recreate the Activity while ReactHost reloads.
+  if (!changes.includes('fontScale')) main[0].$['android:configChanges'] = [...changes, 'fontScale'].join('|');
+  return manifest;
+}
+
 module.exports = function withAndroidFontScale(config) {
-  return withMainApplication(config, mod => {
+  config = withMainApplication(config, mod => {
     if (mod.modResults.language !== 'kt') fail('Kotlin is required');
     mod.modResults.contents = installInMainApplication(mod.modResults.contents);
+    return mod;
+  });
+  return withAndroidManifest(config, mod => {
+    mod.modResults = configureMainActivity(mod.modResults);
     return mod;
   });
 };
 
 module.exports.installInMainApplication = installInMainApplication;
+module.exports.configureMainActivity = configureMainActivity;
