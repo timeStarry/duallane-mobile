@@ -2,6 +2,15 @@ name: android-release
 
 on:
   workflow_dispatch:
+    inputs:
+      app_version:
+        description: 'Candidate app version (MAJOR.MINOR.PATCH)'
+        required: true
+        type: string
+      version_code:
+        description: 'Optional Android versionCode; otherwise use the workflow run number'
+        required: false
+        type: string
   push:
     tags:
       - 'v*.*.*'
@@ -41,15 +50,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Resolve release version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            version="${GITHUB_REF_NAME#v}"
-            [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'Tag must use vMAJOR.MINOR.PATCH'; exit 1; }
-          else
-            version="0.1.0"
-          fi
-          echo "DUALLANE_APP_VERSION=$version" >> "$GITHUB_ENV"
-          echo "DUALLANE_ANDROID_VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+        env:
+          INPUT_APP_VERSION: ${{ inputs.app_version }}
+          INPUT_VERSION_CODE: ${{ inputs.version_code }}
+        run: node scripts/resolve-android-version.mjs
 
       - name: Validate release inputs
         env:

@@ -30,6 +30,11 @@ GitHub 托管的 Java 17 和 Android SDK，执行 `pnpm check`、`assembleReleas
 `DUALLANE_ANDROID_STORE_PASSWORD`、`DUALLANE_ANDROID_KEY_ALIAS`、
 `DUALLANE_ANDROID_KEY_PASSWORD`。keystore 只在 runner 临时目录解码，不提交到仓库。
 
+手动构建必须填写 `app_version`（严格 `MAJOR.MINOR.PATCH`），可指定大于已安装包的
+`version_code`；未指定时使用 workflow run number。候选分支使用同一正式签名输出
+APK/AAB artifact，便于保留登录状态做覆盖升级；手动构建不创建 GitHub Release。
+tag 构建的版本以 tag 为准，versionCode 继续使用 workflow run number。
+
 `DUALLANE_API_ORIGIN` 是发布包及 PR 测试包共同使用的默认服务配置；当前维护者配置为
 `https://duallane.tsio.top`，通过构建环境注入，不写死在客户端源码。已配置的包不显示服务器
 输入，已有账号可直接使用 GitHub 登录；邀请入口默认降为「还没有账号？」，点开后的链接必须属于同一服务。无登录会话时，
