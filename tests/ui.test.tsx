@@ -202,6 +202,65 @@ describe('dialog return focus after native Activity window focus', () => {
     view.rerender(tree(true)); fireEvent(view.UNSAFE_getByType(Modal), 'show'); emit('focus');
     view.rerender(tree(false)); await completeFrames(); expect(focus).not.toHaveBeenCalled();
   });
+  test.each(['background', null] as const)('SAF visible commit while state=%s records onShow before active without a second blur/show', async initial => {
+    AppState.currentState = initial as typeof AppState.currentState;
+    const view = render(tree(true)); fireEvent(view.UNSAFE_getByType(Modal), 'show');
+    AppState.currentState = 'active'; emit('change', 'active');
+    await completeFrames(); expect(focus).not.toHaveBeenCalled();
+    view.rerender(tree(false)); await completeFrames(); expect(focus).not.toHaveBeenCalled();
+    emit('focus'); await completeFrames(); expect(focus).toHaveBeenCalledTimes(1);
+  });
+  test('a queued background event before onShow and active-before-show retain the current visible candidate', async () => {
+    AppState.currentState = 'background';
+    const view = render(tree(true)); emit('change', 'background');
+    AppState.currentState = 'active'; emit('change', 'active');
+    fireEvent(view.UNSAFE_getByType(Modal), 'show');
+    view.rerender(tree(false)); emit('focus'); await completeFrames();
+    expect(focus).toHaveBeenCalledTimes(1);
+  });
+  test('a new modal cannot consume an earlier SAF blur or resume focus before hide', async () => {
+    const view = render(tree(false)); emit('blur');
+    AppState.currentState = 'background'; emit('change', 'background');
+    AppState.currentState = 'active'; emit('change', 'active');
+    view.rerender(tree(true)); fireEvent(view.UNSAFE_getByType(Modal), 'show');
+    emit('focus'); await completeFrames(); expect(focus).not.toHaveBeenCalled();
+    view.rerender(tree(false)); await completeFrames();
+    expect(focus).not.toHaveBeenCalled(); expect(frames.size).toBe(0);
+    emit('focus'); await completeFrames();
+    expect(focus).toHaveBeenCalledTimes(1);
+    emit('focus'); await completeFrames(); expect(focus).toHaveBeenCalledTimes(1);
+  });
+  test('Picker resume focus before onShow cannot authorize a closing Modal without its real later hosting focus', async () => {
+    const view = render(tree(false)); emit('blur'); view.rerender(tree(true)); emit('focus');
+    fireEvent(view.UNSAFE_getByType(Modal), 'show'); view.rerender(tree(false));
+    await completeFrames(); expect(focus).not.toHaveBeenCalled();
+    emit('focus'); await completeFrames(); expect(focus).toHaveBeenCalledTimes(1);
+  });
+  test('hosting focus after hide still needs the native onShow of this cycle', async () => {
+    const view = render(tree(true)); view.rerender(tree(false)); emit('focus');
+    await completeFrames(); expect(focus).not.toHaveBeenCalled();
+  });
+  test.each(['hide before active', 'revoked scope', 'reopen', 'unmount'] as const)('%s cannot revive an inactive SAF candidate', async reason => {
+    AppState.currentState = 'background';
+    const view = render(tree(true)); fireEvent(view.UNSAFE_getByType(Modal), 'show');
+    if (reason === 'hide before active') view.rerender(tree(false));
+    else if (reason === 'revoked scope') allowed.mockReturnValue(false);
+    else if (reason === 'reopen') { view.rerender(tree(false)); view.rerender(tree(true)); }
+    else view.unmount();
+    AppState.currentState = 'active'; emit('change', 'active'); allowed.mockReturnValue(true);
+    if (reason !== 'unmount') view.rerender(tree(false));
+    emit('focus'); await completeFrames(); expect(focus).not.toHaveBeenCalled();
+  });
+  test('StrictMode show/hide keeps the valid current cycle and removes subscribers on unmount', async () => {
+    AppState.currentState = 'background';
+    const view = render(<React.StrictMode>{tree(true)}</React.StrictMode>);
+    fireEvent(view.UNSAFE_getByType(Modal), 'show');
+    AppState.currentState = 'active'; emit('change', 'active');
+    view.rerender(<React.StrictMode>{tree(false)}</React.StrictMode>); emit('focus'); await completeFrames();
+    expect(focus).toHaveBeenCalledTimes(1);
+    view.unmount(); emit('focus'); await completeFrames(); expect(focus).toHaveBeenCalledTimes(1);
+    expect([...listeners.values()].every(group => group.size === 0)).toBe(true);
+  });
   test('an already shown modal resumes without another onShow and returns to its valid trigger', async () => {
     const view = render(tree(true)); show(view); emit('focus');
     AppState.currentState = 'background'; emit('change', 'background'); emit('change', 'background');

@@ -269,6 +269,7 @@ type DialogReturnFocus = {
   shown: boolean;
   closing: boolean;
   sawWindowBlur: boolean;
+  focusAfterHide?: boolean;
   windowFocused?: boolean;
   readerEnabled?: boolean;
   frame?: number;
@@ -307,7 +308,8 @@ export function Dialog({
   }, []);
   const tryReturnFocus = useCallback((cycle: DialogReturnFocus | null) => {
     if (!cycle || cycle !== focusCycle.current || cycle.cancelled || cycle.frame !== undefined || !cycle.closing ||
-        !cycle.shown || !cycle.sawWindowBlur || cycle.windowFocused !== true || cycle.readerEnabled !== true) return;
+        !cycle.shown || (!cycle.sawWindowBlur && !cycle.focusAfterHide) || cycle.windowFocused !== true ||
+        cycle.readerEnabled !== true || AppState.currentState !== 'active') return;
     cycle.frame = requestAnimationFrame(() => {
       cycle.frame = undefined;
       if (cycle !== focusCycle.current || cycle.cancelled || AppState.currentState !== 'active' ||
@@ -329,6 +331,7 @@ export function Dialog({
       const cycle = focusCycle.current;
       if (!cycle) return;
       cycle.windowFocused = true;
+      cycle.focusAfterHide = cycle.closing;
       tryReturnFocus(cycle);
     });
     const blur = AppState.addEventListener('blur', () => {
@@ -341,12 +344,12 @@ export function Dialog({
     const state = AppState.addEventListener('change', next => {
       if (next !== 'active') {
         const cycle = focusCycle.current ?? pausedCycle.current;
-        // Android keeps a shown Dialog across pause/resume without another
-        // onShow. Save only that still-visible instance, never a pending close.
-        pausedCycle.current = cycle && !cycle.cancelled && cycle.shown && !cycle.closing &&
+        // SAF can resolve before active, and Android can keep an existing Dialog
+        // across pause/resume. Retain the visible candidate, never a pending close.
+        pausedCycle.current = cycle && !cycle.cancelled && !cycle.closing &&
           committedModal.current.visible && committedModal.current.showToken === cycle.showToken &&
           cycle.ref.current === cycle.node && (!cycle.current || cycle.current())
-          ? { ...cycle, frame: undefined, readerEnabled: undefined, windowFocused: undefined, cancelled: false }
+          ? { ...cycle, frame: undefined, readerEnabled: undefined, windowFocused: undefined, focusAfterHide: false, cancelled: false }
           : null;
         cancelReturnFocus();
         return;
@@ -356,10 +359,11 @@ export function Dialog({
       if (!paused || !committedModal.current.visible || committedModal.current.showToken !== paused.showToken ||
           paused.ref.current !== paused.node || (paused.current && !paused.current())) return;
       // Use a new object so any old reader promise/frame remains canceled.
-      focusCycle.current = { ...paused, windowFocused: undefined, cancelled: false };
+      focusCycle.current = { ...paused, windowFocused: undefined, focusAfterHide: false, cancelled: false };
     });
     return () => {
-      focus.remove(); blur.remove(); state.remove(); pausedCycle.current = null; cancelReturnFocus();
+      focus.remove(); blur.remove(); state.remove(); pausedCycle.current = null;
+      cancelReturnFocus();
     };
   }, [returnFocusRef, tryReturnFocus, cancelReturnFocus]);
   useLayoutEffect(() => {
@@ -368,9 +372,11 @@ export function Dialog({
     if (visible) {
       cancelReturnFocus();
       const node = returnFocusRef?.current;
-      if (returnFocusRef && node && AppState.currentState === 'active') {
-        focusCycle.current = { ref: returnFocusRef, node, current: canReturnFocus, showToken,
+      if (returnFocusRef && node) {
+        const cycle: DialogReturnFocus = { ref: returnFocusRef, node, current: canReturnFocus, showToken,
           shown: false, closing: false, sawWindowBlur: false, cancelled: false };
+        if (AppState.currentState === 'active') focusCycle.current = cycle;
+        else pausedCycle.current = cycle;
       }
       return;
     }
@@ -392,8 +398,11 @@ export function Dialog({
   return (
     <Modal visible={visible} transparent animationType={t.motionMs('detail') ? 'fade' : 'none'} onRequestClose={onRequestClose}
       onShow={() => {
-        const cycle = focusCycle.current;
+        const cycle = focusCycle.current ?? pausedCycle.current;
         if (cycle?.showToken !== showToken || cycle.cancelled) return;
+        // A Picker/Activity focus delivered before this native show cannot be
+        // used as its dismissal signal. A post-hide focus can arrive before onShow.
+        if (!cycle.closing) { cycle.windowFocused = undefined; cycle.focusAfterHide = false; }
         cycle.shown = true;
         tryReturnFocus(cycle);
       }}>
