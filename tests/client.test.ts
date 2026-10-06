@@ -173,3 +173,141 @@ test.each([null, {}, { activeWorkflowId: 'https://synthetic.example/private?secr
   fetchMock.mockResolvedValueOnce(response({ error: { code: 'workflow.active_conflict', details } }, 409));
   await expect(client.json('/api/workspace/workflows', z.unknown(), {}, 'POST')).rejects.toMatchObject({ code: 'workflow.active_conflict', details: undefined });
 });
+
+test('an already aborted caller scope never sends a request',async()=>{
+  const scope=new AbortController();scope.abort();
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());
+  await expect(client.raw('/api/workspace/files/a/download',{signal:scope.signal},false)).rejects.toMatchObject({code:'request.cancelled',diagnostic:'net.cancelled'});
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test.each(['caller','invalidate'] as const)('a %s cancellation after headers reaches the original native fetch signal',async cause=>{
+  const cancel=jest.fn();let nativeSignal:AbortSignal|null|undefined;
+  fetchMock.mockImplementationOnce(async(_url,init)=>{
+    nativeSignal=init?.signal;nativeSignal?.addEventListener('abort',cancel);
+    return response({});
+  });
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn()),scope=new AbortController();
+  await client.raw('/api/workspace/files/a/download',{signal:scope.signal},false);
+  expect(nativeSignal?.aborted).toBe(false);
+  if(cause==='caller')scope.abort();else client.invalidate();
+  expect(nativeSignal?.aborted).toBe(true);expect(cancel).toHaveBeenCalledTimes(1);
+  scope.abort();client.invalidate();expect(cancel).toHaveBeenCalledTimes(1);
+});
+
+test('caller cancellation is distinct from the client deadline and stale generation',async()=>{
+  jest.useFakeTimers();
+  fetchMock.mockImplementationOnce((_url,init)=>new Promise((_resolve,reject)=>{
+    init?.signal?.addEventListener('abort',()=>reject(new Error('Native request cancelled')));
+  }));
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn()),scope=new AbortController();
+  let settled=false;
+  const failure=client.raw('/api/workspace/files/a/download',{signal:scope.signal},false).catch((error:unknown)=>{settled=true;return error;});
+  try {
+    scope.abort();await jest.advanceTimersByTimeAsync(0);expect(settled).toBe(true);
+    expect(await failure).toMatchObject({code:'request.cancelled',diagnostic:'net.cancelled'});
+    expect(String(jest.mocked(console.warn).mock.calls.at(-1)?.[0])).not.toContain('net.timeout');
+  } finally { await jest.advanceTimersByTimeAsync(30001);await failure;jest.useRealTimers(); }
+});
+
+test('a 401 attempt is cancelled before rotation and retry retains the caller scope',async()=>{
+  const firstCancel=jest.fn(),retryCancel=jest.fn();
+  fetchMock.mockImplementationOnce(async(_url,init)=>{init?.signal?.addEventListener('abort',firstCancel);return response({},401);});
+  fetchMock.mockImplementationOnce(async()=>{expect(firstCancel).toHaveBeenCalledTimes(1);return response(session);});
+  fetchMock.mockImplementationOnce(async(_url,init)=>{init?.signal?.addEventListener('abort',retryCancel);return response({});});
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn()),scope=new AbortController();client.session=session;
+  const release=client.bindAbortScope(scope);
+  await client.raw('/api/workspace/files/a/download',{signal:scope.signal});
+  expect(scope.signal.aborted).toBe(false);
+  scope.abort();release();release();client.invalidate();expect(firstCancel).toHaveBeenCalledTimes(1);expect(retryCancel).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
+test.each(['caller','invalidate','unscoped-invalidate','deadline'] as const)('a blocked error body is bounded and cancels the native Call on %s',async cause=>{
+  jest.useFakeTimers();const scope=new AbortController(),nativeCancel=jest.fn();
+  let finish!:(value:unknown)=>void;
+  const blocked=new Promise<unknown>(resolve=>{finish=resolve;});
+  fetchMock.mockImplementationOnce(async(_url,init)=>{
+    init?.signal?.addEventListener('abort',nativeCancel);
+    return {...response({},403),json:()=>blocked} as Awaited<ReturnType<typeof fetch>>;
+  });
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());
+  let settled=false;
+  const pending=client.raw('/api/workspace/files/a/download',cause==='unscoped-invalidate'?{}:{signal:scope.signal},false).catch((error:unknown)=>{settled=true;return error;});
+  try {
+    await jest.advanceTimersByTimeAsync(0);
+    if(cause==='caller')scope.abort();else if(cause==='invalidate'||cause==='unscoped-invalidate')client.invalidate();else await jest.advanceTimersByTimeAsync(30001);
+    await jest.advanceTimersByTimeAsync(0);expect(settled).toBe(true);expect(nativeCancel).toHaveBeenCalledTimes(1);
+    const error=await pending;
+    if(cause==='invalidate'||cause==='unscoped-invalidate'){expect(error).toEqual(new Error('Stale session'));expect(console.warn).not.toHaveBeenCalled();}
+    else expect(error).toMatchObject({code:cause==='deadline'?'request.timeout':'request.cancelled',diagnostic:cause==='deadline'?'net.timeout':'net.cancelled'});
+  } finally { scope.abort();finish({});await jest.advanceTimersByTimeAsync(30001);await pending;jest.useRealTimers(); }
+});
+
+test.each(['invalidate','deadline'] as const)('ordinary JSON cancels and settles a blocked body on %s without relying on the SDK promise',async cause=>{
+  jest.useFakeTimers();const nativeCancel=jest.fn();let finish!:(value:unknown)=>void;
+  const blocked=new Promise<unknown>(resolve=>{finish=resolve;});let bodyStarted=false;
+  fetchMock.mockImplementationOnce(async(_url,init)=>{
+    init?.signal?.addEventListener('abort',nativeCancel);
+    return {...response({}),json:()=>{bodyStarted=true;return blocked;}} as Awaited<ReturnType<typeof fetch>>;
+  });
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());client.session=session;
+  let settled=false;
+  const pending=client.json('/api/workspace/bootstrap',z.object({value:z.literal('synthetic')})).catch((error:unknown)=>{settled=true;return error;});
+  try {
+    await jest.advanceTimersByTimeAsync(0);expect(bodyStarted).toBe(true);
+    if(cause==='invalidate')client.invalidate();else await jest.advanceTimersByTimeAsync(30001);
+    await jest.advanceTimersByTimeAsync(0);expect(settled).toBe(true);expect(nativeCancel).toHaveBeenCalledTimes(1);
+    const error=await pending;
+    if(cause==='invalidate'){expect(error).toEqual(new Error('Stale session'));expect(console.warn).not.toHaveBeenCalled();}
+    else expect(error).toMatchObject({code:'request.timeout',diagnostic:'net.timeout'});
+  } finally { finish({value:'synthetic'});await pending;jest.useRealTimers(); }
+});
+
+test('openMedia invalidation preserves stale generation instead of logging a network failure',async()=>{
+  const started=deferred<void>(),nativeCancel=jest.fn();
+  fetchMock.mockImplementationOnce((_url,init)=>new Promise((_resolve,reject)=>{
+    init?.signal?.addEventListener('abort',()=>{nativeCancel();reject(new Error('Native request cancelled'));});started.resolve();
+  }));
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn()),scope=new AbortController();
+  const pending=client.openMedia('/emotes/bili/doge.png',scope.signal);await started.promise;client.invalidate();
+  await expect(pending).rejects.toEqual(new Error('Stale session'));expect(nativeCancel).toHaveBeenCalledTimes(1);expect(console.warn).not.toHaveBeenCalled();
+});
+
+test('a successful ordinary JSON body releases its native scope once and clears body timers',async()=>{
+  jest.useFakeTimers();const nativeCancel=jest.fn();
+  fetchMock.mockImplementationOnce(async(_url,init)=>{init?.signal?.addEventListener('abort',nativeCancel);return response({value:'synthetic'});});
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());
+  try {
+    expect(await client.json('/api/mobile/release-policy',z.object({value:z.string()}),undefined,'GET',false)).toEqual({value:'synthetic'});
+    expect(nativeCancel).toHaveBeenCalledTimes(1);await jest.advanceTimersByTimeAsync(30001);client.invalidate();
+    expect(nativeCancel).toHaveBeenCalledTimes(1);expect(console.warn).not.toHaveBeenCalled();
+  } finally { jest.useRealTimers(); }
+});
+
+test('caller scope registration cleans up idempotently after success, abort or pre-aborted input',()=>{
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());
+  const finished=new AbortController(),finishedAbort=jest.fn();finished.signal.addEventListener('abort',finishedAbort);
+  const releaseFinished=client.bindAbortScope(finished);releaseFinished();releaseFinished();
+  const active=new AbortController(),activeAbort=jest.fn();active.signal.addEventListener('abort',activeAbort);
+  const releaseActive=client.bindAbortScope(active);client.invalidate();releaseActive();releaseActive();client.invalidate();
+  expect(activeAbort).toHaveBeenCalledTimes(1);expect(finishedAbort).not.toHaveBeenCalled();
+  const prior=new AbortController();prior.abort();const releasePrior=client.bindAbortScope(prior);releasePrior();releasePrior();client.invalidate();
+});
+
+test('JSON checks generation between a real raw header return and starting the consumer body',async()=>{
+  jest.useFakeTimers();const nativeCancel=jest.fn();let finish!:(value:unknown)=>void;
+  const blocked=new Promise<unknown>(resolve=>{finish=resolve;});const read=jest.fn(()=>blocked);
+  fetchMock.mockImplementationOnce(async(_url,init)=>{init?.signal?.addEventListener('abort',nativeCancel);return {...response({}),json:read} as unknown as Awaited<ReturnType<typeof fetch>>;});
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());client.session=session;
+  const actualRaw=client.raw.bind(client);
+  jest.spyOn(client,'raw').mockImplementation(async(...args)=>{
+    const res=await actualRaw(...args);client.invalidate();client.session={...session,accessToken:'synthetic-new-access'};return res;
+  });
+  let settled=false;
+  const pending=client.json('/api/workspace/bootstrap',z.object({value:z.string()})).catch((error:unknown)=>{settled=true;return error;});
+  try {
+    await jest.advanceTimersByTimeAsync(0);expect(settled).toBe(true);
+    expect(await pending).toEqual(new Error('Stale session'));expect(read).not.toHaveBeenCalled();expect(nativeCancel).toHaveBeenCalledTimes(1);expect(console.warn).not.toHaveBeenCalled();
+  } finally {finish({value:'synthetic'});await pending;jest.useRealTimers();}
+});

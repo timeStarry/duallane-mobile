@@ -65,7 +65,7 @@ test.each([
   if (method === 'recall') {
     expect(operation).not.toHaveBeenCalled();
     expect(view.getByText('撤回这条消息？')).toBeTruthy();
-    fireEvent.press(within(view.getByLabelText('撤回这条消息？')).getByRole('button', { name: '撤回' }));
+    fireEvent.press(within(view.getByTestId('dialog-撤回这条消息？')).getByRole('button', { name: '撤回' }));
   }
   await waitFor(() => expect(view.getByText('你当前不能执行此操作')).toBeTruthy());
   expect(operation).toHaveBeenCalledTimes(1);
@@ -127,7 +127,7 @@ test('opening message controls dismisses the keyboard while closing the cluster 
   expect(dismiss).toHaveBeenCalledTimes(5);
   await act(async () => fireEvent.press(view.getByRole('button', { name: '添加表情回复' })));
   expect(dismiss).toHaveBeenCalledTimes(6);
-  const catalog = within(view.getByLabelText('选择消息表情回复'));
+  const catalog = within(view.getByTestId('dialog-选择消息表情回复'));
   fireEvent.press(catalog.getAllByRole('button', { name: '笑脸' }).find(item => within(item).queryByText('😀'))!);
   expect(runtime.react).toHaveBeenCalledWith(message.id, 'emoji:grinning', false);
   expect(useWorkspace.getState().drafts[`topic:${topic.id}`]).toEqual(draft);
@@ -185,13 +185,13 @@ test('complete reaction catalog sends canonical non-quick emoji and built-in ima
   const quick = view.getByRole('button', { name: '反应 👍' });
   expect(StyleSheet.flatten(quick.props.style)).toMatchObject({ minWidth: resolveTheme('light').hit, minHeight: resolveTheme('light').hit });
   await act(async () => fireEvent.press(view.getByRole('button', { name: '更多表情' })));
-  const catalog = within(view.getByLabelText('选择消息表情回复'));
+  const catalog = within(view.getByTestId('dialog-选择消息表情回复'));
   fireEvent.press(catalog.getAllByRole('button', { name: '笑脸' }).find(item => within(item).queryByText('😀'))!);
   expect(runtime.react).toHaveBeenCalledWith(original.id, 'emoji:grinning', false);
   openMore();
   await act(async () => fireEvent.press(view.getByRole('button', { name: '添加表情回复' })));
   fireEvent.press(view.getByRole('tab', { name: 'B站' }));
-  const builtInCatalog = within(view.getByLabelText('选择消息表情回复'));
+  const builtInCatalog = within(view.getByTestId('dialog-选择消息表情回复'));
   fireEvent.press(builtInCatalog.getByRole('button', { name: 'doge' }));
   expect(runtime.react).toHaveBeenCalledWith(original.id, 'bili:doge', false);
   expect(runtime.emoteLibrary).not.toHaveBeenCalled();
@@ -223,7 +223,7 @@ test('catalog toggles the same selected image reaction and shows safe command re
   openMore();
   fireEvent.press(view.getByRole('button', { name: '添加表情回复' }));
   fireEvent.press(view.getByRole('tab', { name: 'B站' }));
-  const catalog = within(view.getByLabelText('选择消息表情回复'));
+  const catalog = within(view.getByTestId('dialog-选择消息表情回复'));
   expect(catalog.getByRole('button', { name: 'doge' }).props.accessibilityState).toMatchObject({ selected: true });
   fireEvent.press(catalog.getByRole('button', { name: 'doge' }));
   expect(runtime.react).toHaveBeenCalledWith(original.id, 'bili:doge', true);
@@ -268,7 +268,7 @@ test('a full-catalog image uses one canonical key for selection and the resultin
   openMore();
   fireEvent.press(view.getByRole('button', { name: '添加表情回复' }));
   fireEvent.press(view.getByRole('tab', { name: 'B站' }));
-  const catalog = within(view.getByLabelText('选择消息表情回复'));
+  const catalog = within(view.getByTestId('dialog-选择消息表情回复'));
   await act(async () => fireEvent.press(catalog.getByRole('button', { name: 'doge' })));
   expect(runtime.react).toHaveBeenLastCalledWith(original.id, 'bili:doge', false);
   rerender({ ...original, reactions: [{ emoteKey: 'bili:doge', count: 1, reactedByCurrentUser: true }] });

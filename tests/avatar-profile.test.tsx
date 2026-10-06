@@ -1,5 +1,5 @@
 import React from 'react';
-import { Dimensions, Modal, ScrollView, View } from 'react-native';
+import { AccessibilityInfo, AppState, Dimensions, Modal, ScrollView, View } from 'react-native';
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import { createNavigationContainerRef, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -27,7 +27,7 @@ function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>
 function loadPreview(view:ReturnType<typeof render>){
   fireEvent(view.getByLabelText('所选头像中心裁剪预览'),'load',{nativeEvent:{source:{width:256,height:256,url:'file:///cache/synthetic.png'}}});
 }
-function avatarDialog(view:ReturnType<typeof render>){return within(view.getByRole('summary',{name:'确认更换头像？'}));}
+function avatarDialog(view:ReturnType<typeof render>){return within(view.getByTestId('dialog-确认更换头像？'));}
 const picked={uri:'file:///cache/synthetic.png',mimeType:'image/png' as const,byteSize:3,dispose:jest.fn()};
 let runtime:Runtime;
 function screen(){
@@ -51,6 +51,61 @@ beforeEach(()=>{
 });
 afterEach(()=>useWorkspace.getState().reset());
 
+describe('avatar modal returns focus to its own trigger',()=>{
+  const frames=new Map<number,FrameRequestCallback>();
+  let nextFrame=0;
+  let focus:jest.SpyInstance;
+  let handle:jest.SpyInstance;
+  let originalState:typeof AppState.currentState;
+  beforeEach(()=>{
+    frames.clear();nextFrame=0;originalState=AppState.currentState;AppState.currentState='active';
+    jest.spyOn(global,'requestAnimationFrame').mockImplementation(callback=>{frames.set(++nextFrame,callback);return nextFrame;});
+    jest.spyOn(global,'cancelAnimationFrame').mockImplementation(id=>{frames.delete(id);});
+    jest.spyOn(AccessibilityInfo,'isScreenReaderEnabled').mockResolvedValue(true);
+    handle=jest.spyOn(jest.requireActual<typeof import('react-native')>('react-native'),'findNodeHandle').mockReturnValue(4243);
+    focus=jest.spyOn(AccessibilityInfo,'setAccessibilityFocus').mockImplementation(()=>undefined);
+  });
+  afterEach(()=>{AppState.currentState=originalState;jest.restoreAllMocks();});
+  async function finishFocus(){
+    await act(async()=>{await Promise.resolve();});
+    act(()=>{for(const [id,callback] of [...frames]){frames.delete(id);callback(0);}});
+  }
+  test('canceling preview returns focus once to Change avatar without saving or losing dirty fields',async()=>{
+    const {view}=screen();fireEvent.changeText(view.getByLabelText('显示名'),'Unsaved');
+    fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+    await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+    expect(focus).not.toHaveBeenCalled();
+    fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
+    expect(focus).not.toHaveBeenCalled();await finishFocus();
+    expect(focus).toHaveBeenCalledTimes(1);expect(focus).toHaveBeenCalledWith(4243);
+    const trigger=view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='更换头像');
+    expect(handle).toHaveBeenCalledWith(trigger?.props.ref.current);
+    expect(runtime.updateAvatar).not.toHaveBeenCalled();expect(runtime.updateProfile).not.toHaveBeenCalled();
+    expect(view.getByLabelText('显示名').props.value).toBe('Unsaved');expect(picked.dispose).toHaveBeenCalledTimes(1);
+  });
+  test('canceling restore returns focus to Restore GitHub avatar without deleting',async()=>{
+    const {view}=screen();fireEvent.press(view.getByRole('button',{name:'恢复 GitHub 头像'}));
+    fireEvent.press(within(view.getByTestId('dialog-恢复 GitHub 头像？')).getByRole('button',{name:'保留当前头像'}));
+    await finishFocus();expect(focus).toHaveBeenCalledTimes(1);
+    const trigger=view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='恢复 GitHub 头像');
+    expect(handle).toHaveBeenCalledWith(trigger?.props.ref.current);expect(runtime.clearAvatar).not.toHaveBeenCalled();
+  });
+  test.each(['unmount','route blur','account replacement','API replacement','new picker'] as const)('%s refuses queued focus from an old preview',async reason=>{
+    const {view,nav}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+    await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+    fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
+    if(reason==='unmount')view.unmount();
+    else if(reason==='route blur')act(()=>nav.navigate('Other'));
+    else if(reason==='account replacement')act(()=>useWorkspace.setState({accountKey:'synthetic:u2'}));
+    else if(reason==='API replacement')runtime.api=new ApiClient('https://synthetic.invalid',async()=>undefined,()=>undefined);
+    else{
+      jest.mocked(chooseAvatar).mockReturnValueOnce(new Promise(()=>undefined));
+      fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+    }
+    await finishFocus();expect(focus).not.toHaveBeenCalled();expect(runtime.updateAvatar).not.toHaveBeenCalled();
+  });
+});
+
 test('selection previews without mutation; explicit upload preserves unsaved nickname and visibility',async()=>{
   const {view}=screen();
   expect(view.queryByText('更换头像稍后接入')).toBeNull();
@@ -60,7 +115,7 @@ test('selection previews without mutation; explicit upload preserves unsaved nic
   await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
   expect(runtime.updateAvatar).not.toHaveBeenCalled();
   loadPreview(view);
-  fireEvent.press(within(view.getByRole('summary',{name:'确认更换头像？'})).getByRole('button',{name:'确认上传'}));
+  fireEvent.press(within(view.getByTestId('dialog-确认更换头像？')).getByRole('button',{name:'确认上传'}));
   await waitFor(()=>expect(view.getByText('头像已保存')).toBeTruthy());
   expect(runtime.updateAvatar).toHaveBeenCalledWith(picked,expect.any(Function));
   expect(runtime.updateProfile).not.toHaveBeenCalled();
@@ -70,8 +125,8 @@ test('selection previews without mutation; explicit upload preserves unsaved nic
 
 test('canceling a preview cleans the copy and leaves the saved avatar unchanged',async()=>{
   const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
-  await waitFor(()=>expect(view.getByRole('summary',{name:'确认更换头像？'})).toBeTruthy());
-  fireEvent.press(within(view.getByRole('summary',{name:'确认更换头像？'})).getByRole('button',{name:'取消上传'}));
+  await waitFor(()=>expect(view.getByTestId('dialog-确认更换头像？')).toBeTruthy());
+  fireEvent.press(within(view.getByTestId('dialog-确认更换头像？')).getByRole('button',{name:'取消上传'}));
   expect(picked.dispose).toHaveBeenCalled();expect(runtime.updateAvatar).not.toHaveBeenCalled();
   expect(useWorkspace.getState().bootstrap?.auth.currentUser.avatarUrl).toBeNull();
 });
@@ -79,10 +134,10 @@ test('canceling a preview cleans the copy and leaves the saved avatar unchanged'
 test('restore requires confirmation, while cancel does not call DELETE',async()=>{
   const {view}=screen();fireEvent.press(view.getByRole('button',{name:'恢复 GitHub 头像'}));
   expect(runtime.clearAvatar).not.toHaveBeenCalled();
-  fireEvent.press(within(view.getByRole('summary',{name:'恢复 GitHub 头像？'})).getByRole('button',{name:'保留当前头像'}));
+  fireEvent.press(within(view.getByTestId('dialog-恢复 GitHub 头像？')).getByRole('button',{name:'保留当前头像'}));
   expect(runtime.clearAvatar).not.toHaveBeenCalled();
   fireEvent.press(view.getByRole('button',{name:'恢复 GitHub 头像'}));
-  fireEvent.press(within(view.getByRole('summary',{name:'恢复 GitHub 头像？'})).getByRole('button',{name:'确认恢复'}));
+  fireEvent.press(within(view.getByTestId('dialog-恢复 GitHub 头像？')).getByRole('button',{name:'确认恢复'}));
   await waitFor(()=>expect(view.getByText('已恢复 GitHub 头像')).toBeTruthy());
   expect(runtime.clearAvatar).toHaveBeenCalledWith(expect.any(Function));
 });
@@ -91,9 +146,9 @@ test('upload failure preserves the original avatar and profile inputs',async()=>
   runtime.updateAvatar=jest.fn().mockRejectedValue(new Error('synthetic failure'));
   const {view}=screen();fireEvent.changeText(view.getByLabelText('显示名'),'Unsaved');
   fireEvent.press(view.getByRole('button',{name:'更换头像'}));
-  await waitFor(()=>expect(view.getByRole('summary',{name:'确认更换头像？'})).toBeTruthy());
+  await waitFor(()=>expect(view.getByTestId('dialog-确认更换头像？')).toBeTruthy());
   loadPreview(view);
-  fireEvent.press(within(view.getByRole('summary',{name:'确认更换头像？'})).getByRole('button',{name:'确认上传'}));
+  fireEvent.press(within(view.getByTestId('dialog-确认更换头像？')).getByRole('button',{name:'确认上传'}));
   await waitFor(()=>expect(view.getByText('头像未保存，请重试')).toBeTruthy());
   expect(useWorkspace.getState().bootstrap?.auth.currentUser.avatarUrl).toBeNull();
   expect(view.getByLabelText('显示名').props.value).toBe('Unsaved');expect(picked.dispose).toHaveBeenCalled();
@@ -118,9 +173,9 @@ test('account replacement disposes the preview and closes confirmation',async()=
 test('leaving during upload invalidates the runtime callback and ignores late success feedback',async()=>{
   const pending=deferred<typeof snapshot.auth.currentUser>();runtime.updateAvatar=jest.fn().mockReturnValueOnce(pending.promise);
   const {view,nav}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
-  await waitFor(()=>expect(view.getByRole('summary',{name:'确认更换头像？'})).toBeTruthy());
+  await waitFor(()=>expect(view.getByTestId('dialog-确认更换头像？')).toBeTruthy());
   loadPreview(view);
-  fireEvent.press(within(view.getByRole('summary',{name:'确认更换头像？'})).getByRole('button',{name:'确认上传'}));
+  fireEvent.press(within(view.getByTestId('dialog-确认更换头像？')).getByRole('button',{name:'确认上传'}));
   const current=jest.mocked(runtime.updateAvatar).mock.calls[0]?.[1];expect(current?.()).toBe(true);
   act(()=>nav.navigate('Other'));expect(current?.()).toBe(false);
   await act(async()=>pending.resolve(snapshot.auth.currentUser));act(()=>nav.goBack());
@@ -131,14 +186,14 @@ test('picker cancellation leaves no confirmation or avatar mutation',async()=>{
   jest.mocked(chooseAvatar).mockResolvedValueOnce(null);const {view}=screen();
   fireEvent.press(view.getByRole('button',{name:'更换头像'}));
   await waitFor(()=>expect(view.getByRole('button',{name:'更换头像'})).toBeTruthy());
-  expect(view.queryByRole('summary',{name:'确认更换头像？'})).toBeNull();expect(runtime.updateAvatar).not.toHaveBeenCalled();
+  expect(view.queryByTestId('dialog-确认更换头像？')).toBeNull();expect(runtime.updateAvatar).not.toHaveBeenCalled();
 });
 
 test('a failed restore leaves the avatar unchanged and does not save profile inputs',async()=>{
   runtime.clearAvatar=jest.fn().mockRejectedValueOnce(new Error('synthetic failure'));
   const {view}=screen();fireEvent.changeText(view.getByLabelText('显示名'),'Unsaved');
   fireEvent.press(view.getByRole('button',{name:'恢复 GitHub 头像'}));
-  fireEvent.press(within(view.getByRole('summary',{name:'恢复 GitHub 头像？'})).getByRole('button',{name:'确认恢复'}));
+  fireEvent.press(within(view.getByTestId('dialog-恢复 GitHub 头像？')).getByRole('button',{name:'确认恢复'}));
   await waitFor(()=>expect(view.getByText('头像未保存，请重试')).toBeTruthy());
   expect(view.getByLabelText('显示名').props.value).toBe('Unsaved');expect(runtime.updateProfile).not.toHaveBeenCalled();
   expect(useWorkspace.getState().bootstrap?.auth.currentUser.avatarUrl).toBeNull();

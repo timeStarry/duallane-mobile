@@ -1,7 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
 import { z } from 'zod';
-import type { ApiClient } from './client';
+import { ApiError, type ApiClient } from './client';
 import type { Attachment, Emote } from '../domain/contracts';
 import { catalogImage, customEmoteSrc, splitImageEmotes } from '../domain/emote-catalog';
 import { useWorkspace } from '../domain/store';
@@ -11,6 +11,44 @@ const emotes = new Map<string, string>();
 let client: ApiClient | null = null;
 let mediaAccount = '';
 let generation = 0;
+const pendingMedia = new Map<AbortController, () => void>();
+
+function abortObsoleteMedia() {
+  for (const [controller, validate] of pendingMedia) {
+    try { validate(); } catch { controller.abort(); }
+  }
+}
+
+async function withMediaScope<T>(api: ApiClient, validate: () => void, work: (controller: AbortController, current: () => void) => Promise<T>): Promise<T> {
+  validate();
+  const controller = new AbortController();
+  const release = api.bindAbortScope?.(controller);
+  const current = () => { validate(); if (controller.signal.aborted) throw new Error('Stale media session'); };
+  pendingMedia.set(controller, current);
+  try { current(); const value = await work(controller, current); current(); return value; }
+  finally { pendingMedia.delete(controller); controller.abort(); release?.(); }
+}
+
+async function readMediaBody<T>(read: () => Promise<T>, controller: AbortController, validate: () => void): Promise<T> {
+  if (controller.signal.aborted) throw new Error('Stale media session');
+  let onAbort!: () => void;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new Error('Stale media session'));
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+  });
+  let rejectDeadline!: (error: ApiError) => void;
+  const timeout = setTimeout(() => {
+    rejectDeadline(new ApiError('request.timeout', 0, 'net.timeout'));
+    controller.abort();
+  }, 30000);
+  const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+  try {
+    const value = await Promise.race([read(), cancelled, deadline]);
+    if (controller.signal.aborted) throw new Error('Stale media session');
+    return value;
+  } catch (error) { validate(); throw error; }
+  finally { clearTimeout(timeout); controller.signal.removeEventListener('abort', onAbort); }
+}
 
 export type MediaContext = { accountKey: string; conversationId?: string; topicId?: string; messageId?: string };
 
@@ -42,6 +80,7 @@ export function canPreviewAttachment(file: Attachment, context?: MediaContext): 
 export function setMediaClient(next: ApiClient | null): void {
   if (client !== next) generation++;
   client = next;
+  abortObsoleteMedia();
   if (!next) {
     memory.clear();
     emotes.clear();
@@ -56,10 +95,12 @@ export function setMediaAccount(accountKey: string): void {
     emotes.clear();
   }
   mediaAccount = accountKey;
+  abortObsoleteMedia();
 }
 
 export function clearAccountPreviewCache(accountKey: string): void {
   if (accountKey === mediaAccount) generation++;
+  abortObsoleteMedia();
   memory.clear();
   try {
     if (!accountKey || !Paths.cache) return;
@@ -73,6 +114,7 @@ export function clearAccountPreviewCache(accountKey: string): void {
 // Attachment DTOs do not retain their authorization scope on disk. Clear the account's
 // preview directory whenever an authorized conversation/topic scope is revoked.
 useWorkspace.subscribe((next, previous) => {
+  abortObsoleteMedia();
   if (!mediaAccount || previous.accountKey !== mediaAccount) return;
   const revoked = next.accountKey !== previous.accountKey || next.bootstrap?.space.id !== previous.bootstrap?.space.id
     || (!!previous.bootstrap?.permissions.canDownload && !next.bootstrap?.permissions.canDownload)
@@ -116,53 +158,55 @@ export async function attachmentPreviewUri(file: Attachment, context?: MediaCont
   const account = mediaAccount;
   if (!account) throw new Error('Media account unavailable');
   const started = generation;
+  const hadSession = !!api.session;
   const current = () => {
-    if (client !== api || mediaAccount !== account || generation !== started) throw new Error('Stale media session');
+    if (client !== api || mediaAccount !== account || generation !== started || (hadSession && !api.session)) throw new Error('Stale media session');
     if (!canPreviewAttachment(file, context)) throw new Error('permission.denied');
   };
-  current();
-  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `preview:${api.origin}:${account}:${file.id}`);
-  current();
-  const dir = new Directory(Paths.cache, 'previews', account);
-  const cached = new File(dir, digest);
-  let response: Response;
-  try {
-    // A file URI is only a storage location. The current session must authorize every use.
-    response = await api.raw(`/api/workspace/files/${encodeURIComponent(file.id)}/preview`, {}, true);
-  } catch (error) {
-    current();
-    const failure = apiFailure(error);
-    if (failure && ([401, 403].includes(failure.status) || (failure.status === 404 && failure.code === 'file.not_found'))) {
-      clearAccountPreviewCache(account);
-      throw error;
-    }
-    if (!failure || ![404, 405, 415].includes(failure.status)) throw error;
+  return withMediaScope(api, current, async (controller, currentScope) => {
+    const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `preview:${api.origin}:${account}:${file.id}`);
+    currentScope();
+    const dir = new Directory(Paths.cache, 'previews', account);
+    const cached = new File(dir, digest);
+    let response: Response;
     try {
-      const reserved = await api.json(`/api/workspace/files/${encodeURIComponent(file.id)}/downloads/reserve`, z.object({ id: z.string().min(1) }), {});
-      current();
-      response = await api.raw(`/api/workspace/files/${encodeURIComponent(file.id)}/download?downloadId=${encodeURIComponent(reserved.id)}`);
-    } catch (fallbackError) {
-      current();
-      const failure = apiFailure(fallbackError);
-      if (failure && ([401, 403].includes(failure.status) || (failure.status === 404 && failure.code === 'file.not_found'))) clearAccountPreviewCache(account);
-      throw fallbackError;
+      // A file URI is only a storage location. The current session must authorize every use.
+      response = await api.raw(`/api/workspace/files/${encodeURIComponent(file.id)}/preview`, { signal: controller.signal }, true);
+    } catch (error) {
+      currentScope();
+      const failure = apiFailure(error);
+      if (failure && ([401, 403].includes(failure.status) || (failure.status === 404 && failure.code === 'file.not_found'))) {
+        clearAccountPreviewCache(account);
+        throw error;
+      }
+      if (!failure || ![404, 405, 415].includes(failure.status)) throw error;
+      try {
+        const reserved = await api.json(`/api/workspace/files/${encodeURIComponent(file.id)}/downloads/reserve`, z.object({ id: z.string().min(1) }), {});
+        currentScope();
+        response = await api.raw(`/api/workspace/files/${encodeURIComponent(file.id)}/download?downloadId=${encodeURIComponent(reserved.id)}`, { signal: controller.signal });
+      } catch (fallbackError) {
+        currentScope();
+        const failure = apiFailure(fallbackError);
+        if (failure && ([401, 403].includes(failure.status) || (failure.status === 404 && failure.code === 'file.not_found'))) clearAccountPreviewCache(account);
+        throw fallbackError;
+      }
     }
-  }
-  current();
-  if (cached.exists && cached.size > 0) {
-    await response.body?.cancel().catch(() => undefined);
-    current();
+    currentScope();
+    if (cached.exists && cached.size > 0) {
+      void response.body?.cancel().catch(() => undefined);
+      currentScope();
+      return cached.uri;
+    }
+    const bytes = new Uint8Array(await readMediaBody(() => response.arrayBuffer(), controller, current));
+    currentScope();
+    if (!bytes.byteLength) throw new Error('Empty media');
+    dir.create({ intermediates: true, idempotent: true });
+    if (cached.exists && cached.size > 0) return cached.uri;
+    cached.create({ overwrite: true });
+    const handle = cached.open();
+    try { handle.writeBytes(bytes); } finally { handle.close(); }
     return cached.uri;
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  current();
-  if (!bytes.byteLength) throw new Error('Empty media');
-  dir.create({ intermediates: true, idempotent: true });
-  if (cached.exists && cached.size > 0) return cached.uri;
-  cached.create({ overwrite: true });
-  const handle = cached.open();
-  try { handle.writeBytes(bytes); } finally { handle.close(); }
-  return cached.uri;
+  });
 }
 
 function cacheKey(url: string): string {
@@ -186,17 +230,23 @@ export async function localMediaText(url: string): Promise<string> {
   const api = client;
   if (!api) throw new Error('Media client unavailable');
   const started = generation;
-  const response = await api.openMedia(url.startsWith('/') ? url : resolveMediaUrl(url, api.origin));
-  const text = await response.text();
-  if (client !== api || generation !== started) throw new Error('Stale media session');
-  if (!text) throw new Error('Empty media');
-  return text;
+  const hadSession = !!api.session;
+  const current = () => { if (client !== api || generation !== started || (hadSession && !api.session)) throw new Error('Stale media session'); };
+  return withMediaScope(api, current, async (controller, currentScope) => {
+    const response = await api.openMedia(url.startsWith('/') ? url : resolveMediaUrl(url, api.origin), controller.signal);
+    currentScope();
+    const text = await readMediaBody(() => response.text(), controller, current);
+    currentScope();
+    if (!text) throw new Error('Empty media');
+    return text;
+  });
 }
 
 export async function localMediaUri(url: string): Promise<string> {
   const api = client;
   if (!api) throw new Error('Media client unavailable');
   const started = generation;
+  const hadSession = !!api.session;
   const resolved = resolveMediaUrl(url, api.origin);
   const key = cacheKey(resolved);
   const hit = memory.get(key);
@@ -205,21 +255,25 @@ export async function localMediaUri(url: string): Promise<string> {
     memory.set(key, resolved);
     return resolved;
   }
-  const response = await api.openMedia(resolved);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (client !== api || generation !== started) throw new Error('Stale media session');
-  if (!bytes.byteLength) throw new Error('Empty media');
-  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, key);
-  if (client !== api || generation !== started) throw new Error('Stale media session');
-  const file = new File(Paths.cache, digest);
-  if (file.exists && file.size > 0) {
+  const current = () => { if (client !== api || generation !== started || (hadSession && !api.session)) throw new Error('Stale media session'); };
+  return withMediaScope(api, current, async (controller, currentScope) => {
+    const response = await api.openMedia(resolved, controller.signal);
+    currentScope();
+    const bytes = new Uint8Array(await readMediaBody(() => response.arrayBuffer(), controller, current));
+    currentScope();
+    if (!bytes.byteLength) throw new Error('Empty media');
+    const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, key);
+    currentScope();
+    const file = new File(Paths.cache, digest);
+    if (file.exists && file.size > 0) {
+      memory.set(key, file.uri);
+      return file.uri;
+    }
+    if (file.exists) file.delete();
+    file.create();
+    const handle = file.open();
+    try { handle.writeBytes(bytes); } finally { handle.close(); }
     memory.set(key, file.uri);
     return file.uri;
-  }
-  if (file.exists) file.delete();
-  file.create();
-  const handle = file.open();
-  try { handle.writeBytes(bytes); } finally { handle.close(); }
-  memory.set(key, file.uri);
-  return file.uri;
+  });
 }

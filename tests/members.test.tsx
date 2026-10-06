@@ -53,12 +53,12 @@ function setup() {
 
 function showProfile(view: ReturnType<typeof render>, name = '测试成员') {
   fireEvent.press(view.getByRole('button', { name: `查看 ${name} 的成员资料` }));
-  return within(view.getByRole('summary', { name: '成员资料' }));
+  return within(view.getByTestId('dialog-成员资料'));
 }
 
 function showRemark(view: ReturnType<typeof render>) {
   fireEvent.press(showProfile(view).getByRole('button', { name: '编辑备注' }));
-  return within(view.getByRole('summary', { name: '编辑备注' }));
+  return within(view.getByTestId('dialog-编辑备注'));
 }
 
 beforeEach(() => jest.useFakeTimers());
@@ -72,13 +72,13 @@ test('member profile shows only projected public fields and cancel returns witho
   expect(profile.getByText('原备注')).toBeTruthy();
   expect(profile.queryByText('u2')).toBeNull();
   fireEvent.press(profile.getByRole('button', { name: '编辑备注' }));
-  const edit = within(view.getByRole('summary', { name: '编辑备注' }));
+  const edit = within(view.getByTestId('dialog-编辑备注'));
   fireEvent.changeText(edit.getByLabelText('成员备注'), '未提交输入');
   fireEvent.press(edit.getByRole('button', { name: '取消' }));
-  expect(view.getByRole('summary', { name: '成员资料' })).toBeTruthy();
+  expect(view.getByTestId('dialog-成员资料')).toBeTruthy();
   expect(api.json).not.toHaveBeenCalled();
-  fireEvent.press(within(view.getByRole('summary', { name: '成员资料' })).getByRole('button', { name: '关闭资料' }));
-  expect(view.queryByRole('summary', { name: '成员资料' })).toBeNull();
+  fireEvent.press(within(view.getByTestId('dialog-成员资料')).getByRole('button', { name: '关闭资料' }));
+  expect(view.queryByTestId('dialog-成员资料')).toBeNull();
 });
 
 test('Android dialog back cancels editing just like the explicit cancel button', () => {
@@ -88,7 +88,7 @@ test('Android dialog back cancels editing just like the explicit cancel button',
   const modal = view.UNSAFE_getAllByType(Modal).find(node => node.props.visible);
   expect(modal).toBeDefined();
   fireEvent(modal!, 'requestClose');
-  const profile = within(view.getByRole('summary', { name: '成员资料' }));
+  const profile = within(view.getByTestId('dialog-成员资料'));
   fireEvent.press(profile.getByRole('button', { name: '编辑备注' }));
   expect(view.getByLabelText('成员备注').props.value).toBe('原备注');
   expect(api.json).not.toHaveBeenCalled();
@@ -109,7 +109,7 @@ test('list follows fresh bootstrap members and revalidates a member absent from 
   act(() => seed([person('u3', '当前成员')]));
   expect(view.queryByText('测试成员')).toBeNull();
   expect(view.getByText('当前成员')).toBeTruthy();
-  expect(view.queryByRole('summary', { name: '成员资料' })).toBeNull();
+  expect(view.queryByTestId('dialog-成员资料')).toBeNull();
   await waitFor(() => expect(view.getByText('成员资料暂不可用，请重新选择成员。未提交备注仍保留。')).toBeTruthy());
 });
 
@@ -135,7 +135,7 @@ test('discovered member absent from contacts is revalidated after bootstrap with
   const validation = deferred<{ members: Member[] }>();
   jest.mocked(api.json).mockImplementationOnce(() => validation.promise);
   act(() => seed([{ ...target, nickname: '当前昵称' }]));
-  expect(view.queryByRole('summary', { name: '编辑备注' })).toBeNull();
+  expect(view.queryByTestId('dialog-编辑备注')).toBeNull();
   expect(view.getByLabelText('查找可见成员').props.value).toBe('可搜索');
   await act(async () => validation.resolve({ members: [{ ...discovered, nickname: '确认后的昵称' }] }));
   expect(view.getByLabelText('成员备注').props.value).toBe('搜索成员草稿');
@@ -149,11 +149,11 @@ test('failed selected validation keeps a private draft that reselecting the same
   jest.mocked(api.json).mockRejectedValueOnce(new ApiError('request.network', 0));
   act(() => seed([]));
   await waitFor(() => expect(view.getByText(/无法确认成员资料。未提交备注仍保留。/)).toBeTruthy());
-  expect(view.queryByRole('summary', { name: '编辑备注' })).toBeNull();
+  expect(view.queryByTestId('dialog-编辑备注')).toBeNull();
   jest.mocked(api.json).mockResolvedValueOnce({ members: [target] });
   fireEvent.changeText(view.getByLabelText('查找可见成员'), '合成');
   fireEvent.press(view.getByRole('button', { name: '搜索' }));
-  await waitFor(() => expect(view.getByRole('summary', { name: '编辑备注' })).toBeTruthy());
+  await waitFor(() => expect(view.getByTestId('dialog-编辑备注')).toBeTruthy());
   expect(view.getByLabelText('成员备注').props.value).toBe('保留到再次验证');
 });
 
@@ -165,7 +165,7 @@ test('bootstrap refresh does not enable duplicate mutations while old remark req
   fireEvent.changeText(edit.getByLabelText('成员备注'), '刷新时草稿');
   fireEvent.press(edit.getByRole('button', { name: '保存备注' }));
   act(() => seed([{ ...target, nickname: '已刷新' }]));
-  fireEvent.press(within(view.getByRole('summary', { name: '编辑备注' })).getByRole('button', { name: '保存备注' }));
+  fireEvent.press(within(view.getByTestId('dialog-编辑备注')).getByRole('button', { name: '保存备注' }));
   expect(api.json).toHaveBeenCalledTimes(1);
   await act(async () => request.resolve({ member: { ...target, remark: '旧快照返回' } }));
   expect(view.getByLabelText('成员备注').props.value).toBe('刷新时草稿');
@@ -237,15 +237,15 @@ test('saving remark uses canonical response, then clearing removes the canonical
   const edit = showRemark(view);
   fireEvent.changeText(edit.getByLabelText('成员备注'), '  输入备注  ');
   fireEvent.press(edit.getByRole('button', { name: '保存备注' }));
-  await waitFor(() => expect(view.getByRole('summary', { name: '成员资料' })).toBeTruthy());
+  await waitFor(() => expect(view.getByTestId('dialog-成员资料')).toBeTruthy());
   expect(api.json).toHaveBeenCalledWith('/api/workspace/members/u2/remark', expect.anything(), { remark: '输入备注' }, 'PUT');
-  expect(within(view.getByRole('summary', { name: '成员资料' })).getAllByText('服务端备注').length).toBeGreaterThan(0);
+  expect(within(view.getByTestId('dialog-成员资料')).getAllByText('服务端备注').length).toBeGreaterThan(0);
   expect(useWorkspace.getState().bootstrap?.members[0]?.remark).toBe('服务端备注');
   expect(view.queryByText('成员范围已更新，请重试此操作。未提交备注仍保留。')).toBeNull();
   jest.mocked(api.json).mockResolvedValueOnce({ member: { ...target, displayName: '公开测试昵称', remark: null } });
-  fireEvent.press(within(view.getByRole('summary', { name: '成员资料' })).getByRole('button', { name: '编辑备注' }));
-  fireEvent.press(within(view.getByRole('summary', { name: '编辑备注' })).getByRole('button', { name: '清除备注' }));
-  await waitFor(() => expect(view.getByRole('summary', { name: '成员资料' })).toBeTruthy());
+  fireEvent.press(within(view.getByTestId('dialog-成员资料')).getByRole('button', { name: '编辑备注' }));
+  fireEvent.press(within(view.getByTestId('dialog-编辑备注')).getByRole('button', { name: '清除备注' }));
+  await waitFor(() => expect(view.getByTestId('dialog-成员资料')).toBeTruthy());
   expect(api.json).toHaveBeenLastCalledWith('/api/workspace/members/u2/remark', expect.anything(), undefined, 'DELETE');
   expect(useWorkspace.getState().bootstrap?.members[0]?.remark).toBeNull();
 });
@@ -258,7 +258,7 @@ test.each(['保存备注', '清除备注'])('%s failure stays in the editor with
   fireEvent.press(edit.getByRole('button', { name: title }));
   await waitFor(() => expect(edit.getByText('你当前不能执行此操作')).toBeTruthy());
   expect(edit.getByLabelText('成员备注').props.value).toBe('保留的合成输入');
-  expect(view.queryByRole('summary', { name: '成员资料' })).toBeNull();
+  expect(view.queryByTestId('dialog-成员资料')).toBeNull();
 });
 
 test('pending remark blocks duplicate save/clear and account switch discards the response', async () => {
@@ -272,7 +272,7 @@ test('pending remark blocks duplicate save/clear and account switch discards the
   act(() => seed([person('u3', '新账号成员')], 'origin:u9'));
   await act(async () => request.resolve({ member: { ...target, displayName: '旧账号备注', remark: '旧账号备注' } }));
   expect(view.queryByText('旧账号备注')).toBeNull();
-  expect(view.queryByRole('summary', { name: '编辑备注' })).toBeNull();
+  expect(view.queryByTestId('dialog-编辑备注')).toBeNull();
   expect(useWorkspace.getState().bootstrap?.members.map(member => member.id)).toEqual(['u3']);
 });
 
@@ -331,7 +331,7 @@ test('profile starts the server-returned same direct conversation once and close
   expect(api.json).toHaveBeenCalledWith('/api/workspace/conversations', expect.anything(), { type: 'direct', memberIds: ['u2'] }, 'POST');
   expect(open).toHaveBeenCalledTimes(1);
   expect(open).toHaveBeenCalledWith('same-direct');
-  expect(view.queryByRole('summary', { name: '成员资料' })).toBeNull();
+  expect(view.queryByTestId('dialog-成员资料')).toBeNull();
 });
 
 test('late direct response cannot navigate or populate conversations after permission revocation', async () => {

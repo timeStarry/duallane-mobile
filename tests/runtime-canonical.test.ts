@@ -57,10 +57,12 @@ test.each([false,true])('resume atomically revalidates the loaded 75-row history
   // The latest page must not publish a truncated window while its older page is loading.
   await Promise.race([started.promise,refreshing]);
   expect(useWorkspace.getState().messages[bucket]===previous).toBe(true);
+  expect(useWorkspace.getState().messageReads[bucket]).toBeUndefined();
   pending.resolve(response({messages:fresh.slice(0,26)}));await refreshing;
   expect(useWorkspace.getState().messages[bucket]?.map(row=>row.id)).toEqual(fresh.map(row=>row.id));
   expect(useWorkspace.getState().messages[bucket]?.some(row=>row.id==='window-010')).toBe(true);
   expect(useWorkspace.getState().messages[bucket]?.at(-1)?.id).toBe('window-075');
+  expect(useWorkspace.getState().messageReads[bucket]).toEqual({ revision: 1, source: runtime.api, before: undefined });
 });
 
 test.each([false,true])('history refresh removes deleted rows and uses freshly redacted recalled and hidden rows (topic=%s)',async isTopic=>{
@@ -106,6 +108,48 @@ test('an unavailable older page never publishes or caches a partially refreshed 
   await expect(runtime.bootstrap(true)).rejects.toThrow('request.network');
   expect(useWorkspace.getState().messages.c1===previous).toBe(true);
   expect(jest.mocked(cache.set).mock.calls.some(([key])=>key.endsWith(':messages:c1'))).toBe(false);
+  expect(useWorkspace.getState().messageReads.c1).toBeUndefined();
+});
+
+test.each([undefined, 'm1'])('successful empty HTTP pages publish the exact read range (%s)', async before => {
+  fetchMock.mockImplementation(async url => String(url).includes('/messages?') ? response({ messages: [] }) : fallback(String(url)));
+  await runtime.messages('c1', before);
+  expect(useWorkspace.getState().messageReads.c1).toEqual({ revision: 1, source: runtime.api, before });
+  expect(jest.mocked(cache.set).mock.calls.some(([, value]) => value === useWorkspace.getState().messageReads)).toBe(false);
+});
+
+test('cache, optimistic rows and a canonical WebSocket event do not publish HTTP read receipts', async () => {
+  useWorkspace.getState().setMessages('c1', [parseMessage(message)!]);
+  useWorkspace.getState().upsertMessage({ ...parseMessage(message)!, id: 'pending', status: 'sending' });
+  await (runtime as unknown as { applyEvent: (event: WorkspaceEvent, replay: boolean) => Promise<void> }).applyEvent({
+    id: 'read-receipt-event', spaceId: 's1', seq: 5, type: 'message.created', conversationId: 'c1', payload: { message: { ...message, id: 'canonical-next' } },
+  }, false);
+  expect(useWorkspace.getState().messages.c1?.some(row => row.id === 'canonical-next')).toBe(true);
+  expect(useWorkspace.getState().messageReads).toEqual({});
+});
+
+test('a successfully revalidated empty loaded window publishes a window receipt', async () => {
+  useWorkspace.getState().setMessages('c1', []);
+  fetchMock.mockImplementation(async url => String(url).includes('/messages?') ? response({ messages: [] }) : fallback(String(url)));
+  await runtime.bootstrap(true);
+  expect(useWorkspace.getState().messageReads.c1).toEqual({ revision: 1, source: runtime.api, before: undefined });
+});
+
+test.each(['account', 'api', 'permission', 'topic-parent', 'leave-rejoin'] as const)('a late single HTTP page cannot publish a read receipt after %s changes', async change => {
+  const pending = deferred<Awaited<ReturnType<typeof fetch>>>();
+  const isTopic = change === 'topic-parent' || change === 'leave-rejoin';
+  fetchMock.mockImplementation(async url => String(url).includes('/messages?') ? pending.promise
+    : String(url).endsWith('/leave') ? response({ topic: { ...topic, joined: false } }) : fallback(String(url)));
+  const loading = isTopic ? runtime.topicMessages('t1') : runtime.messages('c1');
+  if (change === 'account') useWorkspace.getState().applyBootstrap(useWorkspace.getState().bootstrap!, 'next-account');
+  else if (change === 'api') runtime.api = new ApiClient('https://next.example', async () => undefined, () => undefined);
+  else if (change === 'permission') useWorkspace.getState().applyBootstrap({ ...useWorkspace.getState().bootstrap!, permissions: { ...useWorkspace.getState().bootstrap!.permissions, canReadConversations: false } }, useWorkspace.getState().accountKey);
+  else if (change === 'topic-parent') useWorkspace.getState().upsertTopic({ ...topic, conversationId: 'other' });
+  else { await runtime.leaveTopic('t1'); useWorkspace.getState().upsertTopic(topic); }
+  pending.resolve(response({ messages: [] }));
+  if (change === 'api') await expect(loading).rejects.toThrow('Session unavailable');
+  else await loading;
+  expect(useWorkspace.getState().messageReads).toEqual({});
 });
 
 test.each([403,404])('authoritative history page denial clears the group and child-topic cache and cannot be revived by queued events (%s)',async status=>{
@@ -321,6 +365,7 @@ test.each(['account','api','logout','dispose','group-revoke','global-revoke','to
   else await refreshing;
   expect(useWorkspace.getState().messages[bucket]===previous).toBe(true);
   expect(useWorkspace.getState().messages[bucket]?.some(row=>row.id==='window-075')??false).toBe(false);
+  expect(useWorkspace.getState().messageReads[bucket]).toBeUndefined();
 });
 
 test('a late denied older page cannot clear the next account cache or read eligibility',async()=>{

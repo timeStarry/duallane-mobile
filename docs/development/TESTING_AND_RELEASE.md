@@ -58,6 +58,15 @@ Windows 使用 `gradlew.bat` 和 Java 17。该 init 仅为这次测试添加固�
 下载失败日志仅区分 `file_download_reserve` 与 `file_download_content`，不记录文件、
 对象、下载预留 ID 或 query；断网后热恢复与冷启动后成功必须分别记录。
 
+HTTP headers 返回不代表正文传输结束。JSON／媒体／文件正文读取需受账号、API 和
+权限失效取消，期限后也应结束等待并取消原生请求；不能仅调用 reader.cancel 后
+无限等待它的 Promise。相关回归包含 headers 后失效、正文悬挂、正常 token 轮换、
+媒体摘要等待后失效与部分文件清理。实际热恢复下载仍须在正式包单独验证。
+
+聊天读取失败提示仅由同 scope、同范围且实际应用的 HTTP 成功清理；空的有效页面
+也算成功。WS／缓存／乐观更新、连接成功或其它 cursor 成功不能清除该读取失败，
+也不能一并清除发送、配额、定位等动作错误。成功回执只存内存，随消息桶授权清理。
+
 ## 版本与发布
 
 使用 `appVersion` SemVer、Android `versionCode`、`runtimeVersion` 和 `protocolMajor` 四个独立字段。

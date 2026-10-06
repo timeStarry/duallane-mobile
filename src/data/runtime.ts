@@ -175,27 +175,31 @@ export class Runtime {
   private messagePath(bucket:string){return bucket.startsWith('topic:')?`/api/workspace/topics/${encodeURIComponent(bucket.slice(6))}/messages`:`/api/workspace/conversations/${encodeURIComponent(bucket)}/messages`;}
   private belongsToBucket(message:Message,bucket:string){return bucket.startsWith('topic:')?message.topicId===bucket.slice(6)&&message.conversationId===useWorkspace.getState().topics[bucket.slice(6)]?.conversationId:message.conversationId===bucket&&!message.topicId;}
   private async loadMessages(bucket:string,before?:string){
-    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,authorizationRevision=this.authorizationRevision;
+    const topicId=bucket.startsWith('topic:')?bucket.slice(6):undefined;
+    const parent=topicId?useWorkspace.getState().topics[topicId]?.conversationId:bucket;
+    const current=()=>this.current(epoch)&&this.api===api&&useWorkspace.getState().accountKey===account&&this.authorizationRevision===authorizationRevision
+      &&(!topicId||useWorkspace.getState().topics[topicId]?.conversationId===parent);
     for(let attempt=0;attempt<3;attempt++){
-      if(!this.canReadBucket(bucket))return 0;
+      if(!current()||!this.canReadBucket(bucket))return 0;
       const previous=useWorkspace.getState().messages[bucket];
       const result=await api.json(`${this.messagePath(bucket)}?limit=50${before?`&before=${encodeURIComponent(before)}`:''}`,z.object({messages:z.array(z.unknown())}));
-      if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account||!this.canReadBucket(bucket))return 0;
+      if(!current()||!this.canReadBucket(bucket))return 0;
       // A page cannot overwrite a canonical event or command that arrived while it was loading.
       // Refetch instead of retaining arbitrary old rows: a fresh stable page still applies retention.
       if(useWorkspace.getState().messages[bucket]!==previous)continue;
       const messages=result.messages.map(parseMessage).filter((m):m is Message=>!!m&&this.belongsToBucket(m,bucket));
-      useWorkspace.getState().setMessages(bucket,messages,!!before);
+      useWorkspace.getState().acceptMessageRead(bucket,messages,api,before);
       cache.set(`${account}:messages:${bucket}`,useWorkspace.getState().messages[bucket]);
       return messages.length;
     }
     throw new Error('消息正在同步，请重试');
   }
   private async refreshMessageWindow(bucket:string){
-    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,authorizationRevision=this.authorizationRevision;
     const topicId=bucket.startsWith('topic:')?bucket.slice(6):undefined;
     const parent=topicId?useWorkspace.getState().topics[topicId]?.conversationId:bucket;
-    const current=()=>this.current(epoch)&&this.api===api&&useWorkspace.getState().accountKey===account
+    const current=()=>this.current(epoch)&&this.api===api&&useWorkspace.getState().accountKey===account&&this.authorizationRevision===authorizationRevision
       &&(!topicId||useWorkspace.getState().topics[topicId]?.conversationId===parent);
     const readable=()=>current()&&this.canReadBucket(bucket);
     const clearDenied=()=>{
@@ -209,6 +213,7 @@ export class Runtime {
         else useWorkspace.setState(s=>({
           messages:Object.fromEntries(Object.entries(s.messages).filter(([id])=>id!==bucket)),
           drafts:Object.fromEntries(Object.entries(s.drafts).filter(([id])=>id!==bucket)),
+          messageReads:Object.fromEntries(Object.entries(s.messageReads).filter(([id])=>id!==bucket)),
         }));
       }
       else if(state.bootstrap)state.applyBootstrap({...state.bootstrap,conversations:Object.values(state.conversations).filter(conversation=>conversation.id!==bucket)},account);
@@ -251,7 +256,7 @@ export class Runtime {
       if(!readable()){if(current()&&!this.canReadBucket(bucket))clearDenied();return 0;}
       // Replace once with freshly authorized rows. Absence inside this rebuilt
       // window applies deletion/retention; absence from only the latest page does not.
-      useWorkspace.getState().setMessages(bucket,oldest?fresh.filter(message=>compare(message,oldest)>=0):fresh);
+      useWorkspace.getState().acceptMessageRead(bucket,oldest?fresh.filter(message=>compare(message,oldest)>=0):fresh,api);
       cache.set(`${account}:messages:${bucket}`,useWorkspace.getState().messages[bucket]);
       return fresh.length;
     }

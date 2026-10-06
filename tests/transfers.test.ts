@@ -6,13 +6,16 @@ import { File } from 'expo-file-system';
 import { saveFileToDevice } from '../src/platform/save-file';
 import { Transfers, clearAccountFiles, uploadStatusSchema, type UploadTask } from '../src/data/transfers';
 import { useWorkspace } from '../src/domain/store';
-import { attachmentSchema } from '../src/domain/contracts';
+import { attachmentSchema, bootstrapSchema } from '../src/domain/contracts';
 import { cache } from '../src/platform/storage';
-import type { ApiClient } from '../src/data/client';
+import { ApiClient } from '../src/data/client';
+import { fetch } from 'expo/fetch';
 
 const mockDisk = new Map<string,Uint8Array>();
 const mockDirs = new Set<string>();
 const mockCache = new Map<string,unknown>();
+jest.mock('expo/fetch',()=>({fetch:jest.fn()}));
+jest.mock('../src/platform/config',()=>({installed:{appVersion:'0.2.2',versionCode:20}}));
 jest.mock('../src/platform/storage', () => ({ cache:{
   get:(key:string) => mockCache.get(key),
   set:(key:string, value:unknown) => mockCache.set(key, value),
@@ -181,7 +184,7 @@ test('download reserves quota, streams file chunks and opens Android save with t
     return true;
   });
   await new Transfers().download(api, key, attachment);
-  expect(raw).toHaveBeenCalledWith('/api/workspace/files/a1/download?downloadId=download1');
+  expect(raw).toHaveBeenCalledWith('/api/workspace/files/a1/download?downloadId=download1', { signal:expect.any(AbortSignal) });
   expect(arrayBuffer).not.toHaveBeenCalled();
   expect(reader.cancel).toHaveBeenCalled();
   expect(mockDisk.size).toBe(0);
@@ -259,4 +262,57 @@ test('account cleanup removes only managed upload files belonging to that accoun
   clearAccountFiles(key);
   expect(mockDisk.has(task.uri)).toBe(false);
   expect(mockDisk.has(other.uri)).toBe(true);
+});
+
+test.each(['inactivity','account','permission','reader-cleanup'] as const)('real ApiClient cancels a blocked native download on %s instead of only cancelling the JS reader',async cause=>{
+  jest.useFakeTimers();
+  const nativeCancel=jest.fn();let finish!:(value:{done:boolean;value?:Uint8Array})=>void;
+  const blocked=new Promise<{done:boolean;value?:Uint8Array}>(resolve=>{finish=resolve;});
+  let finishCancel!:()=>void;
+  const cleanup=new Promise<void>(resolve=>{finishCancel=resolve;});
+  const reader={read:jest.fn().mockResolvedValueOnce({done:false,value:new Uint8Array([1])}).mockReturnValue(blocked),cancel:jest.fn().mockImplementation(()=>cause==='reader-cleanup'?cleanup:Promise.resolve())};
+  jest.mocked(fetch).mockResolvedValueOnce({ok:true,status:200,json:async()=>({id:'synthetic-reservation'})} as Awaited<ReturnType<typeof fetch>>);
+  jest.mocked(fetch).mockImplementationOnce(async(_url,init)=>{
+    init?.signal?.addEventListener('abort',nativeCancel);
+    return {ok:true,status:200,body:{getReader:()=>reader}} as unknown as Awaited<ReturnType<typeof fetch>>;
+  });
+  const client=new ApiClient('https://workspace.test',jest.fn(),jest.fn());
+  const bootstrap=bootstrapSchema.parse({auth:{currentUser:{id:'u1',displayName:'Synthetic'}},space:{id:'s1',name:'Synthetic'},eventCursor:0,policy:{dailyQuotaBytes:10,remainingQuotaBytes:10,messageRetentionCount:50},permissions:{canReadConversations:true,canDownload:true},members:[],conversations:[],files:[attachment]});
+  useWorkspace.getState().applyBootstrap(bootstrap,key);
+  client.session={accessToken:'synthetic-access',refreshToken:'synthetic-refresh',accessTokenExpiresAt:'2099-01-01T00:00:00Z',refreshTokenExpiresAt:'2099-02-01T00:00:00Z'};
+  let settled=false;
+  const result=new Transfers().download(client,key,attachment).catch((error:unknown)=>{settled=true;return error;});
+  try{
+    await jest.advanceTimersByTimeAsync(0);expect(reader.read).toHaveBeenCalledTimes(2);
+    if(cause==='inactivity'||cause==='reader-cleanup')await jest.advanceTimersByTimeAsync(30001);
+    else if(cause==='account')clearAccountFiles(key);
+    else useWorkspace.getState().applyBootstrap({...bootstrap,permissions:{...bootstrap.permissions,canDownload:false}},key);
+    await jest.advanceTimersByTimeAsync(0);expect(settled).toBe(true);expect(nativeCancel).toHaveBeenCalledTimes(1);
+    expect(saveFileToDevice).not.toHaveBeenCalled();expect(Sharing.shareAsync).not.toHaveBeenCalled();
+  }finally{
+    finishCancel();finish({done:true});await result;jest.useRealTimers();
+  }
+  expect(mockDisk.size).toBe(0);
+});
+
+test.each(['late-bytes','stalled-body','new-session'] as const)('native invalidate cannot save %s while the old account projection still exists',async cause=>{
+  jest.useFakeTimers();let finish!:(value:{done:boolean;value?:Uint8Array})=>void;
+  const blocked=new Promise<{done:boolean;value?:Uint8Array}>(resolve=>{finish=resolve;});
+  const reader={read:jest.fn().mockReturnValueOnce(blocked).mockResolvedValue({done:true}),cancel:jest.fn().mockResolvedValue(undefined)};
+  const nativeCancel=jest.fn();
+  jest.mocked(fetch).mockResolvedValueOnce({ok:true,status:200,json:async()=>({id:'synthetic-reservation'})} as Awaited<ReturnType<typeof fetch>>);
+  jest.mocked(fetch).mockImplementationOnce(async(_url,init)=>{init?.signal?.addEventListener('abort',nativeCancel);return {ok:true,status:200,body:{getReader:()=>reader}} as unknown as Awaited<ReturnType<typeof fetch>>;});
+  const client=new ApiClient('https://workspace.test',jest.fn(),jest.fn());client.session={accessToken:'synthetic-access',refreshToken:'synthetic-refresh',accessTokenExpiresAt:'2099-01-01T00:00:00Z',refreshTokenExpiresAt:'2099-02-01T00:00:00Z'};
+  let settled=false;
+  const pending=new Transfers().download(client,key,attachment).then(()=>{settled=true;return null;},(error:unknown)=>{settled=true;return error;});
+  try {
+    await jest.advanceTimersByTimeAsync(0);expect(reader.read).toHaveBeenCalledTimes(1);client.invalidate();expect(nativeCancel).toHaveBeenCalledTimes(1);
+    if(cause==='new-session'){
+      client.session={accessToken:'synthetic-new-access',refreshToken:'synthetic-new-refresh',accessTokenExpiresAt:'2099-01-01T00:00:00Z',refreshTokenExpiresAt:'2099-02-01T00:00:00Z'};
+      await jest.advanceTimersByTimeAsync(0);expect(settled).toBe(true);
+    }
+    if(cause==='late-bytes')finish({done:false,value:new Uint8Array([1,2,3])});else await jest.advanceTimersByTimeAsync(30001);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(await pending).toEqual(new Error(cause==='new-session'?'Download cancelled':'Account changed'));expect(saveFileToDevice).not.toHaveBeenCalled();expect(mockDisk.size).toBe(0);
+  } finally { finish({done:true});await pending;jest.useRealTimers(); }
 });

@@ -174,6 +174,46 @@ export function ChatScreen({
   echoRoute.current = { key, accountKey, focused };
   const [loading, setLoading] = useState(() => useWorkspace.getState().messages[key] === undefined);
   const [error, setError] = useState('');
+  const targetId = target.id;
+  const targetKind = target.kind;
+  const targetConversationId = target.kind === 'topic' ? target.conversationId : target.id;
+  const api = runtime.api;
+  const readScope = useMemo(() => ({
+    accountKey, key, api, runtime, active: false, authorization: 0, olderInvocation: 0,
+    readable: (state: ReturnType<typeof useWorkspace.getState>) => !!state.bootstrap?.permissions.canReadConversations
+      && !!state.conversations[targetConversationId]
+      && (targetKind !== 'topic' || (!!state.topics[targetId]?.joined && state.topics[targetId]?.conversationId === targetConversationId)),
+  }), [accountKey, api, key, runtime, targetConversationId, targetId, targetKind]);
+  const currentReadScope = useRef(readScope);
+  currentReadScope.current = readScope;
+  type ReadFailure = { scope: typeof readScope; authorization: number; revision: number; before?: string; text: string };
+  const [readErrors, setReadErrors] = useState<{ initial?: ReadFailure; older?: ReadFailure }>({});
+  const readError = [readErrors.initial, readErrors.older].find(failure => failure?.scope === readScope
+    && failure.authorization === readScope.authorization && runtime.api === readScope.api)?.text;
+  useEffect(() => {
+    readScope.active = true;
+    setReadErrors({});
+    // Consume each accepted receipt, even when several pages settle in one render.
+    // Cache/WS/optimistic writes never publish this process-local HTTP proof.
+    const unsubscribe = useWorkspace.subscribe((state, previous) => {
+      if (state.accountKey !== accountKey || (readScope.readable(previous) && !readScope.readable(state))) {
+        readScope.authorization++;
+        setReadErrors({});
+        return;
+      }
+      const receipt = state.messageReads[key];
+      if (!receipt || receipt === previous.messageReads[key] || receipt.source !== readScope.api
+        || runtime.api !== readScope.api || currentReadScope.current !== readScope || !readScope.readable(state)) return;
+      setReadErrors(errors => {
+        const recovered = (failure?: ReadFailure) => failure?.scope === readScope
+          && failure.authorization === readScope.authorization && receipt.revision > failure.revision && receipt.before === failure.before;
+        const initial = recovered(errors.initial) ? undefined : errors.initial;
+        const older = recovered(errors.older) ? undefined : errors.older;
+        return initial === errors.initial && older === errors.older ? errors : { initial, older };
+      });
+    });
+    return () => { readScope.active = false; unsubscribe(); };
+  }, [accountKey, key, readScope, runtime]);
   const [pagination, setPagination] = useState(() => {
     const hasOlder = hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0);
     return { hasOlder, mode: transcriptMode(hasOlder) };
@@ -202,7 +242,7 @@ export function ChatScreen({
   const latestFrameBudget = useRef<{ observation: typeof observation; activity: typeof activity; revision: number; remaining: number } | undefined>(undefined);
   const [readConfirmation, setReadConfirmation] = useState<{ observation: typeof observation; revision: number }>();
   const [progress, setProgress] = useState('');
-  const feedback = error || progress || projections.feedback.text;
+  const feedback = error || readError || progress || projections.feedback.text;
   const [feedbackLayout, setFeedbackLayout] = useState<{ text: string; width: number; fontScale: number; height: number }>();
   const [emotes, setEmotes] = useState<Emote[]>([]);
   const [library, setLibrary] = useState<EmoteLibrary | null>(null);
@@ -225,22 +265,30 @@ export function ChatScreen({
   const focusInvocation = useRef(0);
   const [focusRequest, setFocusRequest] = useState<{ key: string; accountKey: string; messageId: string; invocation: number }>();
   const [resolvedFocus, setResolvedFocus] = useState<typeof focusRequest>();
-  const targetId = target.id;
-  const targetKind = target.kind;
-  const targetConversationId = target.kind === 'topic' ? target.conversationId : target.id;
   useEffect(() => {
     let active = true;
+    const scope = currentReadScope.current;
+    const authorization = scope.authorization;
+    const readable = scope.readable(useWorkspace.getState());
+    const current = () => active && scope.active && currentReadScope.current === scope && runtime.api === scope.api
+      && useWorkspace.getState().accountKey === accountKey && scope.authorization === authorization
+      && (!readable || scope.readable(useWorkspace.getState()));
     setLoading(useWorkspace.getState().messages[key] === undefined);
     const cachedHasOlder = hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0);
     setPagination({ hasOlder: cachedHasOlder, mode: transcriptMode(cachedHasOlder) });
     void (async () => {
       try {
         const count = targetKind === 'topic' ? await runtime.openTopic(targetId) : await runtime.open(targetId);
-        if (active) {
+        if (current()) {
           const hasOlder = hasOlderMessages(count ?? 0);
           setPagination(previous => ({ hasOlder, mode: historyReady.current ? previous.mode : transcriptMode(hasOlder) }));
         }
-      } catch (e) { if (active) setError(errorText(e)); }
+      } catch (e) {
+        if (current()) {
+          const failure = { scope, authorization, revision: useWorkspace.getState().messageReads[key]?.revision ?? 0, text: errorText(e) };
+          setReadErrors(errors => ({ ...errors, initial: failure }));
+        }
+      }
       finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
@@ -464,7 +512,12 @@ export function ChatScreen({
     return () => { cancelled = true; if (frame !== undefined) cancelAnimationFrame(frame); };
   }, [activity, lastId, latestLayout, measureLatest, observation, pinIfNeeded, readConfirmation, runtime, targetConversationId, targetId, targetKind]);
   const loadOlder = () => {
-    const current = () => currentObservation.current.geometry === geometry && useWorkspace.getState().accountKey === accountKey;
+    const authorization = readScope.authorization;
+    const invocation = ++readScope.olderInvocation;
+    const current = () => readScope.active && currentObservation.current.geometry === geometry && useWorkspace.getState().accountKey === accountKey
+      && currentReadScope.current === readScope && runtime.api === readScope.api && readScope.authorization === authorization
+      && readScope.olderInvocation === invocation
+      && readScope.readable(useWorkspace.getState());
     if (!hasOlder || !current()) return;
     const first = useWorkspace.getState().messages[key]?.[0]?.id;
     void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first))
@@ -472,7 +525,12 @@ export function ChatScreen({
         // Finishing pagination must not reverse/remount the reader's existing window.
         if (current()) setPagination(previous => ({ ...previous, hasOlder: hasOlderMessages(count) }));
       })
-      .catch(error => { if (current()) setError(errorText(error)); });
+      .catch(error => {
+        if (current()) {
+          const failure = { scope: readScope, authorization, revision: useWorkspace.getState().messageReads[key]?.revision ?? 0, before: first, text: errorText(error) };
+          setReadErrors(errors => ({ ...errors, older: failure }));
+        }
+      });
   };
   const canRead = !!conversation && (target.kind !== 'topic' || !!topic?.joined);
   const online = ['connected', 'http_sync'].includes(connectionCategory(connection) ?? '');
@@ -652,7 +710,7 @@ export function ChatScreen({
         setFeedbackLayout(previous => previous?.text === feedback && previous.width === dimensions.width && previous.fontScale === fontScale && previous.height === height
           ? previous : { text: feedback, width: dimensions.width, fontScale, height });
       }}>
-        <InlineFeedback text={feedback} tone={error ? 'danger' : progress ? 'info' : projections.feedback.tone} />
+        <InlineFeedback text={feedback} tone={error || readError ? 'danger' : progress ? 'info' : projections.feedback.tone} />
       </View>
       {loading && <Loading />}
       {target.kind === 'topic' && topic && !topic.joined ? (

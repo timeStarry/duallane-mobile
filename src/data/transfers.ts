@@ -31,7 +31,15 @@ const completedSchema = z.object({ attachment:attachmentSchema });
 const accountEpochs = new Map<string,number>();
 const transientFiles = new Map<string,Set<File>>();
 const downloadReaders = new Map<string,Set<ReadableStreamDefaultReader<Uint8Array>>>();
+const downloadControllers = new Map<string,Set<AbortController>>();
+const downloadChecks = new Map<AbortController, () => void>();
 const activeTasks = new Set<string>();
+
+useWorkspace.subscribe(() => {
+  for (const [controller, validate] of downloadChecks) {
+    try { validate(); } catch { controller.abort(); }
+  }
+});
 
 function tasksFor(key:string):UploadTask[] {
   return z.array(taskSchema).catch([]).parse(cache.get(`${key}:uploads`) ?? []);
@@ -42,17 +50,23 @@ function managedFile(task:UploadTask):File {
   return file;
 }
 function removeFile(file:File) { if (file.exists) file.delete(); }
-async function readDownloadChunk(reader:ReadableStreamDefaultReader<Uint8Array>) {
+async function readDownloadChunk(reader:ReadableStreamDefaultReader<Uint8Array>, controller:AbortController) {
+  if (controller.signal.aborted) throw new Error('Download cancelled');
   let timer:ReturnType<typeof setTimeout>|undefined;
+  let onAbort!:() => void;
   const inactivity = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('Download timed out')), 30000);
+    onAbort = () => reject(new Error('Download cancelled'));
+    controller.signal.addEventListener('abort', onAbort, { once:true });
+    timer = setTimeout(() => { reject(new Error('Download timed out')); controller.abort(); }, 30000);
   });
   try { return await Promise.race([reader.read(), inactivity]); }
-  finally { clearTimeout(timer); }
+  finally { clearTimeout(timer); controller.signal.removeEventListener('abort', onAbort); }
 }
 
 export function clearAccountFiles(key:string):void {
   accountEpochs.set(key, (accountEpochs.get(key) ?? 0) + 1);
+  for (const controller of downloadControllers.get(key) ?? []) controller.abort();
+  downloadControllers.delete(key);
   for (const task of tasksFor(key)) {
     // An open native handle is closed and cleaned by run's finally block.
     if (!activeTasks.has(task.id)) removeFile(new File(Paths.document, 'uploads', task.id));
@@ -199,46 +213,70 @@ export class Transfers {
     assertAccount();
     const res = await api.json(`/api/workspace/files/${encodeURIComponent(attachment.id)}/downloads/reserve`, z.object({ id:z.string().min(1) }), {});
     assertAccount();
-    const response = await api.raw(`/api/workspace/files/${encodeURIComponent(attachment.id)}/download?downloadId=${encodeURIComponent(res.id)}`);
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('Streaming unavailable');
-    const readers = downloadReaders.get(key) ?? new Set<ReadableStreamDefaultReader<Uint8Array>>();
-    readers.add(reader);
-    downloadReaders.set(key, readers);
-    const directory = new Directory(Paths.cache, Crypto.randomUUID());
-    const name = attachment.fileName.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-100);
-    const file = new File(directory, name && name !== '.' && name !== '..' ? name : 'download');
-    const files = transientFiles.get(key) ?? new Set<File>();
-    files.add(file);
-    transientFiles.set(key, files);
+    const controller = new AbortController();
+    const hadBootstrap = !!useWorkspace.getState().bootstrap;
+    const hadSession = !!api.session;
+    const assertDownload = () => {
+      assertAccount();
+      if (hadSession && !api.session) throw new Error('Account changed');
+      const state = useWorkspace.getState();
+      if (hadBootstrap && !state.bootstrap?.permissions.canDownload) throw new Error('permission.denied');
+      const canonical = state.files.find(file => file.id === attachment.id);
+      if (canonical && (canonical.status !== 'available' || !canonical.capabilities.canDownload)) throw new Error('permission.denied');
+    };
+    assertDownload();
+    const release = api.bindAbortScope?.(controller);
+    downloadChecks.set(controller, assertDownload);
+    const controllers = downloadControllers.get(key) ?? new Set<AbortController>();
+    controllers.add(controller); downloadControllers.set(key, controllers);
     try {
-      assertAccount();
-      directory.create();
-      file.create();
-      const handle = file.open();
-      let size = 0;
+      const response = await api.raw(`/api/workspace/files/${encodeURIComponent(attachment.id)}/download?downloadId=${encodeURIComponent(res.id)}`, { signal:controller.signal });
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Streaming unavailable');
+      const readers = downloadReaders.get(key) ?? new Set<ReadableStreamDefaultReader<Uint8Array>>();
+      readers.add(reader);
+      downloadReaders.set(key, readers);
+      const directory = new Directory(Paths.cache, Crypto.randomUUID());
+      const name = attachment.fileName.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-100);
+      const file = new File(directory, name && name !== '.' && name !== '..' ? name : 'download');
+      const files = transientFiles.get(key) ?? new Set<File>();
+      files.add(file);
+      transientFiles.set(key, files);
       try {
-        while (true) {
-          const chunk = await readDownloadChunk(reader);
-          assertAccount();
-          if (chunk.done) break;
-          size += chunk.value.byteLength;
-          if (size > attachment.byteSize) throw new Error('Invalid download size');
-          handle.writeBytes(chunk.value);
-        }
-      } finally { handle.close(); }
-      if (size !== attachment.byteSize) throw new Error('Incomplete download');
-      assertAccount();
-      if (action === 'share') await Sharing.shareAsync(file.uri, { mimeType:attachment.mimeType, dialogTitle:'分享文件' });
-      else await saveFileToDevice(file.uri, attachment.fileName, attachment.mimeType);
-    } finally {
-      await reader.cancel().catch(() => undefined);
-      readers.delete(reader);
-      if (!readers.size) downloadReaders.delete(key);
-      files.delete(file);
-      if (!files.size) transientFiles.delete(key);
-      removeFile(file);
-      if (directory.exists) directory.delete();
+        assertDownload();
+        directory.create();
+        file.create();
+        const handle = file.open();
+        let size = 0;
+        try {
+          while (true) {
+            const chunk = await readDownloadChunk(reader, controller);
+            assertDownload();
+            if (controller.signal.aborted) throw new Error('Download cancelled');
+            if (chunk.done) break;
+            size += chunk.value.byteLength;
+            if (size > attachment.byteSize) throw new Error('Invalid download size');
+            handle.writeBytes(chunk.value);
+          }
+        } finally { handle.close(); }
+        if (size !== attachment.byteSize) throw new Error('Incomplete download');
+        assertDownload();
+        if (action === 'share') await Sharing.shareAsync(file.uri, { mimeType:attachment.mimeType, dialogTitle:'分享文件' });
+        else await saveFileToDevice(file.uri, attachment.fileName, attachment.mimeType);
+      } finally {
+        controller.abort();
+        void reader.cancel().catch(() => undefined);
+        readers.delete(reader);
+        if (!readers.size && downloadReaders.get(key) === readers) downloadReaders.delete(key);
+        files.delete(file);
+        if (!files.size && transientFiles.get(key) === files) transientFiles.delete(key);
+        removeFile(file);
+        if (directory.exists) directory.delete();
+      }
+    } catch (error) { assertDownload(); throw error; }
+    finally {
+      controller.abort(); release?.(); controllers.delete(controller); downloadChecks.delete(controller);
+      if (!controllers.size && downloadControllers.get(key) === controllers) downloadControllers.delete(key);
     }
   }
 }

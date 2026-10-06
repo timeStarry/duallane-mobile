@@ -49,7 +49,7 @@ test('every cached image preview reauthorizes the resource without returning a t
   const first = await attachmentPreviewUri(file, context);
   const authorization = mediaResponse(); raw.mockResolvedValueOnce(authorization);
   expect(await attachmentPreviewUri(file, context)).toBe(first);
-  expect(raw).toHaveBeenCalledTimes(2); expect(raw).toHaveBeenLastCalledWith('/api/workspace/files/a1/preview', {}, true);
+  expect(raw).toHaveBeenCalledTimes(2); expect(raw).toHaveBeenLastCalledWith('/api/workspace/files/a1/preview', { signal:expect.any(AbortSignal) }, true);
   expect(authorization.arrayBuffer).not.toHaveBeenCalled(); expect(authorization.body?.cancel).toHaveBeenCalled();
   expect(first).toMatch(/^file:\/\/\//); expect(first).not.toContain('?');
 });

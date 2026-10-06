@@ -152,6 +152,11 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
   const avatarWorking = useRef(false);
   const selectedAvatar = useRef<{ file: AvatarSelection; current: () => boolean; ready: boolean } | null>(null);
   const restoreScope = useRef<(() => boolean) | null>(null);
+  const avatarTrigger = useRef<View>(null);
+  const restoreAvatarTrigger = useRef<View>(null);
+  const avatarFocusGeneration = useRef(0);
+  const previewReturnFocus = useRef<(() => boolean) | undefined>(undefined);
+  const restoreReturnFocus = useRef<(() => boolean) | undefined>(undefined);
   const clearSelection = useCallback(() => {
     selectedAvatar.current?.file.dispose();
     selectedAvatar.current = null;
@@ -160,6 +165,7 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
   }, []);
   const invalidateAvatar = useCallback(() => {
     avatarGeneration.current += 1;
+    avatarFocusGeneration.current += 1;
     setAvatarBusy(false); setAvatarFeedback(''); setRestoreAvatar(false);
     avatarWorking.current = false;
     restoreScope.current = null;
@@ -183,6 +189,8 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
     if (avatarWorking.current) return;
     const current = avatarCurrent();
     if (!current()) return;
+    const focusGeneration = ++avatarFocusGeneration.current;
+    previewReturnFocus.current = () => focusGeneration === avatarFocusGeneration.current && current();
     avatarWorking.current = true; setAvatarBusy(true); setAvatarFeedback(''); clearSelection();
     try {
       const file = await chooseAvatar(accountKey, current);
@@ -300,13 +308,22 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
       <Label>头像</Label>
       <Label muted>选择 JPEG、PNG 或 WebP 图片，非空且不超过 5 MiB。确认后会校正图片方向并按中心裁剪成方形；头像与显示名独立保存。</Label>
       <View style={styles.actions}>
-        <Button title={avatarBusy ? '头像处理中…' : '更换头像'} disabled={avatarBusy || !user} onPress={() => void selectAvatar()} />
-        <Button title="恢复 GitHub 头像" secondary disabled={avatarBusy || !user} onPress={() => { const current = avatarCurrent(); if (current()) { restoreScope.current = current; setRestoreAvatar(true); } }} />
+        <Button ref={avatarTrigger} title={avatarBusy ? '头像处理中…' : '更换头像'} disabled={avatarBusy || !user} onPress={() => void selectAvatar()} />
+        <Button ref={restoreAvatarTrigger} title="恢复 GitHub 头像" secondary disabled={avatarBusy || !user} onPress={() => {
+          const current = avatarCurrent();
+          if (current()) {
+            const focusGeneration = ++avatarFocusGeneration.current;
+            restoreReturnFocus.current = () => focusGeneration === avatarFocusGeneration.current && current();
+            restoreScope.current = current; setRestoreAvatar(true);
+          }
+        }} />
       </View>
       <InlineFeedback text={avatarFeedback} tone={avatarTone} />
       <Dialog
         visible={!!avatarPreview}
         title="确认更换头像？"
+        returnFocusRef={avatarTrigger}
+        canReturnFocus={previewReturnFocus.current}
         onRequestClose={closePreview}
         actions={[
           { title: '取消上传', variant: 'secondary', onPress: closePreview },
@@ -336,6 +353,8 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
       <Dialog
         visible={restoreAvatar}
         title="恢复 GitHub 头像？"
+        returnFocusRef={restoreAvatarTrigger}
+        canReturnFocus={restoreReturnFocus.current}
         onRequestClose={() => { setRestoreAvatar(false); restoreScope.current = null; }}
         actions={[
           { title: '确认恢复', variant: 'danger', onPress: () => void restoreGithubAvatar() },

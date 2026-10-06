@@ -2,11 +2,15 @@ import { create } from 'zustand';
 import type { Attachment, Bootstrap, ChatSettings, Conversation, Draft, Message, Topic } from './contracts';
 import type { ReleasePolicy } from './updates';
 
+// Process-local proof of an accepted HTTP read, never restored from cache.
+type MessageRead = { revision: number; source: object; before?: string };
+
 type State = {
   bootstrap: Bootstrap | null;
   conversations: Record<string, Conversation>;
   topics: Record<string, Topic>;
   messages: Record<string, Message[]>;
+  messageReads: Record<string, MessageRead>;
   files: Attachment[];
   drafts: Record<string, Draft>;
   chatSettings: ChatSettings | null;
@@ -23,6 +27,7 @@ type State = {
   setTopics: (topics: Topic[]) => void;
   upsertTopic: (topic: Topic) => void;
   setMessages: (id: string, messages: Message[], older?: boolean) => void;
+  acceptMessageRead: (id: string, messages: Message[], source: object, before?: string) => void;
   upsertMessage: (message: Message, bucket?: string) => void;
   patchMessage: (bucket: string, id: string, patch: Partial<Message>) => void;
   pruneTopics: (allowedIds: Set<string>) => void;
@@ -35,7 +40,7 @@ type State = {
 
 const emptyDraft = (): Draft => ({ text: '', mentionIds: [] });
 const initial = {
-  bootstrap: null, conversations: {}, topics: {}, messages: {}, files: [], drafts: {}, chatSettings: null,
+  bootstrap: null, conversations: {}, topics: {}, messages: {}, messageReads: {}, files: [], drafts: {}, chatSettings: null,
   cursor: 0, cardRevisions: {} as Record<string, number>, cardSyncVersion: 0,
   connection: '正在连接', policy: null, ready: false, busy: false, error: '', accountKey: '',
 };
@@ -75,7 +80,9 @@ export const useWorkspace = create<State>(set => ({
     })) : {};
     const topics = sameAccount ? Object.fromEntries(Object.entries(s.topics).filter(([, topic]) => topic.conversationId in conversations)) : {};
     return {
-      bootstrap: b, accountKey, conversations, messages, drafts, topics, files: b.permissions.canDownload ? b.files : [], ready: true, error: '', cursor: b.eventCursor,
+      bootstrap: b, accountKey, conversations, messages, drafts, topics,
+      messageReads: sameAccount ? Object.fromEntries(Object.entries(s.messageReads).filter(([id]) => id in messages)) : {},
+      files: b.permissions.canDownload ? b.files : [], ready: true, error: '', cursor: b.eventCursor,
       cardRevisions: sameAccount ? s.cardRevisions : {},
       // A fresh snapshot recovers projection events that were missed while disconnected.
       cardSyncVersion: s.cardSyncVersion + (!sameAccount || s.bootstrap?.eventCursor !== b.eventCursor ? 1 : 0),
@@ -84,17 +91,22 @@ export const useWorkspace = create<State>(set => ({
   setTopics: incoming => set(s => {
     const topics = Object.fromEntries(incoming.map(topic => [topic.id, topic]));
     const readable = (id: string) => !id.startsWith('topic:') || (!!topics[id.slice(6)]?.joined && !!s.conversations[topics[id.slice(6)]!.conversationId]);
-    return { topics, messages: Object.fromEntries(Object.entries(s.messages).filter(([id]) => readable(id))), drafts: Object.fromEntries(Object.entries(s.drafts).filter(([id]) => readable(id))) };
+    return { topics, messages: Object.fromEntries(Object.entries(s.messages).filter(([id]) => readable(id))), drafts: Object.fromEntries(Object.entries(s.drafts).filter(([id]) => readable(id))), messageReads: Object.fromEntries(Object.entries(s.messageReads).filter(([id]) => readable(id))) };
   }),
   upsertTopic: topic => set(s => {
     const topics = { ...s.topics, [topic.id]: topic };
     if (topic.joined && s.conversations[topic.conversationId]) return { topics };
-    const messages = { ...s.messages }, drafts = { ...s.drafts };
+    const messages = { ...s.messages }, drafts = { ...s.drafts }, messageReads = { ...s.messageReads };
     delete messages[`topic:${topic.id}`];
     delete drafts[`topic:${topic.id}`];
-    return { topics, messages, drafts };
+    delete messageReads[`topic:${topic.id}`];
+    return { topics, messages, drafts, messageReads };
   }),
   setMessages: (id, incoming, older) => set(s => ({ messages: { ...s.messages, [id]: older ? mergeMessages(s.messages[id] ?? [], incoming) : mergeMessages(incoming, (s.messages[id] ?? []).filter(m => m.status)) } })),
+  acceptMessageRead: (id, incoming, source, before) => set(s => ({
+    messages: { ...s.messages, [id]: before ? mergeMessages(s.messages[id] ?? [], incoming) : mergeMessages(incoming, (s.messages[id] ?? []).filter(m => m.status)) },
+    messageReads: { ...s.messageReads, [id]: { revision: (s.messageReads[id]?.revision ?? 0) + 1, source, before } },
+  })),
   upsertMessage: (m, bucket) => set(s => {
     const key = bucket ?? messageBucket(m);
     return { messages: { ...s.messages, [key]: mergeMessages(s.messages[key] ?? [], [m]) } };
@@ -109,7 +121,8 @@ export const useWorkspace = create<State>(set => ({
     const topics = Object.fromEntries(Object.entries(s.topics).filter(([id]) => allowedIds.has(id)));
     const messages = Object.fromEntries(Object.entries(s.messages).filter(([id]) => !id.startsWith('topic:') || allowedIds.has(id.slice(6))));
     const drafts = Object.fromEntries(Object.entries(s.drafts).filter(([id]) => !id.startsWith('topic:') || allowedIds.has(id.slice(6))));
-    return { topics, messages, drafts };
+    const messageReads = Object.fromEntries(Object.entries(s.messageReads).filter(([id]) => !id.startsWith('topic:') || allowedIds.has(id.slice(6))));
+    return { topics, messages, drafts, messageReads };
   }),
   setDraft: (id, draft) => set(s => {
     const current = s.drafts[id] ?? emptyDraft();

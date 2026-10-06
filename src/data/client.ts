@@ -14,6 +14,7 @@ const messages: Record<string, string> = {
   'message.idempotency_conflict': '消息内容已变化，请重新发送',
   'mobile.not_configured': '服务器尚未开放 Android 登录',
   'request.timeout': '连接超时，请重试',
+  'request.cancelled': '操作已取消',
   'request.network': '无法连接到服务器，请检查网络后重试',
   'response.invalid': '服务器返回了无法识别的数据',
 };
@@ -106,16 +107,26 @@ export class ApiClient {
   private refreshTask: Promise<void> | null = null;
   private generation = 0;
   private controllers = new Set<AbortController>();
+  private responseScopes = new WeakMap<Response, { abort: () => void; signal: AbortSignal }>();
   constructor(public origin: string, private persist: (session: Session) => Promise<void>, private expired: () => void, private allowed: () => boolean = () => true) {}
   invalidate() { this.generation++; this.session = null; for (const controller of this.controllers) controller.abort(); this.controllers.clear(); }
-  async openMedia(url: string): Promise<Response> {
+  bindAbortScope(controller: AbortController): () => void {
+    const release = () => { this.controllers.delete(controller); controller.signal.removeEventListener('abort', release); };
+    if (!controller.signal.aborted) {
+      this.controllers.add(controller);
+      controller.signal.addEventListener('abort', release, { once: true });
+    }
+    return release;
+  }
+  async openMedia(url: string, signal?: AbortSignal): Promise<Response> {
+    const generation = this.generation;
     let parsed: URL;
     try { parsed = new URL(url.startsWith('/') ? `${this.origin}${url}` : url); } catch { throw new ApiError('response.invalid', 0, 'body.non_json'); }
     if (parsed.protocol !== 'https:') throw new ApiError('permission.denied', 403);
     const origin = new URL(this.origin);
     if (parsed.origin === origin.origin) {
       const path = `${parsed.pathname}${parsed.search}`;
-      if (path.startsWith('/api/')) return this.raw(path, {}, true);
+      if (path.startsWith('/api/')) return this.raw(path, { signal }, true);
       if (!isAllowedSameOriginMediaPath(path)) throw new ApiError('permission.denied', 403);
       const headers = new Headers();
       headers.set('X-DualLane-Client', 'android');
@@ -124,14 +135,17 @@ export class ApiClient {
       if (this.session) headers.set('Authorization', `Bearer ${this.session.accessToken}`);
       const started = Date.now();
       try {
-        const response = await fetch(`${this.origin}${path}`, { headers, credentials: 'omit', redirect: 'error' });
+        const response = await this.fetchResponse(`${this.origin}${path}`, { headers, signal }, 'media');
         if (!response.ok) {
+          this.releaseResponse(response);
           const wrapped = new ApiError('request.failed', response.status, `http.${response.status}`);
           logApiError('media', wrapped, Date.now() - started);
           throw wrapped;
         }
+        if (!signal) this.responseScopes.delete(response);
         return response;
       } catch (error) {
+        if (generation !== this.generation) throw new Error('Stale session');
         if (error instanceof ApiError) throw error;
         const wrapped = new ApiError(classifyTransport(error) === 'net.timeout' ? 'request.timeout' : 'request.network', 0, classifyTransport(error));
         logApiError('media', wrapped, Date.now() - started);
@@ -144,48 +158,107 @@ export class ApiClient {
     headers.set('X-DualLane-Protocol-Version', '1');
     const started = Date.now();
     try {
-      const response = await fetch(parsed.toString(), { headers, credentials: 'omit', redirect: 'error' });
+      const response = await this.fetchResponse(parsed.toString(), { headers, signal }, 'media');
       if (!response.ok) {
+        this.releaseResponse(response);
         const wrapped = new ApiError('request.failed', response.status, `http.${response.status}`);
         logApiError('media', wrapped, Date.now() - started);
         throw wrapped;
       }
+      if (!signal) this.responseScopes.delete(response);
       return response;
     } catch (error) {
+      if (generation !== this.generation) throw new Error('Stale session');
       if (error instanceof ApiError) throw error;
       const wrapped = new ApiError(classifyTransport(error) === 'net.timeout' ? 'request.timeout' : 'request.network', 0, classifyTransport(error));
       logApiError('media', wrapped, Date.now() - started);
       throw wrapped;
     }
   }
+  private releaseResponse(response: Response) {
+    this.responseScopes.get(response)?.abort();
+    this.responseScopes.delete(response);
+  }
+  private async readResponseBody<T>(response: Response, read: () => Promise<T>): Promise<T> {
+    const scope = this.responseScopes.get(response);
+    let reject!: (error: ApiError) => void;
+    const interrupted = new Promise<never>((_resolve, rejectPromise) => { reject = rejectPromise; });
+    const cancel = () => reject(new ApiError('request.cancelled', 0, 'net.cancelled'));
+    scope?.signal.addEventListener('abort', cancel, { once: true });
+    const timeout = setTimeout(() => {
+      reject(new ApiError('request.timeout', 0, 'net.timeout'));
+      this.releaseResponse(response);
+    }, 30000);
+    try {
+      if (scope?.signal.aborted) throw new ApiError('request.cancelled', 0, 'net.cancelled');
+      return await Promise.race([read(), interrupted]);
+    } finally {
+      clearTimeout(timeout); scope?.signal.removeEventListener('abort', cancel); this.releaseResponse(response);
+    }
+  }
+  private async fetchResponse(url: string, init: RequestInit, path: string): Promise<Response> {
+    const generation = this.generation;
+    if (init.signal?.aborted) throw new ApiError('request.cancelled', 0, 'net.cancelled');
+    const controller = new AbortController();
+    let deadlineFired = false, response: Response | undefined;
+    const forwardAbort = () => controller.abort();
+    const cleanup = () => {
+      init.signal?.removeEventListener('abort', forwardAbort);
+      controller.signal.removeEventListener('abort', cleanup);
+      this.controllers.delete(controller);
+      if (response) this.responseScopes.delete(response);
+    };
+    this.controllers.add(controller);
+    controller.signal.addEventListener('abort', cleanup, { once: true });
+    init.signal?.addEventListener('abort', forwardAbort, { once: true });
+    const timeout = setTimeout(() => { deadlineFired = true; controller.abort(); }, 30000);
+    const started = Date.now();
+    try {
+      response = await fetch(url, { ...init, body: init.body ?? undefined, signal: controller.signal, credentials: 'omit', redirect: 'error' });
+      if (generation !== this.generation) throw new Error('Stale session');
+      if (deadlineFired) throw new ApiError('request.timeout', 0, 'net.timeout');
+      if (init.signal?.aborted) throw new ApiError('request.cancelled', 0, 'net.cancelled');
+      // An explicit caller scope owns the response body until its finally aborts.
+      // Only successful unscoped callers retain the headers-only lifetime;
+      // an error body still needs invalidation and a bounded read.
+      if (!init.signal && response.ok) cleanup();
+      this.responseScopes.set(response, { abort: forwardAbort, signal: controller.signal });
+      return response;
+    } catch (error) {
+      controller.abort();
+      if (generation !== this.generation) throw new Error('Stale session');
+      const diagnostic = deadlineFired ? 'net.timeout' : init.signal?.aborted ? 'net.cancelled' : classifyTransport(error);
+      const code = diagnostic === 'net.timeout' ? 'request.timeout' : diagnostic === 'net.cancelled' ? 'request.cancelled' : 'request.network';
+      const wrapped = new ApiError(code, 0, diagnostic);
+      logApiError(path, wrapped, Date.now() - started);
+      throw wrapped;
+    } finally { clearTimeout(timeout); }
+  }
   async raw(path: string, init: RequestInit = {}, authenticated = true, retry = true): Promise<Response> {
     if (!path.startsWith('/api/') && !path.startsWith('/ws/')) throw new Error('Invalid API path');
     const generation = this.generation;
+    if (init.signal?.aborted) throw new ApiError('request.cancelled', 0, 'net.cancelled');
     if (authenticated && (!this.allowed() || !this.session)) throw new ApiError('auth.required', 401);
     if (authenticated && this.session && Date.parse(this.session.accessTokenExpiresAt) < Date.now() + 15000) await this.refresh();
     if (generation !== this.generation) throw new Error('Stale session');
     if (authenticated && !this.allowed()) throw new Error('Session unavailable');
-    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 30000);
-    this.controllers.add(controller);
+    if (init.signal?.aborted) throw new ApiError('request.cancelled', 0, 'net.cancelled');
     const headers = new Headers(init.headers); headers.set('X-DualLane-Client', 'android'); headers.set('X-DualLane-Client-Version', installed.appVersion); headers.set('X-DualLane-Protocol-Version', '1');
     if (authenticated && this.session) headers.set('Authorization', `Bearer ${this.session.accessToken}`);
     const started = Date.now();
-    let response: Response;
-    try {
-      try {
-        response = await fetch(`${this.origin}${path}`, { ...init, body: init.body ?? undefined, headers, signal: controller.signal, credentials: 'omit', redirect: 'error' });
-      } catch (error) {
-        if (generation !== this.generation) throw new Error('Stale session');
-        const diagnostic = controller.signal.aborted ? 'net.timeout' : classifyTransport(error);
-        const wrapped = new ApiError(diagnostic === 'net.timeout' ? 'request.timeout' : 'request.network', 0, diagnostic);
-        logApiError(path, wrapped, Date.now() - started);
-        throw wrapped;
-      }
-    } finally { clearTimeout(timeout); this.controllers.delete(controller); }
+    const response = await this.fetchResponse(`${this.origin}${path}`, { ...init, headers }, path);
     if (generation !== this.generation) throw new Error('Stale session');
-    if (response.status === 401 && authenticated && retry && this.session) { await this.refresh(); return this.raw(path, init, authenticated, false); }
+    if (response.status === 401 && authenticated && retry && this.session) { this.releaseResponse(response); await this.refresh(); return this.raw(path, init, authenticated, false); }
     if (!response.ok) {
-      const error = await response.json().catch(() => null);
+      let error: unknown;
+      try { error = await this.readResponseBody(response, () => response.json()); }
+      catch (failure) {
+        if (generation !== this.generation) throw new Error('Stale session');
+        if (failure instanceof ApiError) { logApiError(path, failure, Date.now() - started); throw failure; }
+        error = null;
+      }
+      if (generation !== this.generation) throw new Error('Stale session');
+      if (init.signal?.aborted) throw new ApiError('request.cancelled', 0, 'net.cancelled');
       const parsed = z.object({ error: z.object({ code: z.string(), details: z.unknown().optional() }) }).safeParse(error);
       const details = z.object({ activeWorkflowId: z.string().regex(/^[A-Za-z0-9_-]{1,256}$/) }).safeParse(parsed.success ? parsed.data.error.details : undefined);
       if (response.status === 401 && authenticated) { this.invalidate(); this.expired(); }
@@ -194,34 +267,39 @@ export class ApiClient {
       logApiError(path, wrapped, Date.now() - started);
       throw wrapped;
     }
+    if (!init.signal) this.responseScopes.delete(response);
     return response;
   }
   async json<T>(path: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>, body?: unknown, method?: string, authenticated = true): Promise<T> {
     const generation = this.generation;
     const started = Date.now();
-    const res = await this.raw(path, { method: method ?? (body === undefined ? 'GET' : 'POST'), headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }, authenticated);
-    let payload: unknown;
-    try { payload = await res.json(); }
-    catch {
-      if (generation !== this.generation) throw new Error('Stale session');
-      const wrapped = new ApiError('response.invalid', res.status, 'body.non_json');
-      logApiError(path, wrapped, Date.now() - started);
-      throw wrapped;
-    }
+    const controller = new AbortController();
     try {
-      const result = schema.parse(payload);
+      const res = await this.raw(path, { signal: controller.signal, method: method ?? (body === undefined ? 'GET' : 'POST'), headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }, authenticated);
       if (generation !== this.generation) throw new Error('Stale session');
-      if (authenticated && !this.allowed()) throw new Error('Session unavailable');
-      return result;
-    } catch (error) {
-      if (generation !== this.generation) throw new Error('Stale session');
-      if (error instanceof z.ZodError) {
-        const wrapped = new ApiError('response.invalid', res.status, 'body.schema');
+      let payload: unknown;
+      try { payload = await this.readResponseBody(res, () => res.json()); }
+      catch (error) {
+        if (generation !== this.generation) throw new Error('Stale session');
+        const wrapped = error instanceof ApiError ? error : new ApiError('response.invalid', res.status, 'body.non_json');
         logApiError(path, wrapped, Date.now() - started);
         throw wrapped;
       }
-      throw error;
-    }
+      try {
+        const result = schema.parse(payload);
+        if (generation !== this.generation) throw new Error('Stale session');
+        if (authenticated && !this.allowed()) throw new Error('Session unavailable');
+        return result;
+      } catch (error) {
+        if (generation !== this.generation) throw new Error('Stale session');
+        if (error instanceof z.ZodError) {
+          const wrapped = new ApiError('response.invalid', res.status, 'body.schema');
+          logApiError(path, wrapped, Date.now() - started);
+          throw wrapped;
+        }
+        throw error;
+      }
+    } finally { controller.abort(); }
   }
   async refresh(): Promise<void> {
     if (this.refreshTask) return this.refreshTask;

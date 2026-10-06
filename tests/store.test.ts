@@ -66,3 +66,41 @@ test('revoked read permission clears cached conversation content even in a stale
   expect(useWorkspace.getState().conversations).toEqual({});
   expect(useWorkspace.getState().messages).toEqual({});
 });
+
+test('only an accepted HTTP read publishes a bounded receipt, including empty older pages', () => {
+  const source = {};
+  useWorkspace.getState().applyBootstrap(bootstrap, 'account');
+  useWorkspace.getState().acceptMessageRead('c1', [message], source);
+  const first = useWorkspace.getState().messageReads.c1;
+  expect(first).toEqual({ revision: 1, source, before: undefined });
+  useWorkspace.getState().setMessages('c1', [message]);
+  useWorkspace.getState().upsertMessage({ ...message, id: 'optimistic', clientMessageId: 'another-local', status: 'sending' });
+  useWorkspace.getState().patchMessage('c1', message.id, { hiddenByCurrentUser: true });
+  expect(useWorkspace.getState().messageReads.c1).toBe(first);
+  useWorkspace.getState().acceptMessageRead('c1', [], source, 'm1');
+  expect(useWorkspace.getState().messageReads).toEqual({ c1: { revision: 2, source, before: 'm1' } });
+  expect(useWorkspace.getState().messages.c1).toHaveLength(2);
+});
+
+test.each(['account', 'permission', 'membership', 'reset'] as const)('read receipts are removed on %s loss', change => {
+  useWorkspace.getState().applyBootstrap(bootstrap, 'account');
+  useWorkspace.getState().acceptMessageRead('c1', [message], {});
+  if (change === 'reset') useWorkspace.getState().reset();
+  else useWorkspace.getState().applyBootstrap({ ...bootstrap,
+    conversations: change === 'membership' ? [] : bootstrap.conversations,
+    permissions: { ...bootstrap.permissions, canReadConversations: change !== 'permission' },
+  }, change === 'account' ? 'next-account' : 'account');
+  expect(useWorkspace.getState().messageReads).toEqual({});
+});
+
+test.each(['prune', 'inventory', 'leave'] as const)('topic read receipts are removed by %s', change => {
+  useWorkspace.getState().applyBootstrap(bootstrap, 'account');
+  const topic = { id: 't1', conversationId: 'c1', title: 'Topic', status: 'open', joined: true,
+    canJoin: false, allowSyncToGroup: false, participantCount: 0, unreadCount: 0, notificationLevel: 'all' as const, revision: 0 };
+  useWorkspace.getState().upsertTopic(topic);
+  useWorkspace.getState().acceptMessageRead('topic:t1', [], {});
+  if (change === 'prune') useWorkspace.getState().pruneTopics(new Set());
+  else if (change === 'inventory') useWorkspace.getState().setTopics([]);
+  else useWorkspace.getState().upsertTopic({ ...topic, joined: false });
+  expect(useWorkspace.getState().messageReads).toEqual({});
+});

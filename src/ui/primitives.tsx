@@ -1,12 +1,15 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
+  AppState,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
   View,
+  findNodeHandle,
   useWindowDimensions,
   type TextInputProps,
 } from 'react-native';
@@ -28,12 +31,14 @@ export function Button({
   disabled = false,
   secondary = false,
   variant,
+  ref,
 }: {
   title: string;
   onPress: () => void;
   disabled?: boolean;
   secondary?: boolean;
   variant?: ButtonVariant;
+  ref?: React.Ref<View>;
 }) {
   const t = useTheme();
   const resolved: ButtonVariant = variant ?? (secondary ? 'secondary' : 'primary');
@@ -45,6 +50,7 @@ export function Button({
   }[resolved];
   return (
     <Pressable
+      ref={ref}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
@@ -261,40 +267,83 @@ export function Dialog({
   children,
   onRequestClose,
   actions,
+  returnFocusRef,
+  canReturnFocus,
 }: {
   visible: boolean;
   title: string;
   children?: React.ReactNode;
   onRequestClose: () => void;
   actions: { title: string; onPress: () => void; variant?: ButtonVariant }[];
+  returnFocusRef?: React.RefObject<View | null>;
+  canReturnFocus?: () => boolean;
 }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
+  const wasVisible = useRef(false);
+  const focusTarget = useRef<{ ref: React.RefObject<View | null>; node: View | null; current?: () => boolean } | null>(null);
+  useEffect(() => {
+    if (visible) {
+      wasVisible.current = true;
+      focusTarget.current = returnFocusRef ? { ref: returnFocusRef, node: returnFocusRef.current, current: canReturnFocus } : null;
+      return;
+    }
+    if (!wasVisible.current) return;
+    wasVisible.current = false;
+    const target = focusTarget.current;
+    focusTarget.current = null;
+    if (!target?.node || AppState.currentState !== 'active') return;
+    let cancelled = false;
+    let frame: number | undefined;
+    const cancel = () => {
+      cancelled = true;
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      appState.remove();
+    };
+    const appState = AppState.addEventListener('change', state => { if (state !== 'active') cancel(); });
+    // Android Modal has no onDismiss event. Queue after the committed hide, and
+    // recheck the original native trigger and route/session before native focus.
+    void AccessibilityInfo.isScreenReaderEnabled().then(enabled => {
+      if (!enabled || cancelled) { appState.remove(); return; }
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        appState.remove();
+        if (cancelled || AppState.currentState !== 'active' || target.ref.current !== target.node || (target.current && !target.current())) return;
+        cancelled = true;
+        const handle = findNodeHandle(target.node);
+        if (typeof handle === 'number') AccessibilityInfo.setAccessibilityFocus(handle);
+      });
+    }).catch(() => { appState.remove(); });
+    return () => {
+      cancel();
+    };
+  }, [visible, returnFocusRef, canReturnFocus]);
   return (
     <Modal visible={visible} transparent animationType={t.motionMs('detail') ? 'fade' : 'none'} onRequestClose={onRequestClose}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="关闭对话框"
-        onPress={onRequestClose}
-        style={{ flex: 1, backgroundColor: 'rgba(32,44,50,0.4)', justifyContent: 'center', padding: t.space.xl }}
-      >
+      <View style={{ flex: 1, justifyContent: 'center', padding: t.space.xl }}>
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="关闭对话框"
+          onPress={onRequestClose}
+          style={[StyleSheet.absoluteFillObject, { backgroundColor: 'rgba(32,44,50,0.4)' }]}
+        />
+        <View
+          testID={`dialog-${title}`}
+          accessible={false}
           accessibilityViewIsModal
-          accessibilityRole="summary"
-          accessibilityLabel={title}
-          onPress={() => undefined}
-          style={{ maxHeight: Math.max(0, height - insets.top - insets.bottom - t.space.xl * 2), backgroundColor: t.elevated, borderRadius: t.radius.dialog, padding: t.space.lg, gap: t.space.md }}
+          collapsable={false}
+          style={{ flexShrink: 1, maxHeight: Math.max(0, height - insets.top - insets.bottom - t.space.xl * 2), backgroundColor: t.elevated, borderRadius: t.radius.dialog, padding: t.space.lg, gap: t.space.md }}
         >
-          <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }}>{title}</Text>
+          <Text accessibilityRole="header" style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }}>{title}</Text>
           {children}
           <View style={{ gap: t.space.sm }}>
             {actions.map(action => (
               <Button key={action.title} title={action.title} variant={action.variant} onPress={action.onPress} />
             ))}
           </View>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
