@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Image, Linking, ScrollView, View } from 'react-native';
+import { Image, Linking, ScrollView, View, useWindowDimensions } from 'react-native';
 import { Text } from '../../ui/Text';
 import * as Updates from 'expo-updates';
 import type { NavigationAction } from '@react-navigation/native';
@@ -128,6 +128,7 @@ function AccountHomeScreen({ runtime, open }: { runtime: Runtime; open: (name: E
 
 export function ProfileScreen({ runtime }: { runtime: Runtime }) {
   const t = useTheme();
+  const { height } = useWindowDimensions();
   const navigation = useNavigation();
   const accountKey = useWorkspace(s => s.accountKey);
   const user = useWorkspace(s => s.bootstrap?.auth.currentUser);
@@ -145,15 +146,17 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
   const [avatarFeedback, setAvatarFeedback] = useState('');
   const [avatarTone, setAvatarTone] = useState<'success' | 'danger'>('success');
   const [avatarPreview, setAvatarPreview] = useState<AvatarSelection | null>(null);
+  const [avatarPreviewReady, setAvatarPreviewReady] = useState(false);
   const [restoreAvatar, setRestoreAvatar] = useState(false);
   const avatarGeneration = useRef(0);
   const avatarWorking = useRef(false);
-  const selectedAvatar = useRef<{ file: AvatarSelection; current: () => boolean } | null>(null);
+  const selectedAvatar = useRef<{ file: AvatarSelection; current: () => boolean; ready: boolean } | null>(null);
   const restoreScope = useRef<(() => boolean) | null>(null);
   const clearSelection = useCallback(() => {
     selectedAvatar.current?.file.dispose();
     selectedAvatar.current = null;
     setAvatarPreview(null);
+    setAvatarPreviewReady(false);
   }, []);
   const invalidateAvatar = useCallback(() => {
     avatarGeneration.current += 1;
@@ -184,17 +187,17 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
     try {
       const file = await chooseAvatar(accountKey, current);
       if (!current()) { file?.dispose(); return; }
-      if (file) { selectedAvatar.current = { file, current }; setAvatarPreview(file); }
+      if (file) { selectedAvatar.current = { file, current, ready: false }; setAvatarPreview(file); }
     } catch (error) {
       if (current()) { setAvatarFeedback(avatarErrorText(error)); setAvatarTone('danger'); }
     } finally { if (current()) { avatarWorking.current = false; setAvatarBusy(false); } }
   };
-  const saveAvatar = async () => {
-    const selected = selectedAvatar.current;
-    if (!selected || avatarWorking.current) return;
+  const saveAvatar = async (selected: typeof selectedAvatar.current) => {
+    if (!selected || selected !== selectedAvatar.current || avatarWorking.current) return;
     if (!selected.current()) { clearSelection(); return; }
+    if (!selected.ready) return;
     avatarWorking.current = true; setAvatarBusy(true); setAvatarFeedback('');
-    setAvatarPreview(null);
+    setAvatarPreview(null); setAvatarPreviewReady(false);
     try {
       await runtime.updateAvatar(selected.file, selected.current);
       if (selected.current()) { setAvatarFeedback('头像已保存'); setAvatarTone('success'); }
@@ -273,6 +276,10 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
     });
     return sub;
   }, [dirty, saving, navigation]);
+  const previewSelection = selectedAvatar.current;
+  const closePreview = () => {
+    if (previewSelection && selectedAvatar.current === previewSelection && !avatarWorking.current) clearSelection();
+  };
   return (
     <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={styles.content}>
       <AvatarBlock name={user?.displayName ?? '当前账号'} id={user?.id ?? 'self'} uri={user?.avatarUrl} />
@@ -281,7 +288,7 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
       <Input accessibilityLabel="显示名" value={nickname} onChangeText={text => setNickname(text.slice(0, 32))} placeholder={user?.displayName || '显示名'} />
       <SwitchRow
         title="允许被成员查找"
-        detail="这是个人可见性，不能改成对方的公共名字。"
+        detail="开启后，空间成员可通过公开昵称或 GitHub 登录名找到你。关闭不影响已有会话和联系人。"
         value={discoverable}
         onValueChange={setDiscoverable}
       />
@@ -300,14 +307,31 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
       <Dialog
         visible={!!avatarPreview}
         title="确认更换头像？"
-        onRequestClose={clearSelection}
+        onRequestClose={closePreview}
         actions={[
-          { title: '确认上传', onPress: () => void saveAvatar() },
-          { title: '取消上传', variant: 'secondary', onPress: clearSelection },
+          { title: '取消上传', variant: 'secondary', onPress: closePreview },
         ]}
       >
-        {avatarPreview ? <Image accessibilityLabel="所选头像中心裁剪预览" source={{ uri: avatarPreview.uri }} resizeMode="cover" style={{ width: 160, height: 160, alignSelf: 'center', borderRadius: t.radius.control }} /> : null}
-        <Label>预览按中心裁剪，保存后由服务器处理。不会保存尚未提交的显示名或查找可见性。</Label>
+        <ScrollView style={{ maxHeight: height * 0.4 }} contentContainerStyle={{ gap: t.space.md }} keyboardShouldPersistTaps="handled">
+          {avatarPreview ? <Image
+            key={avatarPreview.uri}
+            accessibilityLabel="所选头像中心裁剪预览"
+            source={{ uri: avatarPreview.uri }}
+            resizeMode="cover"
+            style={{ width: 160, height: 160, alignSelf: 'center', borderRadius: t.radius.control }}
+            onLoad={() => {
+              if (!previewSelection || selectedAvatar.current !== previewSelection || !previewSelection.current() || avatarWorking.current) return;
+              previewSelection.ready = true; setAvatarPreviewReady(true);
+            }}
+            onError={() => {
+              if (!previewSelection || selectedAvatar.current !== previewSelection || !previewSelection.current() || avatarWorking.current) return;
+              clearSelection(); setAvatarFeedback('这张图片无法读取，请选择其他图片'); setAvatarTone('danger');
+            }}
+          /> : null}
+          {!avatarPreviewReady ? <Label muted>正在加载预览…</Label> : null}
+          <Label>预览按中心裁剪，保存后由服务器处理。不会保存尚未提交的显示名或查找可见性。</Label>
+          <Button title="确认上传" disabled={!avatarPreviewReady || avatarBusy} onPress={() => void saveAvatar(previewSelection)} />
+        </ScrollView>
       </Dialog>
       <Dialog
         visible={restoreAvatar}

@@ -7,7 +7,7 @@
 | --- | --- |
 | [架构规范](ARCHITECTURE.md) | Android-only 技术栈、模块边界、数据流、依赖和 ADR |
 | [Android Cronet](../adr/2026-09-18-android-cronet.md) | 嵌入式 Cronet/QUIC 替换 OkHttp 传输，规避公网 TLS RST |
-| [WebSocket 传输分流](../adr/2026-10-06-android-websocket-transport.md) | 标准 WebSocket 使用 OkHttp 双向 streams，普通 HTTP 保留 Cronet |
+| [WebSocket 传输分流](../adr/2026-10-06-android-websocket-transport.md) | WebSocket 和有请求体的 HTTP 使用原 OkHttp，无请求体的 HTTP 保留 Cronet |
 | [Chat IME](../adr/2026-09-18-ime-keyboard-controller.md) | Chat 独占 IME inset；进程默认 pan；禁 KAV |
 | [Android 热字体运行时](../adr/2026-10-06-android-font-layout-runtime.md) | 原生文本测量白屏证据、稳定 SDK 升级、兼容与验证边界 |
 | [Android 前台字体配置通知](../adr/2026-10-06-android-font-metrics.md) | Dimensions 缓存缺口、原生配置事件、共享倍率及 android-3 兼容 |

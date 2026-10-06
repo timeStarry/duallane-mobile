@@ -28,8 +28,19 @@
 
 去掉 `android-cronet` 插件与 `CronetNetworking.install`，重建 Android 包。
 
-## 2026-10-06 后续修正
+## 2026-10-06 已采纳的后续修正
 
-Cronet 保留普通 HTTP；标准 WebSocket 握手必须走 OkHttp 原生双向 streams。
-全局拦截器不应接管该握手，具体证据、分流和回归见
+上述决定记录首次引入 Cronet 的原因。后续先修正标准 WebSocket 握手，使其走
+OkHttp 原生双向 streams；code 18 真机又出现 JPEG 上传 rewind 失败，因此当前分流为：
+完整 WebSocket upgrade 或 `request.body != null` 使用原请求的 `chain.proceed`，
+其余无请求体 HTTP 保留嵌入式 Cronet、QUIC、HTTP2 和 Brotli。
+
+精确 `cronet-okhttp:0.1.1` 的内存和流式上传 provider 均通过 `onRewindError`
+报告 `UnsupportedOperationException`，不支持重绕；当前规则避免请求体进入该适配器。
+不新增应用层自动重发或请求失败后的跨传输 fallback，不修改 TLS 校验、凭证或生产地址。
+这里的失败处理与上文首次安装 Cronet 失败时使用默认 OkHttp 是不同阶段。
+
+带请求体请求重新使用 OkHttp，最初记录的公网 TLS RST 风险仍须在 code 19 正式包
+复验；本次 rewind 的具体网络触发条件未知，第二次上传成功不能抹去首次失败。
+精确源码依据、兼容边界和验证要求见
 [WebSocket 传输 ADR](2026-10-06-android-websocket-transport.md)。

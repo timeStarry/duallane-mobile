@@ -9,9 +9,13 @@
 - React Navigation Native Stack + Bottom Tabs；不使用 WebView 套壳或 Web 路由兼容层。
 - Zustand + domain reducer/selectors；服务端对象 normalized，transport event 不直接进 UI。
 - Zod（或等价运行时校验）解析 HTTP、WebSocket、消息内容和 release policy。
-- `fetch` 封装 HTTP；Android 用嵌入式 Cronet（含 QUIC/HTTP2）承接 OkHttp，避免部分公网路径对
-  非浏览器 TLS Client Hello 直接 RST。不依赖 Google Play 服务。原生 WebSocket 处理 Workspace
-  realtime；本地通知负责 Android 通知。
+- `fetch` 封装 HTTP；Android 无请求体 HTTP 使用嵌入式 Cronet（含 QUIC/HTTP2），
+  保留针对部分公网 TLS RST 路径的兼容方案，不依赖 Google Play 服务。
+  `request.body != null` 和完整 WebSocket upgrade 使用原 OkHttp chain，避免
+  Cronet 0.1.1 不支持上传 rewind 和 WebSocket 双向 streams 的限制；不新增应用
+  自动重发或请求失败后的跨传输 fallback。有 body 请求的公网 TLS 兼容仍须真机验证。
+  依据与边界见 [网络传输 ADR](../adr/2026-10-06-android-websocket-transport.md)。
+  原生 WebSocket 处理 Workspace realtime；本地通知负责 Android 通知。
 - SQLite/受保护 KV 保存可丢失缓存、草稿和游标；Android Keystore 保存 refresh token。
 - Android APK/AAB 是唯一交付产物；iOS 不在当前架构范围。
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { View } from 'react-native';
+import { Modal, View } from 'react-native';
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import { createNavigationContainerRef, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -7,7 +7,9 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../src/ui/theme';
 import { ProfileScreen } from '../src/features/account/screens';
 import { Runtime } from '../src/data/runtime';
+import { ApiClient } from '../src/data/client';
 import { chooseAvatar } from '../src/data/avatar';
+import { Button } from '../src/ui/primitives';
 import { bootstrapSchema } from '../src/domain/contracts';
 import { useWorkspace } from '../src/domain/store';
 
@@ -22,6 +24,10 @@ const metrics={frame:{x:0,y:0,width:390,height:844},insets:{top:24,left:0,right:
 const Stack=createNativeStackNavigator();
 const snapshot=bootstrapSchema.parse({auth:{currentUser:{id:'u1',displayName:'Synthetic',nickname:'Original',avatarUrl:null,searchDiscoverable:true}},space:{id:'s1',name:'Synthetic'},eventCursor:0,policy:{dailyQuotaBytes:10,remainingQuotaBytes:10,messageRetentionCount:10},permissions:{canReadConversations:true},members:[],conversations:[],files:[]});
 function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};}
+function loadPreview(view:ReturnType<typeof render>){
+  fireEvent(view.getByLabelText('所选头像中心裁剪预览'),'load',{nativeEvent:{source:{width:256,height:256,url:'file:///cache/synthetic.png'}}});
+}
+function avatarDialog(view:ReturnType<typeof render>){return within(view.getByRole('summary',{name:'确认更换头像？'}));}
 const picked={uri:'file:///cache/synthetic.png',mimeType:'image/png' as const,byteSize:3,dispose:jest.fn()};
 let runtime:Runtime;
 function screen(){
@@ -32,7 +38,10 @@ function screen(){
 beforeEach(()=>{
   useWorkspace.getState().reset();useWorkspace.getState().applyBootstrap(snapshot,'synthetic:u1');
   jest.mocked(chooseAvatar).mockReset().mockResolvedValue(picked);picked.dispose.mockClear();
-  runtime=new Runtime();runtime.avatarScope=jest.fn(()=>()=>useWorkspace.getState().accountKey==='synthetic:u1');
+  runtime=new Runtime();runtime.avatarScope=jest.fn(()=>{
+    const api=runtime.api,account=useWorkspace.getState().accountKey,userId=useWorkspace.getState().bootstrap?.auth.currentUser.id;
+    return ()=>runtime.api===api&&useWorkspace.getState().accountKey===account&&useWorkspace.getState().bootstrap?.auth.currentUser.id===userId;
+  });
   runtime.updateAvatar=jest.fn().mockImplementation(async()=>{
     useWorkspace.setState(s=>({bootstrap:s.bootstrap?{...s.bootstrap,auth:{currentUser:{...s.bootstrap.auth.currentUser,avatarUrl:'/api/workspace/avatars/u1/new'}}}:null}));
     return {...snapshot.auth.currentUser,avatarUrl:'/api/workspace/avatars/u1/new'};
@@ -50,6 +59,7 @@ test('selection previews without mutation; explicit upload preserves unsaved nic
   fireEvent.press(view.getByRole('button',{name:'更换头像'}));
   await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
   expect(runtime.updateAvatar).not.toHaveBeenCalled();
+  loadPreview(view);
   fireEvent.press(within(view.getByRole('summary',{name:'确认更换头像？'})).getByRole('button',{name:'确认上传'}));
   await waitFor(()=>expect(view.getByText('头像已保存')).toBeTruthy());
   expect(runtime.updateAvatar).toHaveBeenCalledWith(picked,expect.any(Function));
@@ -82,6 +92,7 @@ test('upload failure preserves the original avatar and profile inputs',async()=>
   const {view}=screen();fireEvent.changeText(view.getByLabelText('显示名'),'Unsaved');
   fireEvent.press(view.getByRole('button',{name:'更换头像'}));
   await waitFor(()=>expect(view.getByRole('summary',{name:'确认更换头像？'})).toBeTruthy());
+  loadPreview(view);
   fireEvent.press(within(view.getByRole('summary',{name:'确认更换头像？'})).getByRole('button',{name:'确认上传'}));
   await waitFor(()=>expect(view.getByText('头像未保存，请重试')).toBeTruthy());
   expect(useWorkspace.getState().bootstrap?.auth.currentUser.avatarUrl).toBeNull();
@@ -108,6 +119,7 @@ test('leaving during upload invalidates the runtime callback and ignores late su
   const pending=deferred<typeof snapshot.auth.currentUser>();runtime.updateAvatar=jest.fn().mockReturnValueOnce(pending.promise);
   const {view,nav}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
   await waitFor(()=>expect(view.getByRole('summary',{name:'确认更换头像？'})).toBeTruthy());
+  loadPreview(view);
   fireEvent.press(within(view.getByRole('summary',{name:'确认更换头像？'})).getByRole('button',{name:'确认上传'}));
   const current=jest.mocked(runtime.updateAvatar).mock.calls[0]?.[1];expect(current?.()).toBe(true);
   act(()=>nav.navigate('Other'));expect(current?.()).toBe(false);
@@ -130,6 +142,172 @@ test('a failed restore leaves the avatar unchanged and does not save profile inp
   await waitFor(()=>expect(view.getByText('头像未保存，请重试')).toBeTruthy());
   expect(view.getByLabelText('显示名').props.value).toBe('Unsaved');expect(runtime.updateProfile).not.toHaveBeenCalled();
   expect(useWorkspace.getState().bootstrap?.auth.currentUser.avatarUrl).toBeNull();
+});
+
+test('preview confirmation stays disabled until the selected image loads successfully',async()=>{
+  const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  expect(view.getByText('正在加载预览…')).toBeTruthy();
+  expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:true})).toBeTruthy();
+  fireEvent(view.getByLabelText('所选头像中心裁剪预览'),'loadEnd');
+  expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:true})).toBeTruthy();
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'确认上传'}));
+  expect(runtime.updateAvatar).not.toHaveBeenCalled();
+  loadPreview(view);
+  expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:false})).toBeTruthy();
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'确认上传'}));
+  await waitFor(()=>expect(runtime.updateAvatar).toHaveBeenCalledTimes(1));
+});
+
+test('the upload handler independently rejects an image that has not decoded',async()=>{
+  const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  const confirm=view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='确认上传');
+  expect(confirm).toBeTruthy();
+  await act(async()=>confirm?.props.onPress());
+  expect(runtime.updateAvatar).not.toHaveBeenCalled();
+  expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy();
+});
+
+test('a malformed nonempty PNG reports the decode failure, cleans its copy and preserves independent profile fields',async()=>{
+  const malformed={...picked,byteSize:29,dispose:jest.fn()};
+  jest.mocked(chooseAvatar).mockResolvedValueOnce(malformed);
+  const {view}=screen();fireEvent.changeText(view.getByLabelText('显示名'),'Unsaved');
+  fireEvent.press(view.getByRole('switch',{name:'允许被成员查找'}));
+  fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  fireEvent(view.getByLabelText('所选头像中心裁剪预览'),'error',{nativeEvent:{error:'synthetic decode failure'}});
+  expect(view.queryByLabelText('所选头像中心裁剪预览')).toBeNull();
+  expect(view.getByText('这张图片无法读取，请选择其他图片')).toBeTruthy();
+  expect(malformed.dispose).toHaveBeenCalledTimes(1);
+  expect(runtime.updateAvatar).not.toHaveBeenCalled();expect(runtime.updateProfile).not.toHaveBeenCalled();
+  expect(useWorkspace.getState().bootstrap?.auth.currentUser.avatarUrl).toBeNull();
+  expect(view.getByLabelText('显示名').props.value).toBe('Unsaved');
+  expect(view.getByRole('switch',{name:'允许被成员查找',checked:false})).toBeTruthy();
+});
+
+test('callbacks from a canceled image cannot ready or remove a newer preview',async()=>{
+  const second={...picked,uri:'file:///cache/second.png',dispose:jest.fn()};
+  jest.mocked(chooseAvatar).mockResolvedValueOnce(picked).mockResolvedValueOnce(second);
+  const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  const previous=view.getByLabelText('所选头像中心裁剪预览');
+  const lateLoad=previous.props.onLoad,lateError=previous.props.onError;
+  expect(typeof lateLoad).toBe('function');expect(typeof lateError).toBe('function');
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
+  fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览').props.source.uri).toBe(second.uri));
+  act(()=>lateLoad({nativeEvent:{source:{width:256,height:256}}}));
+  expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:true})).toBeTruthy();
+  loadPreview(view);
+  act(()=>lateError({nativeEvent:{error:'synthetic late failure'}}));
+  expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:false})).toBeTruthy();
+  expect(view.getByLabelText('所选头像中心裁剪预览').props.source.uri).toBe(second.uri);
+  expect(second.dispose).not.toHaveBeenCalled();expect(picked.dispose).toHaveBeenCalledTimes(1);
+  expect(view.queryByText('这张图片无法读取，请选择其他图片')).toBeNull();
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'确认上传'}));
+  await waitFor(()=>expect(runtime.updateAvatar).toHaveBeenCalledWith(second,expect.any(Function)));
+});
+
+test('callbacks after cancellation cannot restore a preview or report a stale image failure',async()=>{
+  const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  const preview=view.getByLabelText('所选头像中心裁剪预览');
+  const lateLoad=preview.props.onLoad,lateError=preview.props.onError;
+  expect(typeof lateLoad).toBe('function');expect(typeof lateError).toBe('function');
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
+  act(()=>{lateLoad({nativeEvent:{source:{width:256,height:256}}});lateError({nativeEvent:{error:'synthetic late failure'}});});
+  expect(view.queryByLabelText('所选头像中心裁剪预览')).toBeNull();
+  expect(view.queryByText('这张图片无法读取，请选择其他图片')).toBeNull();
+  expect(picked.dispose).toHaveBeenCalledTimes(1);expect(runtime.updateAvatar).not.toHaveBeenCalled();
+});
+
+test('an old confirmation handler cannot upload a newer successfully loaded selection',async()=>{
+  const second={...picked,uri:'file:///cache/reselected.png',dispose:jest.fn()};
+  jest.mocked(chooseAvatar).mockResolvedValueOnce(picked).mockResolvedValueOnce(second);
+  const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  const previousConfirm=view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='确认上传')?.props.onPress;
+  expect(typeof previousConfirm).toBe('function');
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
+  fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览').props.source.uri).toBe(second.uri));
+  loadPreview(view);
+  await act(async()=>previousConfirm());
+  expect(runtime.updateAvatar).not.toHaveBeenCalled();expect(second.dispose).not.toHaveBeenCalled();
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'确认上传'}));
+  await waitFor(()=>expect(runtime.updateAvatar).toHaveBeenCalledWith(second,expect.any(Function)));
+});
+
+test.each(['cancel button','system close'] as const)('a stale %s event cannot discard a newer preview',async action=>{
+  const second={...picked,uri:'file:///cache/stale-close.png',dispose:jest.fn()};
+  jest.mocked(chooseAvatar).mockResolvedValueOnce(picked).mockResolvedValueOnce(second);
+  const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  const previousClose=action==='cancel button'
+    ?view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='取消上传')?.props.onPress
+    :view.UNSAFE_getAllByType(Modal).find(modal=>modal.props.visible)?.props.onRequestClose;
+  expect(typeof previousClose).toBe('function');
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
+  fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览').props.source.uri).toBe(second.uri));
+  loadPreview(view);act(()=>previousClose());
+  expect(view.getByLabelText('所选头像中心裁剪预览').props.source.uri).toBe(second.uri);
+  expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:false})).toBeTruthy();
+  expect(second.dispose).not.toHaveBeenCalled();expect(runtime.updateAvatar).not.toHaveBeenCalled();
+});
+
+test('a late preview close after confirmation cannot dispose the active upload copy early',async()=>{
+  const pending=deferred<typeof snapshot.auth.currentUser>();runtime.updateAvatar=jest.fn().mockReturnValueOnce(pending.promise);
+  const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  const previousClose=view.UNSAFE_getAllByType(Modal).find(modal=>modal.props.visible)?.props.onRequestClose;
+  expect(typeof previousClose).toBe('function');loadPreview(view);
+  fireEvent.press(avatarDialog(view).getByRole('button',{name:'确认上传'}));
+  act(()=>previousClose());
+  expect(picked.dispose).not.toHaveBeenCalled();expect(runtime.updateAvatar).toHaveBeenCalledTimes(1);
+  await act(async()=>pending.resolve(snapshot.auth.currentUser));
+  expect(view.getByText('头像已保存')).toBeTruthy();expect(picked.dispose).toHaveBeenCalledTimes(1);
+});
+
+test('late image events after route blur do not affect the next focused preview',async()=>{
+  const second={...picked,uri:'file:///cache/focused.png',dispose:jest.fn()};
+  jest.mocked(chooseAvatar).mockResolvedValueOnce(picked).mockResolvedValueOnce(second);
+  const {view,nav}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  const preview=view.getByLabelText('所选头像中心裁剪预览');
+  const lateLoad=preview.props.onLoad,lateError=preview.props.onError;
+  expect(typeof lateLoad).toBe('function');expect(typeof lateError).toBe('function');
+  act(()=>nav.navigate('Other'));act(()=>nav.goBack());
+  fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览').props.source.uri).toBe(second.uri));
+  act(()=>{lateLoad({nativeEvent:{source:{width:256,height:256}}});lateError({nativeEvent:{error:'synthetic late failure'}});});
+  expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:true})).toBeTruthy();
+  expect(second.dispose).not.toHaveBeenCalled();expect(runtime.updateAvatar).not.toHaveBeenCalled();
+  expect(view.queryByText('这张图片无法读取，请选择其他图片')).toBeNull();
+});
+
+test.each(['account','API'] as const)('late image events after %s replacement cannot modify the new session preview',async replacement=>{
+  const second={...picked,uri:'file:///cache/session.png',dispose:jest.fn()};
+  jest.mocked(chooseAvatar).mockResolvedValueOnce(picked).mockResolvedValueOnce(second);
+  const {view}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+  const preview=view.getByLabelText('所选头像中心裁剪预览');
+  const lateLoad=preview.props.onLoad,lateError=preview.props.onError;
+  expect(typeof lateLoad).toBe('function');expect(typeof lateError).toBe('function');
+  act(()=>{
+    if(replacement==='account')useWorkspace.setState({accountKey:'synthetic:u2',bootstrap:{...snapshot,auth:{currentUser:{...snapshot.auth.currentUser,id:'u2',nickname:'Other account'}}}});
+    else{runtime.api=new ApiClient('https://synthetic.invalid',async()=>undefined,()=>undefined);useWorkspace.setState({bootstrap:{...snapshot,auth:{currentUser:{...snapshot.auth.currentUser}}}});}
+  });
+  expect(picked.dispose).toHaveBeenCalledTimes(1);
+  expect(view.queryByLabelText('所选头像中心裁剪预览')).toBeNull();
+  fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+  await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览').props.source.uri).toBe(second.uri));
+  act(()=>{lateLoad({nativeEvent:{source:{width:256,height:256}}});lateError({nativeEvent:{error:'synthetic late failure'}});});
+  expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:true})).toBeTruthy();
+  expect(second.dispose).not.toHaveBeenCalled();expect(runtime.updateAvatar).not.toHaveBeenCalled();
+  expect(view.queryByText('这张图片无法读取，请选择其他图片')).toBeNull();
+  expect(view.getByLabelText('显示名').props.value).toBe(replacement==='account'?'Other account':'Original');
 });
 
 function canonicalProfile(patch:Partial<typeof snapshot.auth.currentUser>){

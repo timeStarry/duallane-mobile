@@ -25,7 +25,8 @@ object CronetNetworking {
     val isWebSocketUpgrade = headerContainsToken(request, "Upgrade", "websocket") &&
       headerContainsToken(request, "Connection", "upgrade")
     // RealWebSocket needs OkHttp's exchange, which a Cronet HTTP response cannot provide.
-    if (isWebSocketUpgrade) chain.proceed(request) else cronet.intercept(chain)
+    // cronet-okhttp 0.1.1 rejects upload rewind; preserve OkHttp request-body semantics.
+    if (isWebSocketUpgrade || request.body != null) chain.proceed(request) else cronet.intercept(chain)
   }
 
   private fun headerContainsToken(request: Request, name: String, token: String): Boolean =

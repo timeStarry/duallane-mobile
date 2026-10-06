@@ -136,7 +136,11 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
     </SafeAreaView>
   ) : (
     <View style={{ flex: 1, backgroundColor: t.bg }}>
-      <Notice text={error} />
+      {error ? <SafeAreaView edges={['top', 'left', 'right']}>
+        <Notice text={error} />
+      </SafeAreaView> : null}
+      {/* Recompute navigation insets from the remaining frame without remounting routes. */}
+      <SafeAreaProvider>
       <NavigationContainer ref={navigation}>
         <Stack.Navigator
           screenOptions={{
@@ -198,6 +202,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
           </Stack.Screen>
         </Stack.Navigator>
       </NavigationContainer>
+      </SafeAreaProvider>
     </View>
   );
 

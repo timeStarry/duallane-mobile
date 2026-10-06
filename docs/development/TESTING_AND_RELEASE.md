@@ -26,6 +26,12 @@ Dimensions 字体缓存已更新。见 [字体通知 ADR](../adr/2026-10-06-andr
 确认 canonical 图像；恢复测试后还原原自定义图像。源码中的迟到回调和撤权回归不
 代替真实系统选择器、裁剪像素、放大字体及读屏路径验收。
 
+头像预览必须由原生图片解码成功后才允许确认。损坏图片应在预览阶段给出明确反馈，
+清理副本并保留原头像；旧图片的加载、失败或关闭回调不得影响新选择或正在上传的副本。
+确认位于有高度上限的可滚动内容中，取消保持可达；需以 2× 字体及读屏实测。
+全局错误提示应避开状态栏，显示、更新或清除时不能重建聊天路由、输入框或草稿；
+嵌套安全区的初始值与旋转后的真实布局须在正式包另行核对。
+
 - TypeScript、lint、unit/component/contract tests 和 `git diff --check`。
 - Android debug/release 构建，签名配置检查，APK/AAB 安装与启动 smoke。
 - `version: 1` 消息、未知 block/kind/major、plainText 缺失、恶意 HTML 的 fallback fixture。
@@ -41,8 +47,12 @@ Cronet/WebSocket 修复的实际 Kotlin 分支回归在 `tests/native/CronetRout
 ```
 
 Windows 使用 `gradlew.bat` 和 Java 17。该 init 仅为这次测试添加固定 JUnit 4.13.2
-与合成 fixture，不改变生产依赖；8 项检查复用实际应用 Kotlin，确认完整握手走原生
-chain、普通 HTTP 保留 Cronet、原请求和异常保持。无网络，不替代真机认证通道验收。
+与合成 fixture，不改变生产依赖；13 项检查复用实际应用 Kotlin，确认完整握手和有
+请求体的 HTTP 走原生 chain，无请求体的 HTTP 保留 Cronet，原请求和异常保持。
+包括 JSON／空请求体、raw image 两次读取字节一致、未知长度 one-shot 不预读，以及
+失败不增加应用重试或 Cronet fallback。无网络，不替代真机认证通道验收。
+有请求体请求重新使用系统 OkHttp，须在正式包检查旧公网 TLS RST 风险：PNG／JPEG／WebP
+首次上传、JSON 写入、明确失败后手动重试和现有凭证流程分别验证，WS 连通不能替代。
 
 ## 版本与发布
 
