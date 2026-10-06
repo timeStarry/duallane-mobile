@@ -1,5 +1,5 @@
-import React from 'react';
-import { fireEvent, render } from '@testing-library/react-native';
+import React, { useState } from 'react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react-native';
 import * as ReactNative from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Composer } from '../src/ui/composer';
@@ -7,6 +7,14 @@ import { IconButton } from '../src/ui/primitives';
 
 let mockDimensions = { width: 978, height: 418, scale: 2.625, fontScale: 1 };
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => mockDimensions }));
+const mockFontCallbacks = new Set<(snapshot: unknown) => void>();
+jest.mock('react-native/Libraries/EventEmitter/NativeEventEmitter', () => ({ __esModule: true, default: class {
+  addListener(event: string, callback: (snapshot: unknown) => void) {
+    if (event !== 'DualLaneFontScaleChanged') return { remove: () => {} };
+    mockFontCallbacks.add(callback);
+    return { remove: () => { mockFontCallbacks.delete(callback); } };
+  }
+} }));
 
 const metrics = { frame: { x: 0, y: 0, width: 978, height: 418 }, insets: { top: 0, left: 0, right: 0, bottom: 0 } };
 const draft = '第一行\n第二行未发送';
@@ -17,8 +25,10 @@ function composer(props: Partial<React.ComponentProps<typeof Composer>> = {}) {
 
 beforeEach(() => {
   mockDimensions = { width: 978, height: 418, scale: 2.625, fontScale: 1 };
+  mockFontCallbacks.clear();
+  delete ReactNative.NativeModules.DualLaneFontScale;
 });
-afterEach(() => jest.restoreAllMocks());
+afterEach(() => { cleanup(); delete ReactNative.NativeModules.DualLaneFontScale; jest.restoreAllMocks(); });
 
 test('compact wide composer keeps navigation, 48dp actions and a scrollable multiline draft in one row', () => {
   const onSend = jest.fn();
@@ -93,6 +103,72 @@ test('compact row grows for readable system fonts and ordinary mode restores ful
   expect(view.getByText('原消息')).toBeTruthy();
   expect(view.getByText('测试.txt')).toBeTruthy();
   expect(view.getByLabelText('消息').props.value).toBe(draft);
+});
+
+test('ordinary composer fits the measured three 2x lines without spending their height on padding and borders', () => {
+  mockDimensions = { width: 417.52, height: 975.24, scale: 2.625, fontScale: 2 };
+  const view = render(composer({ compact: false, value: 'DLAccept 第一行\n第二行草稿\n第三行未发送' }));
+  const style = ReactNative.StyleSheet.flatten(view.getByLabelText('消息').props.style);
+  // Formal26's three scaled lines require 378 physical pixels. Its 144dp
+  // border-box left only 330.75px after the real 16dp padding + 2dp border.
+  const availableTextPixels = (style.maxHeight - style.paddingVertical * 2 - style.borderWidth * 2) * mockDimensions.scale;
+  expect(availableTextPixels).toBeGreaterThanOrEqual(378);
+});
+
+test('native font cycles resize the existing input without resetting its edited draft or focus', async () => {
+  jest.replaceProperty(ReactNative.Platform, 'OS', 'android');
+  jest.spyOn(ReactNative.Dimensions, 'get').mockReturnValue(mockDimensions);
+  ReactNative.NativeModules.DualLaneFontScale = {
+    getFontScale: jest.fn(() => Promise.resolve({ fontScale: 1, revision: 0 })),
+    addListener: jest.fn(), removeListeners: jest.fn(),
+  };
+  const onFocus = jest.fn(), onSend = jest.fn();
+  function EditableComposer() {
+    const [value, setValue] = useState(draft);
+    return composer({ compact: false, value, onChangeText: setValue, onFocus, onSend });
+  }
+  const view = render(<EditableComposer />);
+  await act(async () => {});
+  const input = view.getByLabelText('消息');
+  const instance = view.UNSAFE_getByType(ReactNative.TextInput).instance;
+  const edited = `${draft}\n第三行保留光标，不发送`;
+  fireEvent(input, 'focus');
+  fireEvent.changeText(input, edited);
+  for (const [index, fontScale] of [2, 1, 2, 1, 2, 1].entries()) {
+    act(() => mockFontCallbacks.forEach(callback => callback({ fontScale, revision: index + 1 })));
+    expect(ReactNative.Dimensions.get('window').fontScale).toBe(1);
+    expect(view.getByLabelText('消息')).toBe(input);
+    expect(view.UNSAFE_getByType(ReactNative.TextInput).instance).toBe(instance);
+    expect(input.props.value).toBe(edited);
+    expect(input.props.selection).toBeUndefined();
+    expect(input.props.multiline).toBe(true);
+    expect(input.props.scrollEnabled).toBe(true);
+    expect(input.props.blurOnSubmit).toBe(false);
+    expect(input.props.disableFullscreenUI).toBe(true);
+    expect(ReactNative.StyleSheet.flatten(input.props.style).minHeight).toBe(fontScale === 2 ? 66 : 48);
+    expect(ReactNative.StyleSheet.flatten(input.props.style).maxHeight).toBe(162);
+  }
+  fireEvent(input, 'submitEditing');
+  expect(onSend).not.toHaveBeenCalled();
+  expect(onFocus).toHaveBeenCalledTimes(1);
+  view.unmount();
+  expect(mockFontCallbacks.size).toBe(0);
+});
+
+test('a long ordinary draft stays bounded and scrollable while submit keeps its multiline semantics', () => {
+  mockDimensions = { ...mockDimensions, fontScale: 2 };
+  const onSend = jest.fn(), onChangeText = jest.fn();
+  const value = Array.from({ length: 20 }, (_, index) => `合成草稿第${index + 1}行`).join('\n');
+  const view = render(composer({ compact: false, value, onSend, onChangeText }));
+  const input = view.getByLabelText('消息');
+  const style = ReactNative.StyleSheet.flatten(input.props.style);
+  expect(style.maxHeight).toBeLessThan(value.split('\n').length * 48);
+  expect(input.props.scrollEnabled).toBe(true);
+  expect(input.props.value).toBe(value);
+  expect(ReactNative.StyleSheet.flatten(view.getByRole('button', { name: '发送' }).props.style).minHeight).toBeGreaterThanOrEqual(48);
+  fireEvent(input, 'submitEditing');
+  expect(onSend).not.toHaveBeenCalled();
+  expect(onChangeText).not.toHaveBeenCalled();
 });
 
 test('measured navigation width moves optional actions into a menu before they crowd the input', () => {

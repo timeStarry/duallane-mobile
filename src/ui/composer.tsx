@@ -5,7 +5,7 @@ import { Ellipsis, Paperclip, Plus, Reply, Send, Smile, X } from 'lucide-react-n
 import { AttachmentPreview } from './files';
 import { IconButton, ObjectActionSheet } from './primitives';
 import { useTheme } from './theme';
-import { minimumComposerHeight } from './compactComposerLayout';
+import { composerInputHeights } from './compactComposerLayout';
 import { useFontScale } from '../platform/font-scale';
 
 export function ReplyPreview({
@@ -72,8 +72,7 @@ export function Composer({
   const [measuredWidth, setMeasuredWidth] = useState(0);
   const [leadingWidth, setLeadingWidth] = useState(0);
   const [trailingWidth, setTrailingWidth] = useState(0);
-  const rowHeight = minimumComposerHeight(fontScale);
-  const maxHeight = compact ? rowHeight : t.type.bodyLine * 6;
+  const { minHeight, maxHeight } = composerInputHeights(fontScale, compact);
   const directControlCount = Number(!!onAttach) + Number(!!onEmote) + Number(!!reply) + Number(!!attachmentName);
   const navigationWidth = (leading ? Math.max(t.hit, leadingWidth) : 0) + (trailing ? Math.max(t.hit, trailingWidth) : 0);
   const directRowWidth = navigationWidth + t.hit * (3 + directControlCount)
@@ -124,7 +123,7 @@ export function Composer({
           style={{
             flex: 1,
             minWidth: 0,
-            minHeight: compact ? rowHeight : t.hit,
+            minHeight,
             maxHeight,
             paddingHorizontal: t.space.md,
             paddingVertical: compact ? t.space.xs : t.space.sm,

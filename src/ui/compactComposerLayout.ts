@@ -6,6 +6,22 @@ export function minimumComposerHeight(fontScale: number): number {
   return Math.max(hit, Math.ceil(type.bodyLine * fontScale) + space.xs * 2 + 2);
 }
 
+export function composerInputHeights(fontScale: number, compact: boolean) {
+  if (compact) {
+    const height = minimumComposerHeight(fontScale);
+    return { minHeight: height, maxHeight: height };
+  }
+  const lineHeight = Math.ceil(type.bodyLine * fontScale);
+  const visibleLines = Math.max(1, Math.floor(type.bodyLine * 6 / lineHeight));
+  // maxHeight is a border-box: reserve the actual padding and borders outside
+  // the bounded, whole-line text viewport, including at larger system fonts.
+  const verticalInsets = space.sm * 2 + 2;
+  return {
+    minHeight: Math.max(hit, lineHeight + verticalInsets),
+    maxHeight: visibleLines * lineHeight + verticalInsets,
+  };
+}
+
 export function compactComposerLayout(input: {
   screenHeight: number;
   topInset: number;
