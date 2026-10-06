@@ -67,6 +67,14 @@ test('restoration checks current visible geometry rather than the attach-cycle l
   assert.doesNotMatch(ACCESSIBILITY_FOCUS_SOURCE, /isLaidOut|val laidOut:/);
 });
 
+test('new capture samples canonical native host under the ticket lock', () => {
+  const capture = ACCESSIBILITY_FOCUS_SOURCE.split('fun captureTarget(tag: Int, ticket: Long, resolve: (Boolean) -> Unit) {')[1].split('if (epoch == null)')[0];
+  assert.match(capture, /synchronized\(lock\)[\s\S]*canonicalHostActive\(\)/);
+  assert.match(capture, /foreground = true/);
+  const adapter = ACCESSIBILITY_FOCUS_SOURCE.split('private val requests = AccessibilityFocusRequests(')[1].split('override fun getName()')[0];
+  assert.match(adapter, /!invalidated && context\.hasActiveReactInstance\(\) && context\.lifecycleState == LifecycleState\.RESUMED/);
+});
+
 test('generated native source and checked-in registration match the plugin', () => {
   assert.equal(readFileSync(join(__dirname, '../android/app/src/main/java/com/timestarry/duallane/AccessibilityFocusModule.kt'), 'utf8').replaceAll('\r\n', '\n'), ACCESSIBILITY_FOCUS_SOURCE);
   assert.equal(installAccessibilityFocusPackage(application()), application());

@@ -27,7 +27,13 @@ class AccessibilityFocusRequestsTest {
     var actionResult = true
     var throwCapture = false
     var throwAction = false
+    var canonicalHostActive = initiallyResumed
+    var throwHostSnapshot = false
     val requests = AccessibilityFocusRequests(
+      {
+        if (throwHostSnapshot) throw IllegalStateException("synthetic")
+        canonicalHostActive
+      },
       { work -> queued.add(work); Unit },
       { _: Int ->
         if (throwCapture) throw IllegalStateException("synthetic")
@@ -110,6 +116,7 @@ class AccessibilityFocusRequestsTest {
   @Test fun firstCaptureOfResumedLazyModuleSurvivesPendingUiRegistration() {
     val h = Harness(initiallyResumed = false)
     // initialize observes the resumed host synchronously, before its UI task.
+    h.canonicalHostActive = true
     h.requests.resume()
     h.queued.add { h.requests.resume() }
     h.capture()
@@ -120,9 +127,91 @@ class AccessibilityFocusRequestsTest {
     assertEquals(1, h.actions)
   }
 
+  @Test fun resumedCanonicalHostCanCaptureBeforeItsLifecycleListenerRuns() {
+    val h = Harness()
+    h.capture(1); h.drain()
+    h.canonicalHostActive = false
+    h.requests.pause()
+    // ReactContext sets RESUMED before AppState emits active. The JS callback
+    // can request a fresh ticket before this module's onHostResume listener.
+    h.canonicalHostActive = true
+    h.capture(2)
+    h.requests.resume()
+    h.drain()
+    assertEquals(listOf(true, true), h.captures)
+    h.afterDismissWithReader(); h.restore(2); h.drain()
+    assertEquals(listOf(true), h.restores)
+    assertEquals(1, h.actions)
+  }
+
+  @Test fun inactiveCanonicalHostClosesTicketBeforeDelayedPauseListener() {
+    val h = Harness()
+    // The inverse listener ordering must not accept a background request merely
+    // because this module has not received its pause callback yet.
+    h.canonicalHostActive = false
+    h.capture(1)
+    assertEquals(listOf(false), h.captures)
+    assertTrue(h.queued.isEmpty())
+    h.requests.pause()
+    h.canonicalHostActive = true
+    h.requests.resume()
+    h.capture(1); h.drain(); h.afterDismissWithReader(); h.restore(1); h.drain()
+    assertEquals(listOf(false, false), h.captures)
+    assertEquals(0, h.actions)
+  }
+
+  @Test fun pauseAroundCanonicalCaptureReservationNeverReplaysThatTicket() {
+    for (beforeReservation in listOf(false, true)) {
+      val h = Harness()
+      if (beforeReservation) {
+        h.canonicalHostActive = false
+        h.requests.pause()
+      }
+      h.capture(1)
+      if (!beforeReservation) {
+        h.canonicalHostActive = false
+        h.requests.pause()
+      }
+      h.canonicalHostActive = true
+      h.requests.resume(); h.drain()
+      h.afterDismissWithReader(); h.restore(1); h.capture(1); h.drain()
+      assertEquals(listOf(false, false), h.captures)
+      assertEquals(0, h.actions)
+      h.capture(2); h.drain(); h.restore(2); h.drain()
+      assertEquals(1, h.actions)
+    }
+  }
+
+  @Test fun resumedSnapshotCannotReopenCancelledSupersededOrInvalidatedTickets() {
+    for (closed in listOf("cancel", "superseded", "invalidate")) {
+      val h = Harness(initiallyResumed = false)
+      when (closed) {
+        "cancel" -> h.requests.cancel(4)
+        "superseded" -> h.capture(5)
+        else -> h.requests.invalidate()
+      }
+      h.canonicalHostActive = true
+      h.capture(4); h.drain(); h.requests.resume(); h.afterDismissWithReader()
+      h.restore(4); h.drain()
+      assertTrue(h.captures.all { !it })
+      assertEquals(0, h.actions)
+    }
+  }
+
+  @Test fun failedCanonicalHostSnapshotClosesWithoutRetry() {
+    val h = Harness()
+    h.throwHostSnapshot = true
+    h.capture(1)
+    h.throwHostSnapshot = false
+    h.capture(1); h.drain(); h.afterDismissWithReader(); h.restore(1); h.drain()
+    assertEquals(listOf(false, false), h.captures)
+    assertEquals(0, h.actions)
+  }
+
   @Test fun pendingInitializationCannotReviveCancelledPausedOrInvalidatedCapture() {
     for (change in listOf("cancel", "pause", "invalidate")) {
       val h = Harness(initiallyResumed = false)
+      h.canonicalHostActive = true
       h.requests.resume()
       h.queued.add { h.requests.resume() }
       h.capture()
@@ -280,7 +369,10 @@ class AccessibilityFocusRequestsTest {
 
   @Test fun backgroundCaptureDoesNotBecomeEligibleAfterResume() {
     val h = Harness()
-    h.requests.pause(); h.capture(4); h.requests.resume(); h.capture(4); h.drain()
+    h.canonicalHostActive = false
+    h.requests.pause(); h.capture(4)
+    h.canonicalHostActive = true
+    h.requests.resume(); h.capture(4); h.drain()
     assertEquals(listOf(false, false), h.captures)
   }
 

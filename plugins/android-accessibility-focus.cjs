@@ -52,6 +52,7 @@ internal data class AccessibilityFocusState(
 // Bridge calls may arrive before their posted UI work. Reserve/close tickets at
 // invocation time; lifecycle changes invalidate queued work without replaying it.
 internal class AccessibilityFocusRequests<T : Any>(
+  private val canonicalHostActive: () -> Boolean,
   private val dispatch: (() -> Unit) -> Unit,
   private val capture: (Int) -> T?,
   private val inspect: (T, Int) -> AccessibilityFocusState,
@@ -99,7 +100,18 @@ internal class AccessibilityFocusRequests<T : Any>(
         latestTicket = ticket
         revision++
         target = null
-        if (!foreground) { closedThrough = ticket; null } else generation to revision
+        // AppState can emit active before this module's resume listener runs.
+        // Sample the canonical host while reserving the new ticket so a real
+        // pause cannot interleave between reopening the gate and reservation.
+        val active = try { canonicalHostActive() } catch (_: RuntimeException) { false }
+        if (!active) {
+          foreground = false
+          closedThrough = ticket
+          null
+        } else {
+          foreground = true
+          generation to revision
+        }
       }
     }
     if (epoch == null) { resolve(false); return }
@@ -166,6 +178,7 @@ class AccessibilityFocusModule(private val context: ReactApplicationContext) :
   @Volatile private var invalidated = false
   private var registered = false
   private val requests = AccessibilityFocusRequests(
+    { !invalidated && context.hasActiveReactInstance() && context.lifecycleState == LifecycleState.RESUMED },
     { block -> UiThreadUtil.runOnUiThread { block() } },
     ::capture,
     ::inspect,

@@ -590,7 +590,7 @@ function NotificationsScreen() {
   const [notice, setNotice] = useState('');
   return (
     <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={styles.content}>
-      <Label>新消息通知由应用在前台 WebSocket 收到事件后发出本地通知。普通后台可能延迟，进程结束后不保证即时送达。</Label>
+      <Label>开启系统通知并允许会话提醒后，应用在后台收到新消息时显示通知；前台不弹系统通知。普通后台可能延迟，进程结束后不保证即时送达。</Label>
       <Button
         title="开启消息通知"
         onPress={() => void enableNotifications().then(granted => setNotice(granted ? '系统已允许通知' : '系统未允许通知，可在系统设置中修改'))}
