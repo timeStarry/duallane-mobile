@@ -53,12 +53,17 @@ afterEach(()=>useWorkspace.getState().reset());
 
 describe('avatar modal returns focus to its own trigger',()=>{
   const frames=new Map<number,FrameRequestCallback>();
+  const listeners=new Map<string,Set<(state:typeof AppState.currentState)=>void>>();
   let nextFrame=0;
   let focus:jest.SpyInstance;
   let handle:jest.SpyInstance;
   let originalState:typeof AppState.currentState;
   beforeEach(()=>{
-    frames.clear();nextFrame=0;originalState=AppState.currentState;AppState.currentState='active';
+    frames.clear();listeners.clear();nextFrame=0;originalState=AppState.currentState;AppState.currentState='active';
+    jest.spyOn(AppState,'addEventListener').mockImplementation((type,listener)=>{
+      const group=listeners.get(type)??new Set();listeners.set(type,group);group.add(listener);
+      return {remove:()=>{group.delete(listener);}};
+    });
     jest.spyOn(global,'requestAnimationFrame').mockImplementation(callback=>{frames.set(++nextFrame,callback);return nextFrame;});
     jest.spyOn(global,'cancelAnimationFrame').mockImplementation(id=>{frames.delete(id);});
     jest.spyOn(AccessibilityInfo,'isScreenReaderEnabled').mockResolvedValue(true);
@@ -66,6 +71,13 @@ describe('avatar modal returns focus to its own trigger',()=>{
     focus=jest.spyOn(AccessibilityInfo,'setAccessibilityFocus').mockImplementation(()=>undefined);
   });
   afterEach(()=>{AppState.currentState=originalState;jest.restoreAllMocks();});
+  function emit(type:string,state=AppState.currentState){
+    act(()=>{for(const callback of [...(listeners.get(type)??[])])callback(state);});
+  }
+  function show(view:ReturnType<typeof render>){
+    const modal=view.UNSAFE_getAllByType(Modal).find(node=>node.props.visible);
+    expect(modal).toBeTruthy();fireEvent(modal!,'show');emit('blur');
+  }
   async function finishFocus(){
     await act(async()=>{await Promise.resolve();});
     act(()=>{for(const [id,callback] of [...frames]){frames.delete(id);callback(0);}});
@@ -74,9 +86,11 @@ describe('avatar modal returns focus to its own trigger',()=>{
     const {view}=screen();fireEvent.changeText(view.getByLabelText('显示名'),'Unsaved');
     fireEvent.press(view.getByRole('button',{name:'更换头像'}));
     await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+    show(view);
     expect(focus).not.toHaveBeenCalled();
     fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
     expect(focus).not.toHaveBeenCalled();await finishFocus();
+    expect(focus).not.toHaveBeenCalled();emit('focus');await finishFocus();
     expect(focus).toHaveBeenCalledTimes(1);expect(focus).toHaveBeenCalledWith(4243);
     const trigger=view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='更换头像');
     expect(handle).toHaveBeenCalledWith(trigger?.props.ref.current);
@@ -85,15 +99,29 @@ describe('avatar modal returns focus to its own trigger',()=>{
   });
   test('canceling restore returns focus to Restore GitHub avatar without deleting',async()=>{
     const {view}=screen();fireEvent.press(view.getByRole('button',{name:'恢复 GitHub 头像'}));
+    show(view);
     fireEvent.press(within(view.getByTestId('dialog-恢复 GitHub 头像？')).getByRole('button',{name:'保留当前头像'}));
-    await finishFocus();expect(focus).toHaveBeenCalledTimes(1);
+    await finishFocus();expect(focus).not.toHaveBeenCalled();emit('focus');await finishFocus();expect(focus).toHaveBeenCalledTimes(1);
     const trigger=view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='恢复 GitHub 头像');
     expect(handle).toHaveBeenCalledWith(trigger?.props.ref.current);expect(runtime.clearAvatar).not.toHaveBeenCalled();
+  });
+  test('an unchanged visible preview resumes without onShow and cancel returns focus without saving dirty inputs',async()=>{
+    const {view}=screen();fireEvent.changeText(view.getByLabelText('显示名'),'Unsaved after resume');
+    fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+    await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());show(view);
+    AppState.currentState='background';emit('change','background');
+    AppState.currentState='active';emit('change','active');
+    fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
+    await finishFocus();expect(focus).not.toHaveBeenCalled();emit('focus');await finishFocus();
+    expect(focus).toHaveBeenCalledTimes(1);expect(runtime.updateAvatar).not.toHaveBeenCalled();expect(runtime.updateProfile).not.toHaveBeenCalled();
+    expect(view.getByLabelText('显示名').props.value).toBe('Unsaved after resume');expect(picked.dispose).toHaveBeenCalledTimes(1);
   });
   test.each(['unmount','route blur','account replacement','API replacement','new picker'] as const)('%s refuses queued focus from an old preview',async reason=>{
     const {view,nav}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
     await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+    show(view);
     fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
+    emit('focus');await act(async()=>{await Promise.resolve();});
     if(reason==='unmount')view.unmount();
     else if(reason==='route blur')act(()=>nav.navigate('Other'));
     else if(reason==='account replacement')act(()=>useWorkspace.setState({accountKey:'synthetic:u2'}));
@@ -102,7 +130,7 @@ describe('avatar modal returns focus to its own trigger',()=>{
       jest.mocked(chooseAvatar).mockReturnValueOnce(new Promise(()=>undefined));
       fireEvent.press(view.getByRole('button',{name:'更换头像'}));
     }
-    await finishFocus();expect(focus).not.toHaveBeenCalled();expect(runtime.updateAvatar).not.toHaveBeenCalled();
+    await finishFocus();emit('focus');await finishFocus();expect(focus).not.toHaveBeenCalled();expect(runtime.updateAvatar).not.toHaveBeenCalled();
   });
 });
 

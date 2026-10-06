@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -261,6 +261,20 @@ export function SettingRow({
   );
 }
 
+type DialogReturnFocus = {
+  ref: React.RefObject<View | null>;
+  node: View;
+  current?: () => boolean;
+  showToken: object;
+  shown: boolean;
+  closing: boolean;
+  sawWindowBlur: boolean;
+  windowFocused?: boolean;
+  readerEnabled?: boolean;
+  frame?: number;
+  cancelled: boolean;
+};
+
 export function Dialog({
   visible,
   title,
@@ -281,46 +295,108 @@ export function Dialog({
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
-  const wasVisible = useRef(false);
-  const focusTarget = useRef<{ ref: React.RefObject<View | null>; node: View | null; current?: () => boolean } | null>(null);
-  useEffect(() => {
+  const focusCycle = useRef<DialogReturnFocus | null>(null);
+  const pausedCycle = useRef<DialogReturnFocus | null>(null);
+  const showToken = useMemo(() => ({ visible, returnFocusRef, canReturnFocus }), [visible, returnFocusRef, canReturnFocus]);
+  const committedModal = useRef({ visible, showToken });
+  const cancelReturnFocus = useCallback((cycle = focusCycle.current) => {
+    if (!cycle) return;
+    cycle.cancelled = true;
+    if (cycle.frame !== undefined) cancelAnimationFrame(cycle.frame);
+    if (focusCycle.current === cycle) focusCycle.current = null;
+  }, []);
+  const tryReturnFocus = useCallback((cycle: DialogReturnFocus | null) => {
+    if (!cycle || cycle !== focusCycle.current || cycle.cancelled || cycle.frame !== undefined || !cycle.closing ||
+        !cycle.shown || !cycle.sawWindowBlur || cycle.windowFocused !== true || cycle.readerEnabled !== true) return;
+    cycle.frame = requestAnimationFrame(() => {
+      cycle.frame = undefined;
+      if (cycle !== focusCycle.current || cycle.cancelled || AppState.currentState !== 'active' ||
+          cycle.windowFocused !== true || cycle.ref.current !== cycle.node || (cycle.current && !cycle.current())) {
+        cancelReturnFocus(cycle);
+        return;
+      }
+      const handle = findNodeHandle(cycle.node);
+      cancelReturnFocus(cycle);
+      if (typeof handle === 'number') AccessibilityInfo.setAccessibilityFocus(handle);
+    });
+  }, [cancelReturnFocus]);
+  // Subscribe while the Modal is still visible. Android AppState focus/blur comes
+  // from Activity window focus, whereas visible=false and a JS frame do not await
+  // native Dialog dismissal. Unknown initial focus is never treated as focused.
+  useLayoutEffect(() => {
+    if (!returnFocusRef) return;
+    const focus = AppState.addEventListener('focus', () => {
+      const cycle = focusCycle.current;
+      if (!cycle) return;
+      cycle.windowFocused = true;
+      tryReturnFocus(cycle);
+    });
+    const blur = AppState.addEventListener('blur', () => {
+      const cycle = focusCycle.current;
+      if (!cycle) return;
+      if (cycle.closing) { cancelReturnFocus(cycle); return; }
+      cycle.sawWindowBlur = true;
+      cycle.windowFocused = false;
+    });
+    const state = AppState.addEventListener('change', next => {
+      if (next !== 'active') {
+        const cycle = focusCycle.current ?? pausedCycle.current;
+        // Android keeps a shown Dialog across pause/resume without another
+        // onShow. Save only that still-visible instance, never a pending close.
+        pausedCycle.current = cycle && !cycle.cancelled && cycle.shown && !cycle.closing &&
+          committedModal.current.visible && committedModal.current.showToken === cycle.showToken &&
+          cycle.ref.current === cycle.node && (!cycle.current || cycle.current())
+          ? { ...cycle, frame: undefined, readerEnabled: undefined, windowFocused: undefined, cancelled: false }
+          : null;
+        cancelReturnFocus();
+        return;
+      }
+      const paused = pausedCycle.current;
+      pausedCycle.current = null;
+      if (!paused || !committedModal.current.visible || committedModal.current.showToken !== paused.showToken ||
+          paused.ref.current !== paused.node || (paused.current && !paused.current())) return;
+      // Use a new object so any old reader promise/frame remains canceled.
+      focusCycle.current = { ...paused, windowFocused: undefined, cancelled: false };
+    });
+    return () => {
+      focus.remove(); blur.remove(); state.remove(); pausedCycle.current = null; cancelReturnFocus();
+    };
+  }, [returnFocusRef, tryReturnFocus, cancelReturnFocus]);
+  useLayoutEffect(() => {
+    committedModal.current = { visible, showToken };
+    pausedCycle.current = null;
     if (visible) {
-      wasVisible.current = true;
-      focusTarget.current = returnFocusRef ? { ref: returnFocusRef, node: returnFocusRef.current, current: canReturnFocus } : null;
+      cancelReturnFocus();
+      const node = returnFocusRef?.current;
+      if (returnFocusRef && node && AppState.currentState === 'active') {
+        focusCycle.current = { ref: returnFocusRef, node, current: canReturnFocus, showToken,
+          shown: false, closing: false, sawWindowBlur: false, cancelled: false };
+      }
       return;
     }
-    if (!wasVisible.current) return;
-    wasVisible.current = false;
-    const target = focusTarget.current;
-    focusTarget.current = null;
-    if (!target?.node || AppState.currentState !== 'active') return;
-    let cancelled = false;
-    let frame: number | undefined;
-    const cancel = () => {
-      cancelled = true;
-      if (frame !== undefined) cancelAnimationFrame(frame);
-      appState.remove();
-    };
-    const appState = AppState.addEventListener('change', state => { if (state !== 'active') cancel(); });
-    // Android Modal has no onDismiss event. Queue after the committed hide, and
-    // recheck the original native trigger and route/session before native focus.
+    const cycle = focusCycle.current;
+    if (!cycle) return;
+    if (cycle.ref !== returnFocusRef || cycle.current !== canReturnFocus || AppState.currentState !== 'active') {
+      cancelReturnFocus(cycle);
+      return;
+    }
+    if (cycle.closing) return;
+    cycle.closing = true;
     void AccessibilityInfo.isScreenReaderEnabled().then(enabled => {
-      if (!enabled || cancelled) { appState.remove(); return; }
-      frame = requestAnimationFrame(() => {
-        frame = undefined;
-        appState.remove();
-        if (cancelled || AppState.currentState !== 'active' || target.ref.current !== target.node || (target.current && !target.current())) return;
-        cancelled = true;
-        const handle = findNodeHandle(target.node);
-        if (typeof handle === 'number') AccessibilityInfo.setAccessibilityFocus(handle);
-      });
-    }).catch(() => { appState.remove(); });
-    return () => {
-      cancel();
-    };
-  }, [visible, returnFocusRef, canReturnFocus]);
+      if (cycle !== focusCycle.current || cycle.cancelled) return;
+      if (!enabled) { cancelReturnFocus(cycle); return; }
+      cycle.readerEnabled = true;
+      tryReturnFocus(cycle);
+    }).catch(() => cancelReturnFocus(cycle));
+  }, [visible, returnFocusRef, canReturnFocus, showToken, cancelReturnFocus, tryReturnFocus]);
   return (
-    <Modal visible={visible} transparent animationType={t.motionMs('detail') ? 'fade' : 'none'} onRequestClose={onRequestClose}>
+    <Modal visible={visible} transparent animationType={t.motionMs('detail') ? 'fade' : 'none'} onRequestClose={onRequestClose}
+      onShow={() => {
+        const cycle = focusCycle.current;
+        if (cycle?.showToken !== showToken || cycle.cancelled) return;
+        cycle.shown = true;
+        tryReturnFocus(cycle);
+      }}>
       <View style={{ flex: 1, justifyContent: 'center', padding: t.space.xl }}>
         <Pressable
           accessibilityRole="button"
