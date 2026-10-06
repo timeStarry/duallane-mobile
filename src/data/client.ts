@@ -67,6 +67,9 @@ function classifyTransport(error: unknown): string {
 }
 
 function routeKind(path: string): string {
+  const pathname = path.split('?')[0] ?? '';
+  if (/^\/api\/workspace\/files\/[^/]+\/downloads\/reserve$/.test(pathname)) return 'file_download_reserve';
+  if (/^\/api\/workspace\/files\/[^/]+\/download$/.test(pathname)) return 'file_download_content';
   if (path.startsWith('/api/mobile/release-policy')) return 'release_policy';
   if (path.startsWith('/api/auth/mobile/github/start')) return 'github_start';
   if (path.startsWith('/api/auth/mobile/github/exchange')) return 'github_exchange';
@@ -173,7 +176,8 @@ export class ApiClient {
         response = await fetch(`${this.origin}${path}`, { ...init, body: init.body ?? undefined, headers, signal: controller.signal, credentials: 'omit', redirect: 'error' });
       } catch (error) {
         if (generation !== this.generation) throw new Error('Stale session');
-        const wrapped = new ApiError(classifyTransport(error) === 'net.timeout' ? 'request.timeout' : 'request.network', 0, classifyTransport(error));
+        const diagnostic = controller.signal.aborted ? 'net.timeout' : classifyTransport(error);
+        const wrapped = new ApiError(diagnostic === 'net.timeout' ? 'request.timeout' : 'request.network', 0, diagnostic);
         logApiError(path, wrapped, Date.now() - started);
         throw wrapped;
       }

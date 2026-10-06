@@ -86,6 +86,36 @@ test('timeouts, missing mobile routes and non-JSON bodies stay distinct from a g
   await expect(client.json('/api/mobile/release-policy',z.object({schemaVersion:z.literal(1)}),undefined,'GET',false)).rejects.toMatchObject({code:'response.invalid',diagnostic:'body.schema'});
 });
 
+test('the client deadline reports timeout even when native cancellation has a generic error',async()=>{
+  jest.useFakeTimers();
+  try {
+    fetchMock.mockImplementationOnce((_url,init)=>new Promise((_resolve,reject)=>{
+      init?.signal?.addEventListener('abort',()=>reject(new Error('Native request cancelled')),{once:true});
+    }));
+    const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());
+    const result=expect(client.raw('/api/workspace/files/synthetic/download',{},false)).rejects.toMatchObject({code:'request.timeout',diagnostic:'net.timeout',status:0});
+    await jest.advanceTimersByTimeAsync(30000);
+    await result;
+    const logged=JSON.parse(jest.mocked(console.warn).mock.calls.at(-1)?.[0] as string);
+    expect(logged).toMatchObject({event:'api_error',route:'file_download_content',code:'request.timeout',diagnostic:'net.timeout',ms:30000});
+    expect(logged).not.toHaveProperty('path');
+  } finally { jest.useRealTimers(); }
+});
+
+test.each([
+  ['/api/workspace/files/synthetic-object-secret/downloads/reserve','file_download_reserve'],
+  ['/api/workspace/files/synthetic-object-secret/download?downloadId=synthetic-transfer-secret','file_download_content'],
+])('download failure logs only the stage for %s',async(path,route)=>{
+  fetchMock.mockRejectedValueOnce(new Error('Network request failed'));
+  const client=new ApiClient('https://workspace.example',jest.fn(),jest.fn());
+  await expect(client.raw(path,{},false)).rejects.toMatchObject({diagnostic:'net.failed'});
+  const logged=jest.mocked(console.warn).mock.calls.at(-1)?.[0] as string;
+  expect(JSON.parse(logged)).toMatchObject({event:'api_error',route,diagnostic:'net.failed'});
+  expect(logged).not.toContain('synthetic-object-secret');
+  expect(logged).not.toContain('synthetic-transfer-secret');
+  expect(logged).not.toContain('downloadId');
+});
+
 test.each([
   { nativeCode: 'ERR_TIMED_OUT', diagnostic: 'net.timeout' },
   { nativeCode: 'ERR_CONNECTION_TIMED_OUT', diagnostic: 'net.timeout' },

@@ -114,12 +114,12 @@ export function parseMarkdownBlocks(source: string): MarkdownBlock[] {
       blocks.push({ type: 'list', ordered, start, items });
       continue;
     }
-    const paragraph: MarkdownInline[][] = [];
+    const paragraph: string[] = [];
     while (index < lines.length && lines[index]!.trim() && (index === 0 || !startsBlock(lines[index]!))) {
-      paragraph.push(parseMarkdownInline(lines[index]!));
+      paragraph.push(lines[index]!);
       index += 1;
     }
-    if (paragraph.length) blocks.push({ type: 'paragraph', lines: paragraph });
+    if (paragraph.length) blocks.push({ type: 'paragraph', lines: splitInlineLines(parseMarkdownInline(paragraph.join('\n'))) });
   }
   return blocks;
 }
@@ -129,6 +129,51 @@ function startsBlock(line: string) {
 }
 
 const urlPattern = /^https?:\/\/[^\s<>]+/i;
+
+/** Parse a paragraph together, then retain its inline wrappers on each visual line. */
+function splitInlineLines(parts: MarkdownInline[]): MarkdownInline[][] {
+  const lines: MarkdownInline[][] = [[]];
+  for (const part of parts) {
+    const chunks: MarkdownInline[][] = part.type === 'text' || part.type === 'code'
+      ? part.text.split('\n').map(text => text ? [{ ...part, text }] : [])
+      : splitInlineLines(part.children).map(children => children.length ? [{ ...part, children }] : []);
+    chunks.forEach((chunk, index) => {
+      if (index > 0) lines.push([]);
+      lines[lines.length - 1]!.push(...chunk);
+    });
+  }
+  return lines;
+}
+
+function bareUrlTarget(value: string) {
+  let extraClosing = 0;
+  for (const character of value) {
+    if (character === '(') extraClosing -= 1;
+    else if (character === ')') extraClosing += 1;
+  }
+  let end = value.length;
+  // GFM trims trailing syntax/punctuation, but keeps interior characters and
+  // balanced parentheses. Encoded delimiters and explicit link targets are intact.
+  while (end > 0) {
+    if (/[?!.,:*_~`]/.test(value[end - 1]!)) end -= 1;
+    else if (value[end - 1] === ')' && extraClosing > 0) { end -= 1; extraClosing -= 1; }
+    else break;
+  }
+  return value.slice(0, end);
+}
+
+function findInlineDelimiterEnd(source: string, delimiter: string, start: number) {
+  if (delimiter === '`') return source.indexOf(delimiter, start);
+  for (let index = start; index < source.length; index += 1) {
+    if (source[index] === '\\') { index += 1; continue; }
+    if (source[index] === '`') {
+      const codeEnd = source.indexOf('`', index + 1);
+      if (codeEnd >= 0) { index = codeEnd; continue; }
+    }
+    if (source.startsWith(delimiter, index)) return index;
+  }
+  return -1;
+}
 
 export function parseMarkdownInline(source: string): MarkdownInline[] {
   const output: MarkdownInline[] = [];
@@ -150,7 +195,7 @@ export function parseMarkdownInline(source: string): MarkdownInline[] {
     }
     const bare = tail.match(urlPattern)?.[0];
     if (bare && (index === 0 || !/[\w@]/.test(source[index - 1]!))) {
-      const url = bare.replace(/[),.;!?]+$/, '');
+      const url = bareUrlTarget(bare);
       if (safeHttpUrl(url)) {
         flush();
         output.push({ type: 'link', url, children: [{ type: 'text', text: url }] });
@@ -160,7 +205,7 @@ export function parseMarkdownInline(source: string): MarkdownInline[] {
     }
     const delimiter = ['**', '__', '~~', '*', '_', '`'].find(value => tail.startsWith(value));
     if (delimiter) {
-      const end = source.indexOf(delimiter, index + delimiter.length);
+      const end = findInlineDelimiterEnd(source, delimiter, index + delimiter.length);
       const insideWord = delimiter.startsWith('_') && (index > 0 && /[\p{L}\p{N}]/u.test(source[index - 1]!) || end >= 0 && /[\p{L}\p{N}]/u.test(source[end + delimiter.length] ?? ''));
       if (!insideWord && end > index + delimiter.length) {
         flush();

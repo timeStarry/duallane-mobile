@@ -312,7 +312,7 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
           { title: '取消上传', variant: 'secondary', onPress: closePreview },
         ]}
       >
-        <ScrollView style={{ maxHeight: height * 0.4 }} contentContainerStyle={{ gap: t.space.md }} keyboardShouldPersistTaps="handled">
+        <ScrollView style={{ flexGrow: 0, flexShrink: 1, maxHeight: height * 0.4 }} contentContainerStyle={{ gap: t.space.md }} keyboardShouldPersistTaps="handled">
           {avatarPreview ? <Image
             key={avatarPreview.uri}
             accessibilityLabel="所选头像中心裁剪预览"
@@ -330,8 +330,8 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
           /> : null}
           {!avatarPreviewReady ? <Label muted>正在加载预览…</Label> : null}
           <Label>预览按中心裁剪，保存后由服务器处理。不会保存尚未提交的显示名或查找可见性。</Label>
-          <Button title="确认上传" disabled={!avatarPreviewReady || avatarBusy} onPress={() => void saveAvatar(previewSelection)} />
         </ScrollView>
+        <Button title="确认上传" disabled={!avatarPreviewReady || avatarBusy} onPress={() => void saveAvatar(previewSelection)} />
       </Dialog>
       <Dialog
         visible={restoreAvatar}

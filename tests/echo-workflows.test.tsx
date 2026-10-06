@@ -1,5 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, renderHook, waitFor } from '@testing-library/react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import type { Runtime } from '../src/data/runtime';
 import { ApiError } from '../src/data/client';
 import { bootstrapSchema, conversationSchema } from '../src/domain/contracts';
@@ -14,6 +15,7 @@ jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => 'invocation-1') }));
 jest.mock('../src/platform/config', () => ({ installed: { appVersion: '0.2.3', versionCode: 4 } }));
 jest.mock('../src/platform/storage', () => ({ cache: { get: jest.fn(), set: jest.fn(), remove: jest.fn() } }));
 
+const metrics = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 24, right: 0, bottom: 24, left: 0 } };
 const localCache = new Map<string, unknown>();
 const echoMember = { id: 'usr_system_echo', kind: 'bot', displayName: 'Echo' };
 const command = { command: { ok: true, result: { type: 'workflow.start', workflowType: 'echo.requirement', version: 1, input: { type: 'requirement' } } } };
@@ -289,7 +291,7 @@ test('the confirmation view explains delivery, hides projected originals, and re
   const runtime = api(); runtime.json.mockReset().mockResolvedValueOnce(command).mockResolvedValue({ workflow: workflow({ state: { step: 'confirm', fields: { title: 'Synthetic title', detail: 'd…', scenario: 's…', expectedResult: 'e…' } } }) });
   const hook = renderHook(() => useEchoWorkflow(runtime, 'echo-1', true));
   await act(async () => { await hook.result.current.start('/need'); });
-  const view = render(<EchoWorkflowDialog controller={hook.result.current} />);
+  const view = render(<SafeAreaProvider initialMetrics={metrics}><EchoWorkflowDialog controller={hook.result.current} /></SafeAreaProvider>);
   expect(view.getByText(/本人和空间所有者/)).toBeTruthy();
   expect(view.queryByText('d…')).toBeNull();
   expect(runtime.json).toHaveBeenCalledTimes(2);

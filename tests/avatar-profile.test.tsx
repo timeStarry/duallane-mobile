@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, View } from 'react-native';
+import { Dimensions, Modal, ScrollView, View } from 'react-native';
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import { createNavigationContainerRef, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -157,6 +157,41 @@ test('preview confirmation stays disabled until the selected image loads success
   expect(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:false})).toBeTruthy();
   fireEvent.press(avatarDialog(view).getByRole('button',{name:'确认上传'}));
   await waitFor(()=>expect(runtime.updateAvatar).toHaveBeenCalledTimes(1));
+});
+
+test.each([1,2])('confirmation stays outside the bounded preview at font scale %s and uploads only the decoded selection once',async fontScale=>{
+  const original={window:Dimensions.get('window'),screen:Dimensions.get('screen')};
+  act(()=>Dimensions.set({window:{...original.window,fontScale},screen:{...original.screen,fontScale}}));
+  const pending=deferred<typeof snapshot.auth.currentUser>();
+  runtime.updateAvatar=jest.fn().mockReturnValueOnce(pending.promise);
+  const {view}=screen();
+  try {
+    fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+    await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());
+    const preview=within(avatarDialog(view).UNSAFE_getByType(ScrollView));
+    expect(preview.getByLabelText('所选头像中心裁剪预览')).toBeTruthy();
+    expect(preview.getByText('正在加载预览…')).toBeTruthy();
+    expect(preview.getByText('预览按中心裁剪，保存后由服务器处理。不会保存尚未提交的显示名或查找可见性。')).toBeTruthy();
+    // Native clipping is device-tested; the action must not belong to the clipped preview subtree.
+    expect(preview.queryByRole('button',{name:'确认上传'})!==null).toBe(false);
+    fireEvent.press(avatarDialog(view).getByRole('button',{name:'确认上传',disabled:true}));
+    expect(runtime.updateAvatar).not.toHaveBeenCalled();
+    loadPreview(view);
+    const confirm=avatarDialog(view).getByRole('button',{name:'确认上传',disabled:false});
+    const repeatedPress=view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='确认上传')?.props.onPress;
+    expect(typeof repeatedPress).toBe('function');
+    fireEvent.press(confirm);
+    act(()=>repeatedPress());
+    expect(runtime.updateAvatar).toHaveBeenCalledTimes(1);
+    expect(runtime.updateAvatar).toHaveBeenCalledWith(picked,expect.any(Function));
+    expect(picked.dispose).not.toHaveBeenCalled();
+    await act(async()=>pending.resolve(snapshot.auth.currentUser));
+    expect(view.getByText('头像已保存')).toBeTruthy();
+    expect(picked.dispose).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    act(()=>Dimensions.set(original));
+  }
 });
 
 test('the upload handler independently rejects an image that has not decoded',async()=>{

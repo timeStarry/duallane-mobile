@@ -103,14 +103,22 @@ test('commented, quoted, or conditional registrations cannot masquerade as an in
     /android-font-scale: unsupported font layout runtime/);
 });
 
-test('generated font module uses public configuration callbacks and emits only versioned system scale', () => {
+test('generated font module synchronizes public host metrics and root measurement before emitting scale', () => {
   assert.equal(typeof FONT_SCALE_SOURCE, 'string');
   assert.equal(readFileSync(join(__dirname, '../android/app/src/main/java/com/timestarry/duallane/FontScaleModule.kt'), 'utf8').replaceAll('\r\n', '\n'), FONT_SCALE_SOURCE);
   assert.match(FONT_SCALE_SOURCE, /registerComponentCallbacks\(this\)/);
   assert.match(FONT_SCALE_SOURCE, /unregisterComponentCallbacks\(this\)/);
   assert.match(FONT_SCALE_SOURCE, /newConfig\.fontScale/);
-  assert.match(FONT_SCALE_SOURCE, /next\.isFinite\(\) && next > 0f && next != fontScale/);
-  assert.match(FONT_SCALE_SOURCE, /putDouble\("fontScale", fontScale\.toDouble\(\)\)/);
-  assert.match(FONT_SCALE_SOURCE, /putDouble\("revision", revision\.toDouble\(\)\)/);
-  assert.doesNotMatch(FONT_SCALE_SOURCE, /Settings\.|Log\.|onHostResume|\.reload\(|ReactNativeFeatureFlags|didUpdateDimensions|DisplayMetricsHolder|SurfaceHandler/);
+  assert.match(FONT_SCALE_SOURCE, /host\.onConfigurationChanged\(activity\)/);
+  assert.match(FONT_SCALE_SOURCE, /activity\.reactDelegate\?\.reactRootView/);
+  assert.match(FONT_SCALE_SOURCE, /root\.requestLayout\(\)/);
+  assert.match(FONT_SCALE_SOURCE, /OnPreDrawListener/);
+  assert.match(FONT_SCALE_SOURCE, /!root\.isLayoutRequested/);
+  assert.match(FONT_SCALE_SOURCE, /override fun onHostResume\(\)/);
+  assert.match(FONT_SCALE_SOURCE, /removeOnPreDrawListener/);
+  assert.match(FONT_SCALE_SOURCE, /removeOnAttachStateChangeListener/);
+  assert.match(FONT_SCALE_SOURCE, /removeLifecycleEventListener\(this\)/);
+  assert.match(FONT_SCALE_SOURCE, /putDouble\("fontScale", scale\.toDouble\(\)\)/);
+  assert.match(FONT_SCALE_SOURCE, /putDouble\("revision", version\.toDouble\(\)\)/);
+  assert.doesNotMatch(FONT_SCALE_SOURCE, /Settings\.|Log\.|\.reload\(|ReactNativeFeatureFlags|didUpdateDimensions|DisplayMetricsHolder|SurfaceHandler|postDelayed|Thread\.sleep/);
 });

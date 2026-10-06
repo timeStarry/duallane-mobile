@@ -269,6 +269,8 @@ export function Dialog({
   actions: { title: string; onPress: () => void; variant?: ButtonVariant }[];
 }) {
   const t = useTheme();
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
   return (
     <Modal visible={visible} transparent animationType={t.motionMs('detail') ? 'fade' : 'none'} onRequestClose={onRequestClose}>
       <Pressable
@@ -282,7 +284,7 @@ export function Dialog({
           accessibilityRole="summary"
           accessibilityLabel={title}
           onPress={() => undefined}
-          style={{ backgroundColor: t.elevated, borderRadius: t.radius.dialog, padding: t.space.lg, gap: t.space.md }}
+          style={{ maxHeight: Math.max(0, height - insets.top - insets.bottom - t.space.xl * 2), backgroundColor: t.elevated, borderRadius: t.radius.dialog, padding: t.space.lg, gap: t.space.md }}
         >
           <Text style={{ fontSize: t.type.section, fontWeight: '600', color: t.text }}>{title}</Text>
           {children}

@@ -17,6 +17,10 @@
 [ComponentCallbacks](https://developer.android.com/reference/android/content/ComponentCallbacks)
 监听配置；只传递系统 `Configuration.fontScale` 和单调 revision。主线程串行处理
 注册、快照及事件，销毁时撤销 callback，倍率未变的方向／密度更新不发布字体事件。
+配置回调先通过公开 ReactHost 配置路径刷新度量，显式请求当前 React 根布局，等待
+真实 measure／pre-draw 完成且应用、Activity、ReactContext 倍率一致后才发布。
+系统选择器返回时重新同步布局，同倍率不重挂 Text；后台、迟到代次、根分离和销毁
+撤销旧屏障，不能以固定延时、手工 Dimensions 或 ReactHost reload 代替布局完成。
 JS 共享一条订阅，先监听再取当前快照，以 revision 与订阅世代拒绝迟到结果。
 缺模块的开发环境保留 Dimensions fallback；正式包必须核对实际模块与 package 注册。
 
@@ -34,3 +38,12 @@ Text、Composer 和 IME 最小输入行使用同一倍率。仍仅重建原生 T
 非法 payload 和路由／草稿保持；插件需验证幂等与未知模板拒绝，实际 Kotlin 必须编译。
 这些检查不证明字形正确。下一正式包仍须在同一路由保持焦点、IME 与草稿，连续三轮
 1×↔2×，人工检查全部 10／15 秒截图及全文可达，并覆盖旋转、短窗口与读屏。
+
+code19 另有实际失败：头像 Modal 内 2×→1× 后，再从图片选择器返回，部分正文、
+按钮和 Tab 仍占用近 2× 高度，而输入框和标题保持 1×；原图与 XML 留存。
+冷启在系统倍率仍为 1× 时恢复正常。这证明布局异常，未采集运行中原生缓存命中轨迹，
+不能把上游测量缓存污染或某个回调顺序当成已经追踪到的唯一根因。
+RN 公开根 measure 会把 Activity 倍率同步到 Fabric；同步屏障防止在旧上下文中提前
+重挂文字，不清上游 C++ 测量缓存，也不保证能清除已存在的错误条目。
+需在新正式包的干净进程中复验 Modal 字号变化、选择器取消／选择返回及热恢复；
+源码状态机与 Kotlin 编译不能替代这一真实路径。
