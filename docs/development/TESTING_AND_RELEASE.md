@@ -13,6 +13,11 @@
 历史阅读恢复须比较同一消息的实际屏幕位置，单测中的列表属性／无滚动命令不是
 原生锚点保持证据。卡片重新校验仍立即隐藏正文及旧动作，仅暂保同身份实测高度。
 
+Android 热字号回归必须在同一路由保持焦点和草稿，连续三轮 1×↔2×，在 10／15 秒
+检查标题、消息及卡片的实际字形和全文可达。48dp 控件、进程存活及 UIA 文本存在
+不能证明没有裁字；不得重进页面或冷启动后冒称热更新通过。共享 Text 仅在倍率
+变化时重建文字节点，输入框、列表和导航应保持；文字选区／TalkBack 焦点单独记录。
+
 - TypeScript、lint、unit/component/contract tests 和 `git diff --check`。
 - Android debug/release 构建，签名配置检查，APK/AAB 安装与启动 smoke。
 - `version: 1` 消息、未知 block/kind/major、plainText 缺失、恶意 HTML 的 fallback fixture。

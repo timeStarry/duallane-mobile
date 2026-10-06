@@ -15,13 +15,14 @@ let mockFocused = true;
 let mockPanel = 'none';
 let mockCompact = false;
 let mockInsufficientSpace = false;
+let mockKeyboardVisible = true;
 jest.mock('@react-navigation/native', () => ({
   ...jest.requireActual('@react-navigation/native'),
   useIsFocused: () => mockFocused,
   useNavigation: () => ({ goBack: jest.fn() }),
 }));
 jest.mock('../src/ui/useChatIme', () => ({
-  useChatIme: () => ({ panel: mockPanel, compact: mockCompact, insufficientSpace: mockInsufficientSpace, availableContentHeight: 84, minimumComposerHeight: 48, dock: { dockBottom: 0, panelHeight: 0 }, openPanel: jest.fn(), closePanel: jest.fn(), setPanel: jest.fn() }),
+  useChatIme: () => ({ panel: mockPanel, keyboardVisible: mockKeyboardVisible, compact: mockCompact, insufficientSpace: mockInsufficientSpace, availableContentHeight: 84, minimumComposerHeight: 48, dock: { dockBottom: 0, panelHeight: 0 }, openPanel: jest.fn(), closePanel: jest.fn(), setPanel: jest.fn() }),
 }));
 jest.mock('expo/fetch', () => ({ fetch: jest.fn() }));
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { extra: { environment: 'test', apiOrigin: '', channel: 'internal' } }, nativeAppVersion: '0.2.1', nativeBuildVersion: '3' } }));
@@ -115,6 +116,7 @@ beforeEach(() => {
   mockPanel = 'none';
   mockCompact = false;
   mockInsufficientSpace = false;
+  mockKeyboardVisible = true;
   AppState.currentState = 'active';
   jest.spyOn(FlatList.prototype, 'scrollToIndex').mockImplementation(() => undefined);
   jest.spyOn(FlatList.prototype, 'scrollToOffset').mockImplementation(() => undefined);
@@ -160,6 +162,49 @@ test('an opaque keyboard leaving less than a full input row is dismissed without
   expect(view.getByText('当前可用高度不足，请转为竖屏后继续输入。')).toBeTruthy();
   expect(useWorkspace.getState().drafts.g1?.text).toBe('synthetic preserved draft');
   expect(runtime.send).not.toHaveBeenCalled();
+});
+
+test('a transient rotation height mismatch does not dismiss the keyboard or create a stale portrait warning', async () => {
+  seed(conversationTarget, []);
+  useWorkspace.getState().setDraft('g1', { text: 'synthetic rotation draft', mentionIds: [] });
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  mockCompact = true;
+  mockInsufficientSpace = true;
+  view.rerender(screen(runtime));
+  act(() => jest.advanceTimersByTime(400));
+  expect(dismiss).not.toHaveBeenCalled();
+  mockInsufficientSpace = false;
+  mockCompact = false;
+  view.rerender(screen(runtime));
+  act(() => jest.advanceTimersByTime(1000));
+  expect(dismiss).not.toHaveBeenCalled();
+  expect(view.queryByText('当前可用高度不足，请转为竖屏后继续输入。')).toBeNull();
+  expect(view.getByLabelText('消息').props.value).toBe('synthetic rotation draft');
+  expect(runtime.send).not.toHaveBeenCalled();
+  await act(async () => undefined);
+});
+
+test('a pending space warning is cancelled when leaving the chat or hiding the keyboard', async () => {
+  seed(conversationTarget, []);
+  mockCompact = true;
+  mockInsufficientSpace = true;
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  act(() => jest.advanceTimersByTime(400));
+  mockFocused = false;
+  view.rerender(screen(runtime));
+  act(() => jest.advanceTimersByTime(1000));
+  expect(dismiss).not.toHaveBeenCalled();
+  mockKeyboardVisible = false;
+  mockFocused = true;
+  view.rerender(screen(runtime));
+  act(() => jest.advanceTimersByTime(1000));
+  expect(dismiss).not.toHaveBeenCalled();
+  expect(view.queryByText('当前可用高度不足，请转为竖屏后继续输入。')).toBeNull();
+  await act(async () => undefined);
 });
 
 test('closing a topic with its compact keyboard open retains the title and both navigation controls', async () => {

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, Text, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
+import { Pressable, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
+import { Text } from './Text';
 import { MapPin, Megaphone } from 'lucide-react-native';
 import type { Block } from '../domain/contracts';
 import { echoKindLabel, echoReleaseView, type EchoReleaseView } from '../domain/echo-release';

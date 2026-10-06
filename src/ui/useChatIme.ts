@@ -74,6 +74,7 @@ export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery =
 
   return {
     panel,
+    keyboardVisible,
     dock: { ...dock, panelHeight: layout.panelHeight },
     compact: layout.compact,
     availableContentHeight: layout.availableContentHeight,

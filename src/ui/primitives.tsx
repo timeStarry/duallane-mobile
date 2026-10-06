@@ -5,12 +5,12 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
   TextInput,
   View,
   useWindowDimensions,
   type TextInputProps,
 } from 'react-native';
+import { Text } from './Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { connectionBannerText, connectionCategory } from './connection';
 import { useTheme } from './theme';

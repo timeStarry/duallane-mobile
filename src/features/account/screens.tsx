@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Linking, ScrollView, Text, View } from 'react-native';
+import { Linking, ScrollView, View } from 'react-native';
+import { Text } from '../../ui/Text';
 import * as Updates from 'expo-updates';
 import type { NavigationAction } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';

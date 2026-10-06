@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Keyboard, Pressable, Text, View } from 'react-native';
+import { Keyboard, Pressable, View } from 'react-native';
+import { Text } from './Text';
 import { Copy, EllipsisVertical, EyeOff, MessageSquare, Pin, Smile, SmilePlus, Undo2 } from 'lucide-react-native';
 import type { Attachment, Message } from '../domain/contracts';
 import { messageActions } from '../domain/message-actions';

@@ -1,5 +1,6 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { Text } from './Text';
 import type { Attachment } from '../domain/contracts';
 import type { UploadTask } from '../data/transfers';
 import { formatBytes } from './format';

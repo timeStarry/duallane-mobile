@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Keyboard, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Keyboard, TextInput, View, useWindowDimensions } from 'react-native';
+import { Text } from './Text';
 import { Ellipsis, Paperclip, Plus, Reply, Send, Smile, X } from 'lucide-react-native';
 import { AttachmentPreview } from './files';
 import { IconButton, ObjectActionSheet } from './primitives';

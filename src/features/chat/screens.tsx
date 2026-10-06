@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, FlatList, Keyboard, Pressable, ScrollView, Text, View, useWindowDimensions, type ViewToken } from 'react-native';
+import { AppState, FlatList, Keyboard, Pressable, ScrollView, View, useWindowDimensions, type ViewToken } from 'react-native';
+import { Text } from '../../ui/Text';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { z } from 'zod';
@@ -53,6 +54,7 @@ const emptyMessages: Message[] = [];
 const emptyDraft: Draft = { text: '', mentionIds: [] };
 const latestViewabilityConfig = { itemVisiblePercentThreshold: 1 };
 const transcriptPositionMaintenance = { minIndexForVisible: 0 };
+const composerSpaceSettleMs = 600;
 
 export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Runtime; open: (id: string) => void; openTopic: (topic: Topic) => void }) {
   const conversations = useWorkspace(s => s.conversations);
@@ -426,11 +428,20 @@ export function ChatScreen({
   const feedbackHeight = !feedback ? 0 : feedbackLayout?.text === feedback && feedbackLayout.width === dimensions.width && feedbackLayout.fontScale === dimensions.fontScale
     ? feedbackLayout.height : 24 + t.type.bodyLine * dimensions.fontScale;
   useEffect(() => {
-    if (ime.insufficientSpace || (ime.compact && (!canSend || ime.availableContentHeight < ime.minimumComposerHeight + feedbackHeight))) {
+    if (focused && foreground && ime.compact && (!canSend || (feedbackHeight > 0 && ime.availableContentHeight < ime.minimumComposerHeight + feedbackHeight))) {
       Keyboard.dismiss();
-      if (ime.insufficientSpace) setError('当前可用高度不足，请转为竖屏后继续输入。');
     }
-  }, [canSend, feedbackHeight, ime.availableContentHeight, ime.compact, ime.insufficientSpace, ime.minimumComposerHeight]);
+  }, [canSend, feedbackHeight, focused, foreground, ime.availableContentHeight, ime.compact, ime.minimumComposerHeight]);
+  useEffect(() => {
+    if (!focused || !foreground || !canSend || !ime.keyboardVisible || !ime.insufficientSpace) return;
+    // Rotation delivers window size and IME height separately. Classify only a
+    // settled shortage, so an old height cannot dismiss the newly rotated IME.
+    const timer = setTimeout(() => {
+      Keyboard.dismiss();
+      setError('当前可用高度不足，请转为竖屏后继续输入。');
+    }, composerSpaceSettleMs);
+    return () => clearTimeout(timer);
+  }, [accountKey, canSend, dimensions.fontScale, dimensions.height, dimensions.width, focused, foreground, ime.availableContentHeight, ime.insufficientSpace, ime.keyboardVisible, ime.minimumComposerHeight, key]);
   const send = (existing?: Message) => {
     const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
     if (!existing && !latest.text.trim() && !latest.pendingAttachment) return;

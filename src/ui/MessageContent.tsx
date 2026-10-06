@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Linking, Pressable, ScrollView, Text, View, type TextStyle } from 'react-native';
+import { Linking, Pressable, ScrollView, View, type TextStyle } from 'react-native';
+import { Text } from './Text';
 import type { Attachment, Block, Message } from '../domain/contracts';
 import { catalogImage, catalogUnicodeGlyph } from '../domain/emote-catalog';
 import { hiddenTypes } from '../domain/hide';

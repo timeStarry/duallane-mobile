@@ -1,5 +1,6 @@
 import React from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, View } from 'react-native';
+import { Text } from './Text';
 import type { Member } from '../domain/contracts';
 import { Avatar } from './chrome';
 import { Button } from './primitives';

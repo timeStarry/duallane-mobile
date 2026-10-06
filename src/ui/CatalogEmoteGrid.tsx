@@ -1,5 +1,6 @@
 import React from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
+import { Text } from './Text';
 import type { CatalogPack, CatalogPackItem } from '../domain/emote-catalog';
 import { catalogImage } from '../domain/emote-catalog';
 import { EmoteImage } from './MessageContent';

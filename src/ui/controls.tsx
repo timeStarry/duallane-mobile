@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Pressable, Switch, StyleSheet, Text, View } from 'react-native';
+import { Pressable, Switch, StyleSheet, View } from 'react-native';
+import { Text } from './Text';
 import { Button, EmptyState, Loading, ObjectActionSheet } from './primitives';
 import { useTheme } from './theme';
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, Switch, Text, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, Switch, View, useWindowDimensions } from 'react-native';
+import { Text } from './Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { errorText } from '../data/client';
 import type { EmoteShare, Runtime } from '../data/runtime';
