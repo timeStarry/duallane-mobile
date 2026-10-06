@@ -6,6 +6,7 @@ const ACCESSIBILITY_FOCUS_SOURCE = `package com.timestarry.duallane
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Rect
 import android.view.View
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
@@ -28,6 +29,10 @@ internal fun accessibilityFocusTicket(value: Double): Long? =
 internal fun accessibilityFocusTag(value: Double): Int? =
   if (value.isFinite() && value > 0 && value <= Int.MAX_VALUE && value == value.toInt().toDouble()) value.toInt() else null
 
+internal fun accessibilityFocusVisibleBounds(
+  width: Int, height: Int, hasGlobalVisibleRect: Boolean, visibleWidth: Int, visibleHeight: Int,
+) = width > 0 && height > 0 && hasGlobalVisibleRect && visibleWidth > 0 && visibleHeight > 0
+
 internal data class AccessibilityFocusState(
   val hostActive: Boolean,
   val sameView: Boolean,
@@ -35,13 +40,13 @@ internal data class AccessibilityFocusState(
   val sameRoot: Boolean,
   val attached: Boolean,
   val shown: Boolean,
-  val laidOut: Boolean,
+  val visibleBounds: Boolean,
   val windowFocused: Boolean,
   val readerEnabled: Boolean,
   val touchExploration: Boolean,
 ) {
   fun capturable() = hostActive && sameView && sameActivity && sameRoot && attached && shown
-  fun restorable() = capturable() && laidOut && windowFocused && readerEnabled && touchExploration
+  fun restorable() = capturable() && visibleBounds && windowFocused && readerEnabled && touchExploration
 }
 
 // Bridge calls may arrive before their posted UI work. Reserve/close tickets at
@@ -209,6 +214,13 @@ class AccessibilityFocusModule(private val context: ReactApplicationContext) :
     val root = saved.root.get()
     val hostActive = !invalidated && context.hasActiveReactInstance() && context.lifecycleState == LifecycleState.RESUMED
     val manager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+    // Fabric manages child layout. Its visible target can retain geometry while
+    // the framework's attach-cycle layout flag is false; inspect current bounds.
+    val visibleRect = Rect()
+    val visibleBounds = view != null && accessibilityFocusVisibleBounds(
+      view.width, view.height, view.getGlobalVisibleRect(visibleRect),
+      visibleRect.width(), visibleRect.height(),
+    )
     return AccessibilityFocusState(
       hostActive = hostActive && activity != null && !activity.isFinishing && !activity.isDestroyed,
       sameView = view != null && hostActive && resolve(tag) === view,
@@ -216,7 +228,7 @@ class AccessibilityFocusModule(private val context: ReactApplicationContext) :
       sameRoot = root != null && activity?.window?.decorView === root && view?.rootView === root,
       attached = view?.isAttachedToWindow == true && root?.isAttachedToWindow == true,
       shown = view?.isShown == true,
-      laidOut = view?.isLaidOut == true,
+      visibleBounds = visibleBounds,
       windowFocused = view?.hasWindowFocus() == true,
       readerEnabled = manager?.isEnabled == true,
       touchExploration = manager?.isTouchExplorationEnabled == true,

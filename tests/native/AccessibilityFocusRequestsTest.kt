@@ -17,6 +17,11 @@ class AccessibilityFocusRequestsTest {
     var activity = Any()
     var root = Any()
     var missing = false
+    var width = 48
+    var height = 48
+    var globalVisible = true
+    var visibleWidth = 48
+    var visibleHeight = 48
     var state = AccessibilityFocusState(true, true, true, true, true, true, true, false, false, false)
     var actions = 0
     var actionResult = true
@@ -28,7 +33,9 @@ class AccessibilityFocusRequestsTest {
         if (throwCapture) throw IllegalStateException("synthetic")
         if (missing) null else Target(view, activity, root)
       },
-      { target: Target, _: Int -> state.copy(sameView = state.sameView && target.view === view,
+      { target: Target, _: Int -> state.copy(
+        visibleBounds = state.visibleBounds && accessibilityFocusVisibleBounds(width, height, globalVisible, visibleWidth, visibleHeight),
+        sameView = state.sameView && target.view === view,
         sameActivity = state.sameActivity && target.activity === activity,
         sameRoot = state.sameRoot && target.root === root) },
     ) {
@@ -58,6 +65,46 @@ class AccessibilityFocusRequestsTest {
     h.restore(); h.drain()
     assertEquals(listOf(true, false), h.restores)
     assertEquals(1, h.actions)
+  }
+
+  @Test fun positiveVisibleBoundsCanRestoreWithoutFrameworkLayoutFlag() {
+    val h = Harness()
+    // Code24 trace's attach-cycle flag was false despite visible bounds. The
+    // adapter now supplies actual geometry; partial visibility is sufficient.
+    h.width = 96
+    h.visibleWidth = 32
+    h.capture(); h.drain(); h.afterDismissWithReader()
+    h.restore(); h.drain()
+    assertEquals(listOf(true), h.captures)
+    assertEquals(listOf(true), h.restores)
+    assertEquals(1, h.actions)
+  }
+
+  @Test fun zeroSizedOrFullyClippedTargetsNeverReceiveFocus() {
+    for (invalid in listOf("width", "height", "clipped", "visibleWidth", "visibleHeight")) {
+      val h = Harness()
+      when (invalid) {
+        "width" -> h.width = 0
+        "height" -> h.height = 0
+        "clipped" -> h.globalVisible = false
+        "visibleWidth" -> h.visibleWidth = 0
+        else -> h.visibleHeight = 0
+      }
+      h.capture(); h.drain(); h.afterDismissWithReader(); h.restore(); h.drain()
+      assertEquals(listOf(false), h.restores)
+      assertEquals(0, h.actions)
+    }
+  }
+
+  @Test fun becomingClippedBeforeQueuedRestoreConsumesTheTicketWithoutReplay() {
+    val h = Harness()
+    h.capture(); h.drain(); h.afterDismissWithReader(); h.restore()
+    h.globalVisible = false
+    h.drain()
+    h.globalVisible = true
+    h.restore(); h.drain()
+    assertEquals(listOf(false, false), h.restores)
+    assertEquals(0, h.actions)
   }
 
   @Test fun firstCaptureOfResumedLazyModuleSurvivesPendingUiRegistration() {
@@ -183,14 +230,14 @@ class AccessibilityFocusRequestsTest {
     }
   }
 
-  @Test fun detachedHiddenUnlaidOutAndInactiveTargetsCannotRestore() {
-    for (changed in listOf("attached", "shown", "layout", "host")) {
+  @Test fun detachedHiddenNonvisibleAndInactiveTargetsCannotRestore() {
+    for (changed in listOf("attached", "shown", "bounds", "host")) {
       val h = Harness()
       h.capture(); h.drain(); h.afterDismissWithReader()
       h.state = when (changed) {
         "attached" -> h.state.copy(attached = false)
         "shown" -> h.state.copy(shown = false)
-        "layout" -> h.state.copy(laidOut = false)
+        "bounds" -> h.state.copy(visibleBounds = false)
         else -> h.state.copy(hostActive = false)
       }
       h.restore(); h.drain()

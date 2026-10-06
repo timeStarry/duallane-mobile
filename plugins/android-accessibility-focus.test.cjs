@@ -59,6 +59,14 @@ test('a lazily created resumed module opens its ticket gate before posting lifec
   assert.match(initialize, /context\.lifecycleState == LifecycleState\.RESUMED/);
 });
 
+test('restoration checks current visible geometry rather than the attach-cycle layout flag', () => {
+  assert.match(ACCESSIBILITY_FOCUS_SOURCE, /val visibleBounds: Boolean/);
+  assert.match(ACCESSIBILITY_FOCUS_SOURCE, /view\.getGlobalVisibleRect\(visibleRect\)/);
+  assert.match(ACCESSIBILITY_FOCUS_SOURCE, /view\.width, view\.height/);
+  assert.match(ACCESSIBILITY_FOCUS_SOURCE, /visibleRect\.width\(\), visibleRect\.height\(\)/);
+  assert.doesNotMatch(ACCESSIBILITY_FOCUS_SOURCE, /isLaidOut|val laidOut:/);
+});
+
 test('generated native source and checked-in registration match the plugin', () => {
   assert.equal(readFileSync(join(__dirname, '../android/app/src/main/java/com/timestarry/duallane/AccessibilityFocusModule.kt'), 'utf8').replaceAll('\r\n', '\n'), ACCESSIBILITY_FOCUS_SOURCE);
   assert.equal(installAccessibilityFocusPackage(application()), application());
