@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
-import { AppState, FlatList, View, type MeasureInWindowOnSuccessCallback } from 'react-native';
+import { AppState, FlatList, Keyboard, View, type MeasureInWindowOnSuccessCallback } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ChatScreen } from '../src/features/chat/screens';
 import type { Runtime } from '../src/data/runtime';
@@ -13,13 +13,15 @@ import type { WorkspaceMessageDisplayItem } from '../src/domain/hidden-messages'
 
 let mockFocused = true;
 let mockPanel = 'none';
+let mockCompact = false;
+let mockInsufficientSpace = false;
 jest.mock('@react-navigation/native', () => ({
   ...jest.requireActual('@react-navigation/native'),
   useIsFocused: () => mockFocused,
   useNavigation: () => ({ goBack: jest.fn() }),
 }));
 jest.mock('../src/ui/useChatIme', () => ({
-  useChatIme: () => ({ panel: mockPanel, dock: { dockBottom: 0, panelHeight: 0 }, openPanel: jest.fn(), closePanel: jest.fn(), setPanel: jest.fn() }),
+  useChatIme: () => ({ panel: mockPanel, compact: mockCompact, insufficientSpace: mockInsufficientSpace, availableContentHeight: 84, minimumComposerHeight: 48, dock: { dockBottom: 0, panelHeight: 0 }, openPanel: jest.fn(), closePanel: jest.fn(), setPanel: jest.fn() }),
 }));
 jest.mock('expo/fetch', () => ({ fetch: jest.fn() }));
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { extra: { environment: 'test', apiOrigin: '', channel: 'internal' } }, nativeAppVersion: '0.2.1', nativeBuildVersion: '3' } }));
@@ -111,6 +113,8 @@ beforeEach(() => {
   useWorkspace.getState().reset();
   mockFocused = true;
   mockPanel = 'none';
+  mockCompact = false;
+  mockInsufficientSpace = false;
   AppState.currentState = 'active';
   jest.spyOn(FlatList.prototype, 'scrollToIndex').mockImplementation(() => undefined);
   jest.spyOn(FlatList.prototype, 'scrollToOffset').mockImplementation(() => undefined);
@@ -125,6 +129,69 @@ beforeEach(() => {
   jest.spyOn(FlatList.prototype, 'getScrollResponder').mockImplementation(() => (
     { scrollToEnd: mockNativeScrollToEnd } as unknown as ReturnType<FlatList['getScrollResponder']>
   ));
+});
+
+test('a compact keyboard keeps the topic identity, navigation and explicit group-sync choice reachable', async () => {
+  seed(topicTarget, []);
+  useWorkspace.setState(s => ({ topics: { ...s.topics, t1: { ...s.topics.t1!, allowSyncToGroup: true } } }));
+  useWorkspace.getState().setDraft(targetKey(topicTarget), { text: 'synthetic compact topic', mentionIds: [] });
+  mockCompact = true;
+  const runtime = createRuntime();
+  const view = render(screen(runtime, topicTarget));
+  expect(view.getByRole('button', { name: '返回' })).toBeTruthy();
+  expect(view.getByRole('button', { name: '会话详情' })).toBeTruthy();
+  expect(view.getByLabelText('消息').props.value).toBe('synthetic compact topic');
+  fireEvent.press(view.getByRole('button', { name: 'Topic，只发到话题，点按切换' }));
+  expect(view.getByRole('button', { name: 'Topic，将同步到群聊，点按切换' })).toBeTruthy();
+  fireEvent.press(view.getByRole('button', { name: '发送' }));
+  expect(runtime.send).toHaveBeenCalledWith('g1', 'synthetic compact topic', undefined, undefined, expect.objectContaining({ topicId: 't1', syncToGroup: true }));
+  await act(async () => undefined);
+});
+
+test('an opaque keyboard leaving less than a full input row is dismissed without changing the draft or sending', async () => {
+  seed(conversationTarget, []);
+  useWorkspace.getState().setDraft('g1', { text: 'synthetic preserved draft', mentionIds: [] });
+  mockCompact = true;
+  mockInsufficientSpace = true;
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await waitFor(() => expect(dismiss).toHaveBeenCalled());
+  expect(view.getByText('当前可用高度不足，请转为竖屏后继续输入。')).toBeTruthy();
+  expect(useWorkspace.getState().drafts.g1?.text).toBe('synthetic preserved draft');
+  expect(runtime.send).not.toHaveBeenCalled();
+});
+
+test('closing a topic with its compact keyboard open retains the title and both navigation controls', async () => {
+  seed(topicTarget, []);
+  useWorkspace.getState().setDraft(targetKey(topicTarget), { text: 'synthetic retained topic draft', mentionIds: [] });
+  mockCompact = true;
+  const runtime = createRuntime();
+  const view = render(screen(runtime, topicTarget));
+  act(() => useWorkspace.setState(s => ({ topics: { ...s.topics, t1: { ...s.topics.t1!, status: 'closed' } } })));
+  expect(view.getByText('Topic')).toBeTruthy();
+  expect(view.getByRole('button', { name: '返回' })).toBeTruthy();
+  expect(view.getByRole('button', { name: '会话详情' })).toBeTruthy();
+  expect(view.queryByLabelText('消息')).toBeNull();
+  expect(useWorkspace.getState().drafts[targetKey(topicTarget)]?.text).toBe('synthetic retained topic draft');
+  expect(runtime.send).not.toHaveBeenCalled();
+  await act(async () => undefined);
+});
+
+test('a send error that would cover a compact composer dismisses the keyboard and clears on deliberate refocus', async () => {
+  seed(conversationTarget, []);
+  useWorkspace.getState().setDraft('g1', { text: 'synthetic failed compact send', mentionIds: [] });
+  mockCompact = true;
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
+  const runtime = createRuntime();
+  runtime.send.mockRejectedValue(new Error('synthetic transport error'));
+  const view = render(screen(runtime));
+  fireEvent.press(view.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(dismiss).toHaveBeenCalledTimes(1));
+  expect(useWorkspace.getState().drafts.g1?.text).toBe('synthetic failed compact send');
+  fireEvent(view.getByLabelText('消息'), 'focus');
+  expect(runtime.send).toHaveBeenCalledTimes(1);
+  expect(dismiss).toHaveBeenCalledTimes(1);
 });
 
 test('an initially long async card does not read or hide latest until the real bottom and tail are visible', async () => {

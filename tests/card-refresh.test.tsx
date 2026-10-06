@@ -134,6 +134,59 @@ test('background to foreground resume refreshes mounted cards after authorizatio
   expect(showMessageNotification).not.toHaveBeenCalled();
 });
 
+test('resume revalidation reserves measured card geometry without retaining its body or actions', async () => {
+  const view = render(<WorkspaceCard block={block} runtime={runtime} context={context} />);
+  await waitFor(() => expect(view.getByText('Synthetic private detail')).toBeTruthy());
+  const previousLayout = view.getByTestId('workspace-card').props.onLayout;
+  fireEvent(view.getByTestId('workspace-card'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 2400 } } });
+  const pending = deferred<Awaited<ReturnType<typeof fetch>>>();
+  fetchMock.mockReturnValueOnce(pending.promise);
+  act(() => useWorkspace.getState().refreshCards());
+  await waitFor(() => expect(cardCalls()).toHaveLength(2));
+  expect(view.getByTestId('workspace-card').props.style.minHeight).toBe(2400);
+  expect(view.queryByText('Synthetic private detail')).toBeNull();
+  expect(view.queryByRole('button', { name: '转为正式需求' })).toBeNull();
+  // A queued layout of the previous scope must not replace the reserved height.
+  act(() => previousLayout({ nativeEvent: { layout: { width: 320, height: 60 } } }));
+  expect(view.getByTestId('workspace-card').props.style.minHeight).toBe(2400);
+  await act(async () => pending.resolve(response({ card: card('planned', 2) })));
+  expect(view.getByText('已计划')).toBeTruthy();
+  expect(view.getByTestId('workspace-card').props.style.minHeight).toBeUndefined();
+  // The new measured height is authoritative once the reservation is removed.
+  fireEvent(view.getByTestId('workspace-card'), 'layout', { nativeEvent: { layout: { width: 320, height: 900 } } });
+  const next = deferred<Awaited<ReturnType<typeof fetch>>>();
+  fetchMock.mockReturnValueOnce(next.promise);
+  act(() => useWorkspace.getState().refreshCards());
+  expect(view.getByTestId('workspace-card').props.style.minHeight).toBe(900);
+  await act(async () => next.resolve(response({ card: card('planned', 2) })));
+});
+
+test.each(['card.updated', 'card.invalidated'])('an explicit %s revision never reserves the old card geometry', async type => {
+  const view = render(<WorkspaceCard block={block} runtime={runtime} context={context} />);
+  await waitFor(() => expect(view.getByText('Synthetic private detail')).toBeTruthy());
+  fireEvent(view.getByTestId('workspace-card'), 'layout', { nativeEvent: { layout: { width: 320, height: 2400 } } });
+  const pending = deferred<Awaited<ReturnType<typeof fetch>>>();
+  fetchMock.mockReturnValueOnce(pending.promise);
+  await act(async () => applyEvent(runtime, event(type)));
+  expect(view.queryByText('Synthetic private detail')).toBeNull();
+  expect(view.getByTestId('workspace-card').props.style.minHeight).toBeUndefined();
+  await act(async () => pending.resolve(response({ card: { ...card(), status: 'invalidated' } })));
+});
+
+test.each([403, 404, 500])('failed revalidation (%s) releases the placeholder geometry without restoring old content', async status => {
+  const view = render(<WorkspaceCard block={block} runtime={runtime} context={context} />);
+  await waitFor(() => expect(view.getByText('Synthetic private detail')).toBeTruthy());
+  fireEvent(view.getByTestId('workspace-card'), 'layout', { nativeEvent: { layout: { width: 320, height: 2400 } } });
+  const pending = deferred<Awaited<ReturnType<typeof fetch>>>();
+  fetchMock.mockReturnValueOnce(pending.promise);
+  act(() => useWorkspace.getState().refreshCards());
+  expect(view.getByTestId('workspace-card').props.style.minHeight).toBe(2400);
+  await act(async () => pending.resolve({ ok: false, status, json: async () => ({ error: { code: 'permission.denied' } }) } as Awaited<ReturnType<typeof fetch>>));
+  await waitFor(() => expect(view.getByTestId('workspace-card').props.style.minHeight).toBeUndefined());
+  expect(view.queryByText('Synthetic private detail')).toBeNull();
+  expect(view.queryByRole('button', { name: '转为正式需求' })).toBeNull();
+});
+
 test('a changed authoritative snapshot refreshes mounted cards; repeated unchanged HTTP snapshots do not poll card resources', async () => {
   const view = render(<WorkspaceCard block={block} runtime={runtime} context={context} />);
   await waitFor(() => expect(view.getByText('待处理')).toBeTruthy());

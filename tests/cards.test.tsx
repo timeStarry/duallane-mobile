@@ -259,6 +259,7 @@ test('an authorized requirement action refreshes state and response from the lat
   const runtime = { resolveCard: jest.fn().mockResolvedValueOnce(initial).mockResolvedValueOnce(updated), cardAction: jest.fn().mockResolvedValue({}) } as unknown as Runtime;
   const view = render(<WorkspaceCard block={requirementBlock} runtime={runtime} />);
   await waitFor(() => expect(view.getByRole('button', { name: '转为正式需求' })).toBeTruthy());
+  fireEvent(view.getByTestId('workspace-card'), 'layout', { nativeEvent: { layout: { width: 320, height: 2400 } } });
   fireEvent.press(view.getByRole('button', { name: '转为正式需求' }));
   await waitFor(() => expect(view.getByText('已计划')).toBeTruthy());
   expect(view.getByText('合成最新处理说明')).toBeTruthy();
@@ -281,6 +282,7 @@ test('denied actions clear the previously authorized body while ordinary transpo
   } as unknown as Runtime;
   const view = render(<WorkspaceCard block={requirementBlock} runtime={runtime} />);
   await waitFor(() => expect(view.getByRole('button', { name: '转为正式需求' })).toBeTruthy());
+  fireEvent(view.getByTestId('workspace-card'), 'layout', { nativeEvent: { layout: { width: 320, height: 2400 } } });
   fireEvent.press(view.getByRole('button', { name: '转为正式需求' }));
   await waitFor(() => expect(view.getByText('无法连接到服务器，请检查网络后重试（net.reset）')).toBeTruthy());
   expect(view.getByText('合成处理说明')).toBeTruthy();
@@ -288,6 +290,7 @@ test('denied actions clear the previously authorized body while ordinary transpo
   await waitFor(() => expect(view.getByText('你当前不能执行此操作')).toBeTruthy());
   expect(view.queryByText('合成处理说明')).toBeNull();
   expect(view.queryByRole('button', { name: '转为正式需求' })).toBeNull();
+  expect(view.getByTestId('workspace-card').props.style.minHeight).toBeUndefined();
 });
 
 test('a late action from another card cannot request or restore its old body', async () => {

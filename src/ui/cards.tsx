@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, Text, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
 import { MapPin, Megaphone } from 'lucide-react-native';
 import type { Block } from '../domain/contracts';
 import { echoKindLabel, echoReleaseView, type EchoReleaseView } from '../domain/echo-release';
@@ -31,6 +31,13 @@ type CardScope = {
   readable: boolean; revision: number; syncVersion: number;
 };
 type ResolvedCard = { scope: CardScope; model: CardModel };
+
+function sameLayoutScope(previous: CardScope, next: CardScope) {
+  return previous.accountKey === next.accountKey && previous.api === next.api && previous.runtime === next.runtime
+    && previous.cardId === next.cardId && previous.cardType === next.cardType && previous.schemaVersion === next.schemaVersion
+    && previous.fallbackText === next.fallbackText && previous.conversationId === next.conversationId && previous.topicId === next.topicId
+    && previous.readable && next.readable && previous.revision === next.revision;
+}
 
 function canReadCard(context?: CardContext) {
   const state = useWorkspace.getState();
@@ -72,6 +79,7 @@ export function WorkspaceCard({
   context?: CardContext;
 }) {
   const t = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
   const { cardId, cardType, schemaVersion, fallbackText } = block;
   const conversationId = context?.conversationId;
   const topicId = context?.topicId ?? undefined;
@@ -87,6 +95,21 @@ export function WorkspaceCard({
   activeScope.current = scope;
   const [resolved, setResolved] = useState<ResolvedCard>();
   const model = readable && resolved?.scope === scope ? resolved.model : fallbackModel(block);
+  const [measured, setMeasured] = useState<{ scope: CardScope; width: number; windowWidth: number; height: number }>();
+  const [layoutWidth, setLayoutWidth] = useState<number>();
+  const [failedScope, setFailedScope] = useState<CardScope>();
+  // Revalidation still redacts the old body/actions. Reserving its measured
+  // height avoids collapsing every mounted card underneath a history reader.
+  const reservedHeight = resolved?.scope !== scope && failedScope !== scope && measured && measured.scope.syncVersion !== scope.syncVersion
+    && measured.width === layoutWidth && measured.windowWidth === windowWidth && sameLayoutScope(measured.scope, scope) ? measured.height : undefined;
+  const onCardLayout = (event: LayoutChangeEvent) => {
+    if (activeScope.current !== scope) return;
+    const { width, height } = event.nativeEvent.layout;
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+    setLayoutWidth(previous => previous === width ? previous : width);
+    if (readable && resolved?.scope === scope) setMeasured(previous => previous?.scope === scope && previous.width === width && previous.height === height
+      ? previous : { scope, width, windowWidth, height });
+  };
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const invocation = useRef(0);
@@ -102,6 +125,7 @@ export function WorkspaceCard({
     const generation = invocation;
     const currentInvocation = ++generation.current;
     setResolved(undefined);
+    setFailedScope(undefined);
     setError('');
     setBusy('');
     busyRef.current = '';
@@ -114,10 +138,14 @@ export function WorkspaceCard({
       const next = projectCardModel(card, requestedBlock);
       setSelectedOptionIds(stringArray(next.payload.selectedOptionIds));
       setResolved({ scope, model: next });
-    }).catch(caught => { if (current(currentInvocation)) setError(errorText(caught)); });
+    }).catch(caught => {
+      if (!current(currentInvocation)) return;
+      setFailedScope(scope);
+      setError(errorText(caught));
+    });
     return () => { ++generation.current; };
   }, [cardId, cardType, schemaVersion, fallbackText, runtime, readable, conversationId, topicId, scope, current]);
-  if (model.release) return <EchoReleaseCard view={model.release} status={model.status} error={error} />;
+  if (model.release) return <View testID="workspace-card" onLayout={onCardLayout} style={{ minHeight: reservedHeight }}><EchoReleaseCard view={model.release} status={model.status} error={error} /></View>;
   const kind = echoKindLabel(model.cardType);
   const open = model.topicId && model.actions.includes('open_topic') ? () => onOpenTopic?.(model.topicId) : undefined;
   const options = model.cardType === 'echo.solicitation' ? voteOptions(model.payload.options) : [];
@@ -142,7 +170,10 @@ export function WorkspaceCard({
       setSelectedOptionIds(stringArray(next.payload.selectedOptionIds));
     }).catch(caught => {
       if (!current(currentInvocation)) return;
-      if (caught instanceof ApiError && [401, 403, 404].includes(caught.status)) setResolved(undefined);
+      if (caught instanceof ApiError && [401, 403, 404].includes(caught.status)) {
+        setFailedScope(scope);
+        setResolved(undefined);
+      }
       setError(errorText(caught));
     }).finally(() => {
       if (!current(currentInvocation)) return;
@@ -151,7 +182,7 @@ export function WorkspaceCard({
     });
   };
   return (
-    <View style={{ gap: 8, padding: 8, borderRadius: t.radius.control, backgroundColor: t.soft }}>
+    <View testID="workspace-card" onLayout={onCardLayout} style={{ minHeight: reservedHeight, gap: 8, padding: 8, borderRadius: t.radius.control, backgroundColor: t.soft }}>
       {kind ? <Label muted>{kind}</Label> : null}
       <Text style={{ color: t.text, fontWeight: '600' }}>{model.title}</Text>
       {model.summary ? <Text style={{ color: t.text, fontSize: t.type.body }}>{model.summary}</Text> : null}

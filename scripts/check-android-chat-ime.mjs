@@ -36,11 +36,15 @@ try {
   const densityText = adb('shell', 'wm', 'density');
   const densities = [...densityText.matchAll(/(?:Physical|Override) density: (\d+)/g)];
   const density = densities.length ? Number(densities.at(-1)[1]) / 160 : NaN;
-  const controls = Object.fromEntries(['添加', '表情', '发送'].map(label => {
-    const matches = nodes.filter(node => node.includes(`content-desc="${label}"`) && /clickable="true"/.test(node));
+  const options = nodes.filter(node => /content-desc="输入选项(?:，[^"]*)?"/.test(node) && /clickable="true"/.test(node));
+  const actionLabels = options.length === 1 ? ['输入选项', '发送', '返回', '会话详情'] : ['添加', '表情', '发送', '返回', '会话详情'];
+  const controls = Object.fromEntries(actionLabels.map(label => {
+    const matches = label === '输入选项' ? options : nodes.filter(node => node.includes(`content-desc="${label}"`) && /clickable="true"/.test(node));
     const bounds = matches.length === 1 ? matches[0].match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/)?.slice(1).map(Number) : undefined;
     const valid = !!bounds && Number.isFinite(density) && density > 0
-      && (bounds[2] - bounds[0]) / density >= 48 && (bounds[3] - bounds[1]) / density >= 48
+      // Accessibility rounds native layout edges to whole pixels. A logical
+      // 48dp target at 548dpi measures 164px (47.88dp), rather than 164.4px.
+      && bounds[2] - bounds[0] >= Math.floor(48 * density) && bounds[3] - bounds[1] >= Math.floor(48 * density)
       && keyboardTopPx !== null && bounds[1] >= 0 && bounds[3] <= keyboardTopPx;
     return [label, { bounds: bounds ?? null, atLeast48dpAndAboveKeyboard: valid }];
   }));

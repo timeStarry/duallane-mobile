@@ -7,6 +7,12 @@
 该只读检查要求输入焦点、非全屏提取模式和 48dp 动作位于键盘可见区域之上；
 无障碍树中的底层按钮不能单独证明未被 IME 覆盖。检查不发送消息或记录正文。
 
+键盘上方空间不足时，Chat 会改用紧凑输入行并保留返回、会话身份、详情与发送。
+窄窗口的添加／表情／回复和附件取消从「输入选项」进入，需实测打开和取消流程；
+若连完整输入行都放不下，收起键盘并提示转为竖屏，不缩小系统字体或触控目标。
+历史阅读恢复须比较同一消息的实际屏幕位置，单测中的列表属性／无滚动命令不是
+原生锚点保持证据。卡片重新校验仍立即隐藏正文及旧动作，仅暂保同身份实测高度。
+
 - TypeScript、lint、unit/component/contract tests 和 `git diff --check`。
 - Android debug/release 构建，签名配置检查，APK/AAB 安装与启动 smoke。
 - `version: 1` 消息、未知 block/kind/major、plainText 缺失、恶意 HTML 的 fallback fixture。

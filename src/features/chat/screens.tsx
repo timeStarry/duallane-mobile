@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, FlatList, Pressable, ScrollView, Text, View, type ViewToken } from 'react-native';
+import { AppState, FlatList, Keyboard, Pressable, ScrollView, Text, View, useWindowDimensions, type ViewToken } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { z } from 'zod';
@@ -150,7 +150,8 @@ export function ChatScreen({
   const mentionQuery = activeMentionQuery(draft.text);
   const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
   const focused = useIsFocused();
-  const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '');
+  const dimensions = useWindowDimensions();
+  const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '', insets.top);
   const projections = useTopicProjections(runtime, target, focused);
   const echo = useEchoWorkflow(runtime, target.kind === 'conversation' ? target.id : undefined, focused);
   const echoRoute = useRef({ key, accountKey, focused });
@@ -182,6 +183,8 @@ export function ChatScreen({
   currentActivity.current = activity;
   const [readConfirmation, setReadConfirmation] = useState<{ observation: typeof observation; revision: number }>();
   const [progress, setProgress] = useState('');
+  const feedback = error || progress || projections.feedback.text;
+  const [feedbackLayout, setFeedbackLayout] = useState<{ text: string; width: number; fontScale: number; height: number }>();
   const [emotes, setEmotes] = useState<Emote[]>([]);
   const [library, setLibrary] = useState<EmoteLibrary | null>(null);
   const chatSettings = useWorkspace(s => s.chatSettings);
@@ -419,6 +422,15 @@ export function ChatScreen({
   }, [accountKey, activity, canRead, focused, foreground, key, lastId, lastStatus, observation, online, readConfirmation, runtime, target.id, target.kind]);
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
+  const compactControls = ime.compact && canSend;
+  const feedbackHeight = !feedback ? 0 : feedbackLayout?.text === feedback && feedbackLayout.width === dimensions.width && feedbackLayout.fontScale === dimensions.fontScale
+    ? feedbackLayout.height : 24 + t.type.bodyLine * dimensions.fontScale;
+  useEffect(() => {
+    if (ime.insufficientSpace || (ime.compact && (!canSend || ime.availableContentHeight < ime.minimumComposerHeight + feedbackHeight))) {
+      Keyboard.dismiss();
+      if (ime.insufficientSpace) setError('当前可用高度不足，请转为竖屏后继续输入。');
+    }
+  }, [canSend, feedbackHeight, ime.availableContentHeight, ime.compact, ime.insufficientSpace, ime.minimumComposerHeight]);
   const send = (existing?: Message) => {
     const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
     if (!existing && !latest.text.trim() && !latest.pendingAttachment) return;
@@ -534,8 +546,8 @@ export function ChatScreen({
     return () => cancelAnimationFrame(frame);
   }, [key, listItems, resolvedFocus]);
   return (
-    <View style={[styles.page, { backgroundColor: t.bg }]}>
-      <AppHeader
+    <View style={[styles.page, { backgroundColor: t.bg, paddingTop: compactControls ? insets.top : 0 }]}>
+      {!compactControls ? <AppHeader
         includeTopInset
         title={topic?.title ?? conversation?.displayTitle ?? '会话'}
         subtitle={target.kind === 'topic' ? (topic?.joined ? `话题 · ${conversation?.displayTitle ?? ''}` : '未加入，只能查看摘要') : conversation?.type === 'group' ? `${conversation.members.length} 位成员` : undefined}
@@ -551,8 +563,14 @@ export function ChatScreen({
           </IconButton>
         )}
         banner={<ConnectionBanner connection={connection} />}
-      />
-      <InlineFeedback text={error || progress || projections.feedback.text} tone={error ? 'danger' : progress ? 'info' : projections.feedback.tone} />
+      /> : null}
+      <View onLayout={event => {
+        const height = event.nativeEvent.layout.height;
+        setFeedbackLayout(previous => previous?.text === feedback && previous.width === dimensions.width && previous.fontScale === dimensions.fontScale && previous.height === height
+          ? previous : { text: feedback, width: dimensions.width, fontScale: dimensions.fontScale, height });
+      }}>
+        <InlineFeedback text={feedback} tone={error ? 'danger' : progress ? 'info' : projections.feedback.tone} />
+      </View>
       {loading && <Loading />}
       {target.kind === 'topic' && topic && !topic.joined ? (
         <View>
@@ -708,20 +726,29 @@ export function ChatScreen({
       )}
       {canSend ? (
         <View style={{ paddingBottom: ime.dock.dockBottom }}>
-          {echo.available ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: t.space.sm, paddingHorizontal: 16, paddingTop: t.space.sm }}>
+          {echo.available && !compactControls ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: t.space.sm, paddingHorizontal: 16, paddingTop: t.space.sm }}>
             <Button title="提交需求" secondary disabled={echo.busy} onPress={() => { void echo.start('/need'); }} />
             <Button title="反馈问题" secondary disabled={echo.busy} onPress={() => { void echo.start('/feedback'); }} />
             {echo.canResume ? <Button title="继续 Echo 流程" secondary disabled={echo.busy} onPress={() => { void echo.resume(); }} /> : null}
           </View> : null}
-          {draft.mentionSpans === undefined && draft.mentionIds.length > 0 ? (
+          {!compactControls && draft.mentionSpans === undefined && draft.mentionIds.length > 0 ? (
             <View style={{ paddingHorizontal: 16 }}><Label muted>旧草稿中的提及请重新选择成员</Label></View>
           ) : null}
-          {target.kind === 'topic' && topic?.allowSyncToGroup ? (
+          {!compactControls && target.kind === 'topic' && topic?.allowSyncToGroup ? (
             <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: t.hit, justifyContent: 'center' }}>
               <Label muted>{syncToGroup ? '将同步到群聊' : '默认只发到话题，点按改为同步到群'}</Label>
             </Pressable>
           ) : null}
           <Composer
+            onFocus={() => setError('')}
+            compact={compactControls}
+            leading={compactControls ? <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.xs }}>
+              <IconButton label="返回" onPress={() => navigation.goBack()}><ChevronLeft color={t.text} size={24} /></IconButton>
+              {target.kind === 'topic' && topic?.allowSyncToGroup ? <Pressable accessibilityRole="button" accessibilityLabel={`${topic.title}，${syncToGroup ? '将同步到群聊' : '只发到话题'}，点按切换`} onPress={() => setSyncToGroup(value => !value)} style={{ minHeight: t.hit, justifyContent: 'center', width: dimensions.width < 480 ? 48 : 120 }}>
+                <Text numberOfLines={1} style={{ color: t.text, fontSize: t.type.meta }}>{topic.title}</Text>
+              </Pressable> : <Text accessibilityRole="header" numberOfLines={1} style={{ color: t.text, fontSize: t.type.meta, width: dimensions.width < 480 ? 44 : 120 }}>{topic?.title ?? conversation?.displayTitle ?? '会话'}</Text>}
+            </View> : undefined}
+            trailing={compactControls ? <IconButton label="会话详情" onPress={details}><Info color={t.shared} size={22} /></IconButton> : undefined}
             value={draft.text}
             onChangeText={text => runtime.patchDraft(key, editDraftText(useWorkspace.getState().drafts[key] ?? draft, text))}
             onSend={() => send()}
