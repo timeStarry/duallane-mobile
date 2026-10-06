@@ -70,6 +70,7 @@ export function Composer({
           accessibilityLabel="消息"
           multiline
           blurOnSubmit={false}
+          disableFullscreenUI
           placeholder={placeholder}
           placeholderTextColor={t.muted}
           value={value}

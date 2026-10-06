@@ -2,6 +2,11 @@
 
 ## 必过检查
 
+真机聊天 IME 回归：在已授权测试会话打开键盘，以竖屏和横屏分别运行
+`node scripts/check-android-chat-ime.mjs --serial DEVICE`，并核对截图。
+该只读检查要求输入焦点、非全屏提取模式和 48dp 动作位于键盘可见区域之上；
+无障碍树中的底层按钮不能单独证明未被 IME 覆盖。检查不发送消息或记录正文。
+
 - TypeScript、lint、unit/component/contract tests 和 `git diff --check`。
 - Android debug/release 构建，签名配置检查，APK/AAB 安装与启动 smoke。
 - `version: 1` 消息、未知 block/kind/major、plainText 缺失、恶意 HTML 的 fallback fixture。
