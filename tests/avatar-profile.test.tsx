@@ -1,5 +1,5 @@
 import React from 'react';
-import { AccessibilityInfo, AppState, Dimensions, Modal, ScrollView, View } from 'react-native';
+import { AccessibilityInfo, AppState, Dimensions, Modal, NativeModules, Platform, ScrollView, View } from 'react-native';
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import { createNavigationContainerRef, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -55,11 +55,15 @@ describe('avatar modal returns focus to its own trigger',()=>{
   const frames=new Map<number,FrameRequestCallback>();
   const listeners=new Map<string,Set<(state:typeof AppState.currentState)=>void>>();
   let nextFrame=0;
-  let focus:jest.SpyInstance;
+  let focus:jest.Mock;
+  let capture:jest.Mock;
+  let cancel:jest.Mock;
+  let previousModule:unknown;
   let handle:jest.SpyInstance;
   let originalState:typeof AppState.currentState;
   beforeEach(()=>{
     frames.clear();listeners.clear();nextFrame=0;originalState=AppState.currentState;AppState.currentState='active';
+    jest.replaceProperty(Platform,'OS','android');
     jest.spyOn(AppState,'addEventListener').mockImplementation((type,listener)=>{
       const group=listeners.get(type)??new Set();listeners.set(type,group);group.add(listener);
       return {remove:()=>{group.delete(listener);}};
@@ -68,9 +72,12 @@ describe('avatar modal returns focus to its own trigger',()=>{
     jest.spyOn(global,'cancelAnimationFrame').mockImplementation(id=>{frames.delete(id);});
     jest.spyOn(AccessibilityInfo,'isScreenReaderEnabled').mockResolvedValue(true);
     handle=jest.spyOn(jest.requireActual<typeof import('react-native')>('react-native'),'findNodeHandle').mockReturnValue(4243);
-    focus=jest.spyOn(AccessibilityInfo,'setAccessibilityFocus').mockImplementation(()=>undefined);
+    jest.spyOn(AccessibilityInfo,'setAccessibilityFocus').mockImplementation(()=>undefined);
+    previousModule=NativeModules.DualLaneAccessibilityFocus;
+    focus=jest.fn().mockResolvedValue(true);capture=jest.fn().mockResolvedValue(true);cancel=jest.fn();
+    NativeModules.DualLaneAccessibilityFocus={captureTarget:capture,restoreFocus:focus,cancelTarget:cancel};
   });
-  afterEach(()=>{AppState.currentState=originalState;jest.restoreAllMocks();});
+  afterEach(()=>{AppState.currentState=originalState;NativeModules.DualLaneAccessibilityFocus=previousModule;jest.restoreAllMocks();});
   function emit(type:string,state=AppState.currentState){
     act(()=>{for(const callback of [...(listeners.get(type)??[])])callback(state);});
   }
@@ -91,7 +98,7 @@ describe('avatar modal returns focus to its own trigger',()=>{
     fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));
     expect(focus).not.toHaveBeenCalled();await finishFocus();
     expect(focus).not.toHaveBeenCalled();emit('focus');await finishFocus();
-    expect(focus).toHaveBeenCalledTimes(1);expect(focus).toHaveBeenCalledWith(4243);
+    expect(focus).toHaveBeenCalledTimes(1);expect(focus).toHaveBeenCalledWith(capture.mock.calls[0]![1]);
     const trigger=view.UNSAFE_getAllByType(Button).find(button=>button.props.title==='更换头像');
     expect(handle).toHaveBeenCalledWith(trigger?.props.ref.current);
     expect(runtime.updateAvatar).not.toHaveBeenCalled();expect(runtime.updateProfile).not.toHaveBeenCalled();
@@ -131,6 +138,26 @@ describe('avatar modal returns focus to its own trigger',()=>{
       fireEvent.press(view.getByRole('button',{name:'更换头像'}));
     }
     await finishFocus();emit('focus');await finishFocus();expect(focus).not.toHaveBeenCalled();expect(runtime.updateAvatar).not.toHaveBeenCalled();
+  });
+  test.each(['unmount','route blur','account replacement','API replacement','new picker'] as const)('%s cancels a dispatched but pending native avatar focus',async reason=>{
+    const pending=deferred<boolean>();focus.mockReturnValueOnce(pending.promise);
+    const {view,nav}=screen();fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+    await waitFor(()=>expect(view.getByLabelText('所选头像中心裁剪预览')).toBeTruthy());show(view);
+    fireEvent.press(avatarDialog(view).getByRole('button',{name:'取消上传'}));emit('focus');await finishFocus();
+    expect(focus).toHaveBeenCalledTimes(1);
+    const ticket=capture.mock.calls[0]![1];expect(cancel).not.toHaveBeenCalledWith(ticket);
+    if(reason==='unmount')view.unmount();
+    else if(reason==='route blur')act(()=>nav.navigate('Other'));
+    else if(reason==='account replacement')act(()=>useWorkspace.setState({accountKey:'synthetic:u2'}));
+    else if(reason==='API replacement')act(()=>{runtime.api=new ApiClient('https://synthetic.invalid',async()=>undefined,()=>undefined);useWorkspace.setState({bootstrap:{...snapshot,auth:{currentUser:{...snapshot.auth.currentUser}}}});});
+    else{
+      jest.mocked(chooseAvatar).mockReturnValueOnce(new Promise(()=>undefined));
+      fireEvent.press(view.getByRole('button',{name:'更换头像'}));
+    }
+    expect(cancel).toHaveBeenCalledWith(ticket);
+    await act(async()=>pending.resolve(true));emit('focus');await finishFocus();
+    expect(focus).toHaveBeenCalledTimes(1);expect(AccessibilityInfo.setAccessibilityFocus).not.toHaveBeenCalled();
+    expect(runtime.updateAvatar).not.toHaveBeenCalled();
   });
 });
 

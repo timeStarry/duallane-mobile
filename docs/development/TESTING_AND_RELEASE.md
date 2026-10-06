@@ -69,6 +69,12 @@ HTTP headers 返回不代表正文传输结束。JSON／媒体／文件正文读
 
 ## 版本与发布
 
+Dialog 辅助焦点原生能力使用 `android-4`，见 [辅助焦点 ADR](../adr/2026-10-07-android-accessibility-focus.md)。
+新包必须分别实测先开读屏和弹窗显示后开读屏的取消、系统返回、选择器返回及同窗
+Home 恢复；记录触发控件、关闭即刻和稳定帧的实际绿色焦点与播报。窗口事件、
+原生动作返回值、UIA 节点存在或先前版本的成功结果均不能代替此检查。读屏开启时
+不得运行会停用服务的 UIAutomator dump，使用真实硬件导航和像素／音频证据。
+
 使用 `appVersion` SemVer、Android `versionCode`、`runtimeVersion` 和 `protocolMajor` 四个独立字段。
 发布前检查 release policy 的 latest/minimum/recommendation、APK 地址、OTA manifest、hash、签名、
 release notes 与 APK/AAB 一致。原生模块、权限、协议 major 或 runtime 变化必须走新的 Android 包。

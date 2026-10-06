@@ -20,6 +20,7 @@ class MainApplication : Application(), ReactApplication {
       context = applicationContext,
       packageList =
         PackageList(this).packages.apply {
+          add(AccessibilityFocusPackage())
           add(FontScalePackage())
           add(SaveFilePackage())
         }

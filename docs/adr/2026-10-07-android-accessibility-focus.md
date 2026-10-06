@@ -1,0 +1,50 @@
+# Android 弹窗辅助焦点恢复
+
+## 问题与证据
+
+正式 code23 在头像确认框显示之后启用 TalkBack，再以真实硬件导航取消，绿色焦点
+仍在“返回”。只观察的原生 trace 确认 Dialog 窗口已移除、Activity 已重新获得窗口
+焦点之后，Fabric → Surface → View 的事件 8 才送达；这个样本可以排除未发送和
+关闭前发送，不能证明全部内部调用或 TalkBack 收件。
+
+RN 0.83.10 的 `AccessibilityInfo.setAccessibilityFocus` 经 Fabric 发送
+`TYPE_VIEW_FOCUSED`，不等于执行 Android 的辅助焦点动作。在相同正式包、进程和
+同一事件 8 实际到达的 View 上，诊断仅显式调用一次公开的
+[View.performAccessibilityAction](https://developer.android.com/reference/android/view/View#performAccessibilityAction(int,%20android.os.Bundle))，
+使用 [ACTION_ACCESSIBILITY_FOCUS](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo#ACTION_ACCESSIBILITY_FOCUS)。
+返回值和目标辅助焦点状态均为 true；操作前绿色框在“返回”，操作后及约四分钟稳定
+帧均在“恢复 GitHub 头像”。这次动作晚于事件约 15.9 秒，属于阳性诊断，不能证明
+立即自动恢复的生产时序已经通过。录音转写没有确认目标播报，语音结果单独保留。
+
+## 决定与边界
+
+新增 `DualLaneAccessibilityFocus` 薄原生模块。共享 Dialog 的原生 onShow 后，在
+UI 线程通过 RN 公开 UIManager resolveView 捕获触发控件的准确实例；只保留弱引用、
+原 Activity、tag 和内存单调票据。捕获不要求读屏开启，支持显示弹窗之后开启读屏。
+关闭仍等待本周期真实 Activity 窗口回焦和当前读屏状态；JS 的账号、API、路由及
+ref 身份守卫均保留。原生恢复再次检查当前宿主、前台、代次、Activity/decor 身份、
+同一个 resolveView 实例、挂载、可见、布局和窗口焦点，以及辅助服务和触摸探索。
+通过后只执行一次公开的辅助焦点动作，不再发送 RN 事件 8 代替它。
+
+单槽票据在取消、消费、暂停和模块销毁时清理。旧捕获不能覆盖新请求，取消前排队
+的捕获、旧代次恢复、重复消费及回收 tag 都失效。系统选择器或同一可见弹窗从后台
+返回时创建新周期、重新捕获；隐藏周期不复活。没有轮询、固定延时、重复抢焦点、
+反射、树遍历、控件文本读取或诊断工具留在应用中。桥缺失或失败时不回退到旧事件。
+
+资料页失焦清理可能只更新 ref 代次而不产生新的 React commit。两个头像 Dialog
+各自注册内存取消引用，失焦、账号／API失效和新选择在增代前同步撤销排队票据；
+不等待下一次渲染。正常取消弹窗仍允许回到原入口，组件清理只移除自己的取消引用。
+
+新增能力使用 `android-4`，protocol major 仍为 1，必须重新安装 APK/AAB；不能向
+android-3 下发此 JS。没有新依赖、权限、持久化、日志、账号数据或服务端更改，OTA
+仍默认关闭。生产默认服务继续由构建环境注入。回滚用同正式证书、更高 versionCode
+重新构建已验证源码，保留用户数据。
+
+## 验证与未完成项
+
+组件回归覆盖实际窗口顺序、读屏后开启、捕获迟到、后台／新弹窗／卸载／scope
+失效、Strict Mode、失败和重复消费。Kotlin fixture 必须执行真实票据控制器和
+适配守卫；插件注册幂等及未知模板拒绝、实际应用 Kotlin 编译另行检查。
+这些结果不能替代新正式包上的读屏测试。新包需在不加载诊断工具的条件下检查正常
+开启与晚开启、直接取消、系统返回、SAF 返回、Home 恢复、稳定焦点和播报，另行
+复验普通弹窗、字体、短窗口及聊天／文件／通知。

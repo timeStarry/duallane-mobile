@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, within } from '@testing-library/react-native';
-import { AccessibilityInfo, AppState, Modal, ScrollView, View } from 'react-native';
+import { AccessibilityInfo, AppState, Modal, NativeModules, Platform, ScrollView, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ConversationRow } from '../src/ui/chrome';
@@ -136,7 +136,10 @@ describe('dialog return focus after native Activity window focus', () => {
   const frames = new Map<number, FrameRequestCallback>();
   const listeners = new Map<string, Set<(state: typeof AppState.currentState) => void>>();
   let frameId = 0;
-  let focus: jest.SpyInstance;
+  let focus: jest.Mock;
+  let capture: jest.Mock;
+  let cancel: jest.Mock;
+  let previousModule: unknown;
   let handle: jest.SpyInstance;
   let originalState: typeof AppState.currentState;
   const trigger = React.createRef<View>();
@@ -163,6 +166,7 @@ describe('dialog return focus after native Activity window focus', () => {
   }
   beforeEach(() => {
     frames.clear(); listeners.clear(); frameId = 0; allowed.mockReset().mockReturnValue(true);
+    jest.replaceProperty(Platform, 'OS', 'android');
     originalState = AppState.currentState; AppState.currentState = 'active';
     jest.spyOn(AppState, 'addEventListener').mockImplementation((type, listener) => {
       const group = listeners.get(type) ?? new Set(); listeners.set(type, group); group.add(listener);
@@ -171,10 +175,19 @@ describe('dialog return focus after native Activity window focus', () => {
     jest.spyOn(global, 'requestAnimationFrame').mockImplementation(callback => { frames.set(++frameId, callback); return frameId; });
     jest.spyOn(global, 'cancelAnimationFrame').mockImplementation(id => { frames.delete(id); });
     jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
-    focus = jest.spyOn(AccessibilityInfo, 'setAccessibilityFocus').mockImplementation(() => undefined);
+    jest.spyOn(AccessibilityInfo, 'setAccessibilityFocus').mockImplementation(() => undefined);
+    previousModule = NativeModules.DualLaneAccessibilityFocus;
+    focus = jest.fn().mockResolvedValue(true);
+    capture = jest.fn().mockResolvedValue(true);
+    cancel = jest.fn();
+    NativeModules.DualLaneAccessibilityFocus = { captureTarget: capture, restoreFocus: focus, cancelTarget: cancel };
     handle = jest.spyOn(jest.requireActual<typeof import('react-native')>('react-native'), 'findNodeHandle').mockReturnValue(4242);
   });
-  afterEach(() => { AppState.currentState = originalState; jest.restoreAllMocks(); });
+  afterEach(() => {
+    AppState.currentState = originalState;
+    NativeModules.DualLaneAccessibilityFocus = previousModule;
+    jest.restoreAllMocks();
+  });
   test('hide plus arbitrary JS frames does not focus while the native modal still owns the window', async () => {
     const view = render(tree(true)); show(view);
     view.rerender(tree(false));
@@ -182,7 +195,7 @@ describe('dialog return focus after native Activity window focus', () => {
     expect(focus).not.toHaveBeenCalled(); expect(frames.size).toBe(0);
     emit('focus'); await completeFrames();
     expect(handle).toHaveBeenCalledWith(trigger.current);
-    expect(focus).toHaveBeenCalledTimes(1); expect(focus).toHaveBeenCalledWith(4242);
+    expect(focus).toHaveBeenCalledTimes(1); expect(focus).toHaveBeenCalledWith(capture.mock.calls[0]![1]);
     emit('focus'); view.rerender(tree(false)); await completeFrames();
     expect(focus).toHaveBeenCalledTimes(1);
   });
@@ -325,6 +338,70 @@ describe('dialog return focus after native Activity window focus', () => {
     const view = render(tree(true)); show(view); view.rerender(tree(false)); emit('focus');
     await completeFrames(); expect(focus).not.toHaveBeenCalled();
     await act(async () => { resolve(true); }); await completeFrames();
+    expect(focus).toHaveBeenCalledTimes(1);
+  });
+  test('a reader enabled after onShow uses the captured native target, never RN event 8', async () => {
+    jest.mocked(AccessibilityInfo.isScreenReaderEnabled).mockResolvedValue(false);
+    const view = render(tree(true)); show(view);
+    await completeFrames();
+    expect(capture).toHaveBeenCalledWith(4242, expect.any(Number));
+    expect(AccessibilityInfo.isScreenReaderEnabled).not.toHaveBeenCalled();
+    jest.mocked(AccessibilityInfo.isScreenReaderEnabled).mockResolvedValue(true);
+    view.rerender(tree(false)); emit('focus'); await completeFrames();
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(focus).toHaveBeenCalledWith(capture.mock.calls[0]![1]);
+    expect(AccessibilityInfo.setAccessibilityFocus).not.toHaveBeenCalled();
+  });
+  test('native capture may finish after hide and hosting focus without retargeting', async () => {
+    let resolve!: (captured: boolean) => void;
+    capture.mockReturnValueOnce(new Promise<boolean>(done => { resolve = done; }));
+    const view = render(tree(true)); show(view); view.rerender(tree(false)); emit('focus');
+    await completeFrames(); expect(focus).not.toHaveBeenCalled();
+    await act(async () => { resolve(true); }); await completeFrames();
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(handle).toHaveBeenCalledTimes(1);
+    expect(focus).toHaveBeenCalledTimes(1);
+  });
+  test.each(['unmount', 'reopen', 'background', 'scope revoked'] as const)('late capture cannot revive %s', async reason => {
+    let resolve!: (captured: boolean) => void;
+    capture.mockReturnValueOnce(new Promise<boolean>(done => { resolve = done; }));
+    const view = render(tree(true)); show(view);
+    const ticket = capture.mock.calls[0]![1];
+    view.rerender(tree(false)); emit('focus');
+    if (reason === 'unmount') view.unmount();
+    else if (reason === 'reopen') view.rerender(tree(true));
+    else if (reason === 'background') { AppState.currentState = 'background'; emit('change', 'background'); }
+    else allowed.mockReturnValue(false);
+    await act(async () => { resolve(true); }); await completeFrames();
+    expect(focus).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith(ticket);
+  });
+  test.each([false, 'true', new Error('Synthetic capture failure')] as const)('failed native capture is fail closed: %s', async result => {
+    if (result instanceof Error) capture.mockRejectedValueOnce(result);
+    else capture.mockResolvedValueOnce(result);
+    const view = render(tree(true)); show(view); view.rerender(tree(false)); emit('focus');
+    await completeFrames();
+    expect(focus).not.toHaveBeenCalled();
+    expect(AccessibilityInfo.setAccessibilityFocus).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+  test.each(['unmount', 'reopen', 'trigger replacement', 'scope revoked', 'background', 'window blur'] as const)('a dispatched but pending native restore is canceled by %s', async reason => {
+    let resolve!: (restored: boolean) => void;
+    focus.mockReturnValueOnce(new Promise<boolean>(done => { resolve = done; }));
+    const view = render(tree(true)); show(view); view.rerender(tree(false)); emit('focus');
+    await completeFrames();
+    expect(focus).toHaveBeenCalledTimes(1);
+    const ticket = capture.mock.calls[0]![1];
+    expect(cancel).not.toHaveBeenCalledWith(ticket);
+    if (reason === 'unmount') view.unmount();
+    else if (reason === 'reopen') view.rerender(tree(true));
+    else if (reason === 'trigger replacement') view.rerender(tree(false, 'replacement'));
+    else if (reason === 'scope revoked') { allowed.mockReturnValue(false); view.rerender(tree(false)); }
+    else if (reason === 'background') { AppState.currentState = 'background'; emit('change', 'background'); }
+    else emit('blur');
+    expect(cancel).toHaveBeenCalledWith(ticket);
+    await act(async () => { resolve(true); });
+    emit('focus'); await completeFrames();
     expect(focus).toHaveBeenCalledTimes(1);
   });
   test('a screen-reader snapshot resolving after unmount cannot queue native focus or leave listeners', async () => {

@@ -15,7 +15,7 @@ test('build config rejects credentials, queries and fragments in the API origin'
     assert.equal(exp.extra.apiOrigin, process.env.EXPO_PUBLIC_API_ORIGIN);
     assert.match(String(exp.icon), /assets[\\/]icon\.png$/);
     assert.equal(exp.android?.adaptiveIcon?.backgroundColor, '#F7F2EA');
-    assert.equal(exp.runtimeVersion, 'android-3');
+    assert.equal(exp.runtimeVersion, 'android-4');
     assert.equal(exp.extra.protocolMajor, 1);
   } finally {
     if (previous === undefined) delete process.env.EXPO_PUBLIC_API_ORIGIN;
