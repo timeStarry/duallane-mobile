@@ -8,6 +8,7 @@ import type { Transfers } from '../src/data/transfers';
 import { bootstrapSchema, conversationSchema, memberSchema, parseMessage, targetKey, topicSchema, type ChatTarget, type Draft, type Message } from '../src/domain/contracts';
 import { useWorkspace } from '../src/domain/store';
 import { CatalogEmoteGrid } from '../src/ui/CatalogEmoteGrid';
+import { MessageRow } from '../src/ui/message';
 import type { WorkspaceMessageDisplayItem } from '../src/domain/hidden-messages';
 
 let mockFocused = true;
@@ -64,6 +65,7 @@ function createRuntime() {
   return {
     api: { json: jest.fn().mockResolvedValue({ messages: [] }) },
     open: jest.fn().mockResolvedValue(2), openTopic: jest.fn().mockResolvedValue(2),
+    messages: jest.fn().mockResolvedValue(0), topicMessages: jest.fn().mockResolvedValue(0),
     markRead: jest.fn().mockResolvedValue(undefined),
     patchDraft: jest.fn((key: string, patch: Partial<Draft>) => useWorkspace.getState().setDraft(key, patch)),
     send: jest.fn().mockResolvedValue(undefined),
@@ -158,6 +160,47 @@ test('an initially long async card does not read or hide latest until the real b
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
   fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 2000 }, contentSize: { height: 2500 }, layoutMeasurement: { height: 500 } } });
   await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+});
+
+test.each(['content-size', 'viewability', 'offset'])('a late active %s observation cannot leave latest visible when the native tail is already fully visible', async source => {
+  seed(conversationTarget, [message('long-card', 0), message('latest-1', 1)]);
+  useWorkspace.setState({ connection: '离线缓存，恢复连接后同步' });
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await act(async () => undefined);
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent.scroll(list, offset(200));
+  expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+  mockMeasureViewport.mockImplementation(callback => callback(0, 100, 390, 500));
+  mockMeasureTail.mockImplementation(callback => callback(0, 230, 390, 370));
+  const latest = view.UNSAFE_getAllByType(MessageRow).find(row => row.props.message.id === 'latest-1');
+  if (!latest) throw new Error('The fixture must mount the latest native row');
+  fireEvent(latest, 'layout', { nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 370 } } });
+  await act(async () => undefined);
+  expect(view.queryByRole('button', { name: '回到最新' })).toBeNull();
+  expect(runtime.markRead).not.toHaveBeenCalled();
+  mockMeasureViewport.mockClear();
+  // Native is physically at the tail. A late list observation revokes the proof;
+  // the following scrollToEnd cannot emit another event at an unchanged position.
+  if (source === 'content-size') fireEvent(list, 'contentSizeChange', 390, 4500);
+  if (source === 'viewability') visibleLatest(view, 'long-card');
+  if (source === 'offset') {
+    fireEvent.scroll(list, offset(300));
+    fireEvent.scroll(list, offset(400));
+  }
+  await act(async () => undefined);
+  expect(view.queryByRole('button', { name: '回到最新' })).toBeNull();
+  expect(mockMeasureViewport).toHaveBeenCalledTimes(source === 'offset' ? 2 : 1);
+  act(() => useWorkspace.setState({ connection: '已连接' }));
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  if (source === 'offset') {
+    mockMeasureViewport.mockClear();
+    mockMeasureTail.mockImplementation(callback => callback(0, 500, 390, 300));
+    for (const y of [500, 600, 700]) fireEvent.scroll(list, offset(y));
+    expect(mockMeasureViewport).toHaveBeenCalledTimes(1);
+    expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+    expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  }
 });
 
 test('a short complete transcript can confirm its visible hidden tail without a scroll event', async () => {
@@ -342,6 +385,8 @@ test('dirty resume retries native proof once on reaching the tail, not on every 
   view.rerender(screen(runtime));
   act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
   await observeLatest(view, 'latest-2');
+  mockMeasureViewport.mockClear();
+  mockMeasureTail.mockClear();
   mockMeasureViewport.mockImplementation(callback => callback(0, 100, 390, 500));
   mockMeasureTail.mockImplementation(callback => callback(0, 500, 390, 300));
   mockFocused = true;
@@ -351,12 +396,13 @@ test('dirty resume retries native proof once on reaching the tail, not on every 
   expect(mockMeasureViewport).toHaveBeenCalledTimes(1);
   const list = view.UNSAFE_getByType(FlatList);
   for (const y of [200, 300, 600, 800]) fireEvent.scroll(list, offset(y));
-  expect(mockMeasureViewport).toHaveBeenCalledTimes(1);
+  // One correction measurement, not another measurement for each offset frame.
+  expect(mockMeasureViewport).toHaveBeenCalledTimes(2);
   mockMeasureTail.mockImplementation(callback => callback(0, 500, 390, 100));
   fireEvent.scroll(list, offset(1000));
   await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
   for (let frame = 0; frame < 5; frame += 1) fireEvent.scroll(list, offset(1000));
-  expect(mockMeasureViewport).toHaveBeenCalledTimes(2);
+  expect(mockMeasureViewport).toHaveBeenCalledTimes(3);
 });
 
 test('an inverted transcript confirms a new visible tail when its native offset stays at zero', async () => {
@@ -399,6 +445,103 @@ test.each(['navigation', 'foreground'])('returning from %s preserves the user hi
   expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
   expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+});
+
+test('the final older page retains the mounted history direction and native stable-row anchor', async () => {
+  seed(conversationTarget, Array.from({ length: 50 }, (_, index) => message(`message-${index}`, index)));
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  let finishPage!: (count: number) => void;
+  runtime.messages.mockImplementationOnce(() => new Promise(resolve => { finishPage = resolve; }));
+  const view = render(screen(runtime));
+  await observeLatest(view, 'message-49');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'scrollBeginDrag');
+  fireEvent.scroll(list, offset(300));
+  fireEvent(list, 'scrollEndDrag', offset(300));
+  fireEvent(list, 'endReached');
+  expect(runtime.messages).toHaveBeenCalledWith('g1', 'message-0');
+  mockFocused = false;
+  view.rerender(screen(runtime));
+  mockNativeScrollToEnd.mockClear();
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  act(() => useWorkspace.getState().upsertMessage(message('new-status', 51)));
+  await act(async () => { finishPage(3); });
+  expect(view.UNSAFE_getByType(FlatList)).toBe(list);
+  expect(list.props.inverted).toBe(true);
+  expect(list.props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 });
+  expect(view.queryByRole('button', { name: '加载更早消息' })).toBeNull();
+  mockFocused = true;
+  view.rerender(screen(runtime));
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  await act(async () => undefined);
+  expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
+  expect(FlatList.prototype.scrollToOffset).not.toHaveBeenCalled();
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+});
+
+test.each(['target', 'account'])('a late older page from another %s cannot change the current window direction or paging', async change => {
+  const rows = Array.from({ length: 50 }, (_, index) => message(`message-${index}`, index));
+  seed(conversationTarget, rows);
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  let finishPage!: (count: number) => void;
+  runtime.messages.mockImplementationOnce(() => new Promise(resolve => { finishPage = resolve; }));
+  const view = render(screen(runtime));
+  await act(async () => undefined);
+  fireEvent.press(view.getByRole('button', { name: '加载更早消息' }));
+  if (change === 'account') act(() => useWorkspace.setState({ accountKey: 'test:another' }));
+  else {
+    const nextTarget: ChatTarget = { kind: 'conversation', id: 'g2' };
+    act(() => {
+      useWorkspace.setState(s => ({ conversations: { ...s.conversations, g2: conversationSchema.parse({ id: 'g2', type: 'group', displayTitle: 'g2', lastActivityAt: '2026-10-05T00:00:00Z' }) } }));
+      useWorkspace.getState().setMessages('g2', rows.map(row => ({ ...row, conversationId: 'g2' })));
+    });
+    view.rerender(screen(runtime, nextTarget));
+  }
+  await act(async () => undefined);
+  const currentList = view.UNSAFE_getByType(FlatList);
+  await act(async () => { finishPage(0); });
+  expect(view.UNSAFE_getByType(FlatList)).toBe(currentList);
+  expect(currentList.props.inverted).toBe(true);
+  expect(view.getByRole('button', { name: '加载更早消息' })).toBeTruthy();
+});
+
+test('a late initial count cannot flip a cached transcript after the user starts reading history', async () => {
+  seed(conversationTarget, Array.from({ length: 50 }, (_, index) => message(`message-${index}`, index)));
+  const runtime = createRuntime();
+  let finishOpen!: (count: number) => void;
+  runtime.open.mockImplementationOnce(() => new Promise(resolve => { finishOpen = resolve; }));
+  const view = render(screen(runtime));
+  await act(async () => undefined);
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'scrollBeginDrag');
+  fireEvent.scroll(list, offset(300));
+  fireEvent(list, 'scrollEndDrag', offset(300));
+  await act(async () => { finishOpen(3); });
+  expect(view.UNSAFE_getByType(FlatList)).toBe(list);
+  expect(list.props.inverted).toBe(true);
+  expect(view.queryByRole('button', { name: '加载更早消息' })).toBeNull();
+  expect(runtime.markRead).not.toHaveBeenCalled();
+});
+
+test('an initial page from a previous account cannot change the current window', async () => {
+  seed(conversationTarget, Array.from({ length: 50 }, (_, index) => message(`message-${index}`, index)));
+  const runtime = createRuntime();
+  let finishOpen!: (count: number) => void;
+  runtime.open.mockImplementationOnce(() => new Promise(resolve => { finishOpen = resolve; }));
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await act(async () => undefined);
+  act(() => useWorkspace.setState({ accountKey: 'test:another' }));
+  await waitFor(() => expect(runtime.open).toHaveBeenCalledTimes(2));
+  const currentList = view.UNSAFE_getByType(FlatList);
+  await act(async () => { finishOpen(0); });
+  expect(view.UNSAFE_getByType(FlatList)).toBe(currentList);
+  expect(currentList.props.inverted).toBe(true);
+  expect(view.getByRole('button', { name: '加载更早消息' })).toBeTruthy();
+  expect(runtime.markRead).not.toHaveBeenCalled();
 });
 
 test('a short mounted list retains observed visibility across focus changes without another native callback', async () => {
@@ -680,13 +823,14 @@ test.each(['activity', 'account', 'tail', 'layout', 'offset', 'drag'])('late nat
   mockMeasureTail.mockImplementation(callback => { finishTail = callback; });
   fireEvent.press(view.getByRole('button', { name: '回到最新' }));
   expect(finishTail).toBeDefined();
+  const finishStaleTail = finishTail;
   if (change === 'activity') { mockFocused = false; view.rerender(screen(runtime, conversationTarget, 'original')); }
   if (change === 'account') act(() => useWorkspace.setState({ accountKey: 'other:account' }));
   if (change === 'tail') act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
   if (change === 'layout') fireEvent(view.UNSAFE_getByType(FlatList), 'contentSizeChange', 390, 2500);
   if (change === 'offset') fireEvent.scroll(view.UNSAFE_getByType(FlatList), offset(200));
   if (change === 'drag') fireEvent(view.UNSAFE_getByType(FlatList), 'scrollBeginDrag');
-  await act(async () => { finishTail?.(0, 500, 390, 100); });
+  await act(async () => { finishStaleTail?.(0, 500, 390, 100); });
   expect(runtime.markRead).not.toHaveBeenCalled();
 });
 

@@ -52,6 +52,7 @@ import { AtSign, Bell, BellOff, ChevronLeft, Info, Search } from 'lucide-react-n
 const emptyMessages: Message[] = [];
 const emptyDraft: Draft = { text: '', mentionIds: [] };
 const latestViewabilityConfig = { itemVisiblePercentThreshold: 1 };
+const transcriptPositionMaintenance = { minIndexForVisible: 0 };
 
 export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Runtime; open: (id: string) => void; openTopic: (topic: Topic) => void }) {
   const conversations = useWorkspace(s => s.conversations);
@@ -156,10 +157,13 @@ export function ChatScreen({
   echoRoute.current = { key, accountKey, focused };
   const [loading, setLoading] = useState(() => useWorkspace.getState().messages[key] === undefined);
   const [error, setError] = useState('');
-  const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
+  const [pagination, setPagination] = useState(() => {
+    const hasOlder = hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0);
+    return { hasOlder, mode: transcriptMode(hasOlder) };
+  });
   const lastId = messages.at(-1)?.id;
   const lastStatus = messages.at(-1)?.status;
-  const mode = transcriptMode(hasOlder);
+  const { hasOlder, mode } = pagination;
   const [foreground, setForeground] = useState(AppState.currentState === 'active');
   // Visibility belongs to the mounted list: unchanged visible keys do not emit another callback.
   const geometry = useMemo(() => ({
@@ -201,15 +205,20 @@ export function ChatScreen({
   useEffect(() => {
     let active = true;
     setLoading(useWorkspace.getState().messages[key] === undefined);
+    const cachedHasOlder = hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0);
+    setPagination({ hasOlder: cachedHasOlder, mode: transcriptMode(cachedHasOlder) });
     void (async () => {
       try {
         const count = targetKind === 'topic' ? await runtime.openTopic(targetId) : await runtime.open(targetId);
-        if (active) setHasOlder(hasOlderMessages(count ?? 0));
+        if (active) {
+          const hasOlder = hasOlderMessages(count ?? 0);
+          setPagination(previous => ({ hasOlder, mode: historyReady.current ? previous.mode : transcriptMode(hasOlder) }));
+        }
       } catch (e) { if (active) setError(errorText(e)); }
       finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
-  }, [runtime, targetId, targetKind, key]);
+  }, [accountKey, runtime, targetId, targetKind, key]);
   useEffect(() => {
     pinToLatest.current = !focusMessageId;
     setReadConfirmation(undefined);
@@ -220,7 +229,6 @@ export function ChatScreen({
     setResolvedFocus(undefined);
     const invocation = ++focusInvocation.current;
     setFocusRequest(focusMessageId ? { key, accountKey, messageId: focusMessageId, invocation } : undefined);
-    setHasOlder(hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
   }, [accountKey, focusMessageId, key]);
   useEffect(() => {
     const listener = AppState.addEventListener('change', state => setForeground(state === 'active'));
@@ -330,6 +338,7 @@ export function ChatScreen({
   const observeOffset = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }, fromUser: boolean) => {
     if (!isCurrentObservation()) return;
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const revokedNativeProof = observation.nativeTailVisible;
     const sizeChanged = geometry.contentHeight !== contentSize.height || geometry.layoutHeight !== layoutMeasurement.height;
     const changed = sizeChanged || geometry.offsetY !== contentOffset.y;
     if (sizeChanged) observation.layoutRevision += 1;
@@ -346,9 +355,15 @@ export function ChatScreen({
     if (!fromUser && activity.active && pinToLatest.current && !draggingTranscript.current && !isPinnedToLatest({ ...geometry, threshold: 1 }) && observation.correctedRevision !== observation.layoutRevision) {
       observation.correctedRevision = observation.layoutRevision;
       pinIfNeeded();
+      // A late estimated offset can disagree with the native tail. An already
+      // settled scrollToEnd need not emit another event to resolve that conflict.
+      if (!observation.confirmed) measureLatest();
     }
+    // A later event may revoke a successful correction's proof. Recheck that
+    // evidence once; failed measurements do not cause retries on every frame.
+    if (changed && revokedNativeProof && !fromUser && !observation.confirmed) measureLatest();
     if (activity.active && pinToLatest.current && !draggingTranscript.current && isPinnedToLatest({ ...geometry, threshold: 1 })
-      && (geometry.needsForegroundGeometry || geometry.needsForegroundTail) && observation.measuredScrollRevision !== observation.layoutRevision) {
+      && !observation.confirmed && observation.measuredScrollRevision !== observation.layoutRevision) {
       observation.measuredScrollRevision = observation.layoutRevision;
       measureLatest();
     }
@@ -371,8 +386,19 @@ export function ChatScreen({
     reconcileLatest();
     if (pinToLatest.current) pinIfNeeded();
     else setNewMessages(true);
-    if (geometry.needsForegroundGeometry || geometry.needsForegroundTail) measureLatest();
+    if (!observation.confirmed) measureLatest();
   }, [accountKey, activity, geometry, key, lastId, measureLatest, mode, observation, pinIfNeeded, reconcileLatest, requireForegroundProof]);
+  const loadOlder = () => {
+    const current = () => currentObservation.current.geometry === geometry && useWorkspace.getState().accountKey === accountKey;
+    if (!hasOlder || !current()) return;
+    const first = useWorkspace.getState().messages[key]?.[0]?.id;
+    void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first))
+      .then(count => {
+        // Finishing pagination must not reverse/remount the reader's existing window.
+        if (current()) setPagination(previous => ({ ...previous, hasOlder: hasOlderMessages(count) }));
+      })
+      .catch(error => { if (current()) setError(errorText(error)); });
+  };
   const canRead = !!conversation && (target.kind !== 'topic' || !!topic?.joined);
   const online = ['connected', 'http_sync'].includes(connectionCategory(connection) ?? '');
   useEffect(() => {
@@ -540,6 +566,7 @@ export function ChatScreen({
           ref={list}
           style={{ flex: 1 }}
           inverted={mode === 'history'}
+          maintainVisibleContentPosition={transcriptPositionMaintenance}
           data={listItems}
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
@@ -578,7 +605,7 @@ export function ChatScreen({
             geometry.layoutHeight = e.nativeEvent.layout.height;
             reconcileLatest();
             pinIfNeeded();
-            if (geometry.needsForegroundGeometry || geometry.needsForegroundTail) measureLatest();
+            if (!observation.confirmed) measureLatest();
           }}
           onContentSizeChange={(_width, height) => {
             if (!isCurrentObservation()) return;
@@ -590,7 +617,7 @@ export function ChatScreen({
             geometry.contentHeight = height;
             reconcileLatest();
             pinIfNeeded();
-            if (geometry.needsForegroundGeometry || geometry.needsForegroundTail) measureLatest();
+            if (!observation.confirmed) measureLatest();
           }}
           viewabilityConfig={latestViewabilityConfig}
           onViewableItemsChanged={({ viewableItems }: { viewableItems: ViewToken<WorkspaceMessageDisplayItem<Message>>[] }) => {
@@ -605,15 +632,15 @@ export function ChatScreen({
             geometry.visibleIds = visibleIds;
             if (activity.active) geometry.needsForegroundTail = false;
             reconcileLatest();
+            if (!observation.confirmed) measureLatest();
           }}
           onEndReached={() => {
-            if (!shouldLoadOlderHistory({ historyReady: historyReady.current, hasOlder, messageCount: messages.length })) return;
-            const first = messages[0]?.id;
-            void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e)));
+            if (mode === 'history' && shouldLoadOlderHistory({ historyReady: historyReady.current, hasOlder, messageCount: messages.length })) loadOlder();
           }}
           onEndReachedThreshold={0.2}
           onScrollToIndexFailed={event => list.current?.scrollToOffset({ offset: Math.max(0, event.averageItemLength * event.index), animated: false })}
-          ListFooterComponent={mode === 'history' && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e))); }} /> : null}
+          ListHeaderComponent={mode === 'complete' && hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={loadOlder} /> : null}
+          ListFooterComponent={mode === 'history' && hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={loadOlder} /> : null}
           ListEmptyComponent={!loading ? <EmptyState title="还没有消息" /> : null}
           renderItem={({ item }) => {
             const isLatest = item.kind === 'hidden' ? item.messages.some(message => message.id === lastId) : item.message.id === lastId;
