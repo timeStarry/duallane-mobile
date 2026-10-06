@@ -10,6 +10,7 @@
 | [WebSocket 传输分流](../adr/2026-10-06-android-websocket-transport.md) | 标准 WebSocket 使用 OkHttp 双向 streams，普通 HTTP 保留 Cronet |
 | [Chat IME](../adr/2026-09-18-ime-keyboard-controller.md) | Chat 独占 IME inset；进程默认 pan；禁 KAV |
 | [Android 热字体运行时](../adr/2026-10-06-android-font-layout-runtime.md) | 原生文本测量白屏证据、稳定 SDK 升级、兼容与验证边界 |
+| [Android 前台字体配置通知](../adr/2026-10-06-android-font-metrics.md) | Dimensions 缓存缺口、原生配置事件、共享倍率及 android-3 兼容 |
 | [代码规范](CODE_STANDARDS.md) | TypeScript、React Native、异步、协议解析、错误处理 |
 | [UI/UX 规范](UI_UX_STANDARDS.md) | 视觉 token、导航、组件、触控、无障碍和页面状态 |
 | [DL Android 体验改造](../design/mobile-experience-redesign/README.md) | 当前包的体验缺口、跨端一致与原生适配、布局／视觉／聊天改造目标及验收账本 |

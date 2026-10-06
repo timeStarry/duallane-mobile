@@ -4,7 +4,8 @@
 
 - React Native + TypeScript，使用 Expo Prebuild/EAS 管理 Android 原生工程。
   当前稳定配套为 Expo 55.0.31、React Native 0.83.10、React 19.2.0，原生运行时
-  `android-2`；字体布局升级的原因、兼容和回归要求见 [运行时 ADR](../adr/2026-10-06-android-font-layout-runtime.md)。
+  `android-3`；SDK 升级见 [运行时 ADR](../adr/2026-10-06-android-font-layout-runtime.md)，
+  前台字体配置事件与共享倍率见 [字体通知 ADR](../adr/2026-10-06-android-font-metrics.md)。
 - React Navigation Native Stack + Bottom Tabs；不使用 WebView 套壳或 Web 路由兼容层。
 - Zustand + domain reducer/selectors；服务端对象 normalized，transport event 不直接进 UI。
 - Zod（或等价运行时校验）解析 HTTP、WebSocket、消息内容和 release policy。

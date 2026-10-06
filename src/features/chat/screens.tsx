@@ -20,6 +20,8 @@ import { hasOlderMessages, isMeasuredTailVisible, isPinnedToLatest, newestFirstT
 import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
 import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
 import { useChatIme } from '../../ui/useChatIme';
+import { useFontScale } from '../../platform/font-scale';
+import { useTranscriptAnchor } from './useTranscriptAnchor';
 import {
   AppHeader,
   Button,
@@ -55,6 +57,17 @@ const emptyDraft: Draft = { text: '', mentionIds: [] };
 const latestViewabilityConfig = { itemVisiblePercentThreshold: 1 };
 const transcriptPositionMaintenance = { minIndexForVisible: 0 };
 const composerSpaceSettleMs = 600;
+
+function TranscriptFrame({ id, register, rowLayout, latestRow, isLatest, onLatestLayout, children }: {
+  id: string; register: (id: string, row: View | null) => void; rowLayout: (id: string, height: number) => void;
+  latestRow: React.RefObject<View | null>; isLatest: boolean; onLatestLayout?: () => void; children: React.ReactNode;
+}) {
+  const ref = useCallback((row: View | null) => {
+    register(id, row);
+    if (isLatest) latestRow.current = row;
+  }, [id, isLatest, latestRow, register]);
+  return <View ref={ref} collapsable={false} onLayout={event => { rowLayout(id, event.nativeEvent.layout.height); onLatestLayout?.(); }}>{children}</View>;
+}
 
 export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Runtime; open: (id: string) => void; openTopic: (topic: Topic) => void }) {
   const conversations = useWorkspace(s => s.conversations);
@@ -153,6 +166,7 @@ export function ChatScreen({
   const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
   const focused = useIsFocused();
   const dimensions = useWindowDimensions();
+  const fontScale = useFontScale();
   const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '', insets.top);
   const projections = useTopicProjections(runtime, target, focused);
   const echo = useEchoWorkflow(runtime, target.kind === 'conversation' ? target.id : undefined, focused);
@@ -176,7 +190,7 @@ export function ChatScreen({
   }), [accountKey, key, mode]);
   const observation = useMemo(() => ({
     geometry, lastId, focusMessageId, confirmed: false, nativeTailVisible: false,
-    revision: 0, layoutRevision: 0, correctedRevision: -1, measuredScrollRevision: -1,
+    revision: 0, layoutRevision: 0, correctedRevision: -1, correctionCount: 0, measuredScrollRevision: -1,
   }), [geometry, lastId, focusMessageId]);
   const currentObservation = useRef(observation);
   currentObservation.current = observation;
@@ -195,6 +209,9 @@ export function ChatScreen({
   const latestRow = useRef<View>(null);
   const measurementAttempt = useRef<{ observation: typeof observation; activity: typeof activity; revision: number } | undefined>(undefined);
   const pinToLatest = useRef(!focusMessageId);
+  const [readingHistory, setReadingHistory] = useState(!!focusMessageId);
+  const anchor = useTranscriptAnchor({ accountKey, bucketKey: key, conversationId: target.kind === 'topic' ? target.conversationId : target.id,
+    topicId: target.kind === 'topic' ? target.id : undefined, mode, runtime, messages, focused, foreground, focusMessageId, list, pinToLatest });
   const readQueue = useRef(Promise.resolve());
   const readMarker = useRef<{ accountKey: string; key: string; messageId: string } | undefined>(undefined);
   const draggingTranscript = useRef(false);
@@ -226,6 +243,7 @@ export function ChatScreen({
   }, [accountKey, runtime, targetId, targetKind, key]);
   useEffect(() => {
     pinToLatest.current = !focusMessageId;
+    setReadingHistory(!!focusMessageId);
     setReadConfirmation(undefined);
     draggingTranscript.current = false;
     userScroll.current = false;
@@ -290,6 +308,7 @@ export function ChatScreen({
     const viewport = list.current?.getNativeScrollRef() as { measureInWindow?: View['measureInWindow'] } | null | undefined;
     const row = latestRow.current;
     const tailId = current.lastId;
+    const api = runtime.api;
     if (!active.active || !pinToLatest.current || draggingTranscript.current || !tailId || !viewport || !row
       || typeof viewport.measureInWindow !== 'function' || typeof row.measureInWindow !== 'function') return;
     const revision = current.revision;
@@ -298,7 +317,9 @@ export function ChatScreen({
     measurementAttempt.current = { observation: current, activity: active, revision };
     const valid = () => currentObservation.current === current && currentActivity.current === active && active.active
       && current.revision === revision && latestRow.current === row && pinToLatest.current && !draggingTranscript.current
-      && useWorkspace.getState().accountKey === current.geometry.accountKey
+      && runtime.api === api && useWorkspace.getState().accountKey === current.geometry.accountKey
+      && !!useWorkspace.getState().bootstrap?.permissions.canReadConversations && !!useWorkspace.getState().conversations[targetConversationId]
+      && (targetKind !== 'topic' || !!useWorkspace.getState().topics[targetId]?.joined)
       && useWorkspace.getState().messages[current.geometry.key]?.at(-1)?.id === current.lastId;
     try {
       viewport.measureInWindow((x, y, width, height) => {
@@ -315,16 +336,19 @@ export function ChatScreen({
         } catch { /* An unmounted native row cannot confirm a read. */ }
       });
     } catch { /* An unavailable native viewport cannot confirm a read. */ }
-  }, [reconcileLatest]);
+  }, [reconcileLatest, runtime, targetConversationId, targetId, targetKind]);
   const scrollToLatest = useCallback((animated: boolean) => {
     focusInvocation.current += 1;
     setFocusRequest(undefined);
     setResolvedFocus(undefined);
     pinToLatest.current = true;
+    setReadingHistory(false);
+    anchor.reset();
     draggingTranscript.current = false;
     userScroll.current = false;
     invalidateReadConfirmation();
     currentObservation.current.correctedRevision = -1;
+    currentObservation.current.correctionCount = 0;
     currentObservation.current.measuredScrollRevision = -1;
     if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated });
     else scrollResponderToEnd(list.current?.getScrollResponder(), animated);
@@ -332,7 +356,7 @@ export function ChatScreen({
     // A measured, fully fitting transcript cannot move, so native may emit no scroll event.
     if (measuredGeometry.mode === 'complete' && measuredGeometry.contentHeight !== undefined && measuredGeometry.layoutHeight !== undefined && measuredGeometry.contentHeight <= measuredGeometry.layoutHeight) reconcileLatest();
     measureLatest(true);
-  }, [invalidateReadConfirmation, measureLatest, reconcileLatest]);
+  }, [anchor, invalidateReadConfirmation, measureLatest, reconcileLatest]);
   const pinIfNeeded = useCallback(() => {
     if (currentObservation.current !== observation || currentActivity.current !== activity || !activity.active || useWorkspace.getState().accountKey !== accountKey || !pinToLatest.current || draggingTranscript.current) return;
     userScroll.current = false;
@@ -353,12 +377,16 @@ export function ChatScreen({
     geometry.contentHeight = contentSize.height;
     geometry.layoutHeight = layoutMeasurement.height;
     if (activity.active) geometry.needsForegroundGeometry = false;
-    if (fromUser) pinToLatest.current = isPinnedToLatest(geometry);
+    if (fromUser) { pinToLatest.current = isPinnedToLatest(geometry); setReadingHistory(!pinToLatest.current); }
+    anchor.offset(contentOffset.y, fromUser);
     reconcileLatest();
-    // Native can restore/clamp an offset after the layout-triggered command. Correct it
-    // once per measured revision, rather than issuing a command on every scroll frame.
-    if (!fromUser && activity.active && pinToLatest.current && !draggingTranscript.current && !isPinnedToLatest({ ...geometry, threshold: 1 }) && observation.correctedRevision !== observation.layoutRevision) {
+    // Native can restore/clamp an offset after the layout-triggered command. A
+    // second changed offset gets one final correction; identical frames do not.
+    if (!fromUser && activity.active && pinToLatest.current && !draggingTranscript.current && !isPinnedToLatest({ ...geometry, threshold: 1 })
+      && (observation.correctedRevision !== observation.layoutRevision || (changed && observation.correctionCount < 2))) {
+      if (observation.correctedRevision !== observation.layoutRevision) observation.correctionCount = 0;
       observation.correctedRevision = observation.layoutRevision;
+      observation.correctionCount++;
       pinIfNeeded();
       // A late estimated offset can disagree with the native tail. An already
       // settled scrollToEnd need not emit another event to resolve that conflict.
@@ -385,6 +413,7 @@ export function ChatScreen({
     }
     if (!lastId) return;
     observation.correctedRevision = -1;
+    observation.correctionCount = 0;
     observation.measuredScrollRevision = -1;
     // Unchanged native geometry may emit no event on return. Reuse observed facts,
     // never the following scroll command, to confirm a still-visible latest item.
@@ -393,6 +422,21 @@ export function ChatScreen({
     else setNewMessages(true);
     if (!observation.confirmed) measureLatest();
   }, [accountKey, activity, geometry, key, lastId, measureLatest, mode, observation, pinIfNeeded, reconcileLatest, requireForegroundProof]);
+  useEffect(() => {
+    if (!activity.active || !lastId || observation.confirmed || !pinToLatest.current) return;
+    let cancelled = false, frame: number | undefined, remaining = 2;
+    const retry = () => {
+      frame = requestAnimationFrame(() => {
+        if (cancelled || currentActivity.current !== activity || currentObservation.current !== observation || !pinToLatest.current || draggingTranscript.current || observation.confirmed) return;
+        // AppState can precede the native window becoming measurable. Retry only
+        // twice in this activity/tail generation, without fabricating visibility.
+        measureLatest(true);
+        if (--remaining > 0 && !observation.confirmed) retry();
+      });
+    };
+    retry();
+    return () => { cancelled = true; if (frame !== undefined) cancelAnimationFrame(frame); };
+  }, [activity, lastId, measureLatest, observation]);
   const loadOlder = () => {
     const current = () => currentObservation.current.geometry === geometry && useWorkspace.getState().accountKey === accountKey;
     if (!hasOlder || !current()) return;
@@ -425,8 +469,8 @@ export function ChatScreen({
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
   const compactControls = ime.compact && canSend;
-  const feedbackHeight = !feedback ? 0 : feedbackLayout?.text === feedback && feedbackLayout.width === dimensions.width && feedbackLayout.fontScale === dimensions.fontScale
-    ? feedbackLayout.height : 24 + t.type.bodyLine * dimensions.fontScale;
+  const feedbackHeight = !feedback ? 0 : feedbackLayout?.text === feedback && feedbackLayout.width === dimensions.width && feedbackLayout.fontScale === fontScale
+    ? feedbackLayout.height : 24 + t.type.bodyLine * fontScale;
   useEffect(() => {
     if (focused && foreground && ime.compact && (!canSend || (feedbackHeight > 0 && ime.availableContentHeight < ime.minimumComposerHeight + feedbackHeight))) {
       Keyboard.dismiss();
@@ -441,7 +485,7 @@ export function ChatScreen({
       setError('当前可用高度不足，请转为竖屏后继续输入。');
     }, composerSpaceSettleMs);
     return () => clearTimeout(timer);
-  }, [accountKey, canSend, dimensions.fontScale, dimensions.height, dimensions.width, focused, foreground, ime.availableContentHeight, ime.insufficientSpace, ime.keyboardVisible, ime.minimumComposerHeight, key]);
+  }, [accountKey, canSend, dimensions.height, dimensions.width, fontScale, focused, foreground, ime.availableContentHeight, ime.insufficientSpace, ime.keyboardVisible, ime.minimumComposerHeight, key]);
   const send = (existing?: Message) => {
     const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
     if (!existing && !latest.text.trim() && !latest.pendingAttachment) return;
@@ -498,6 +542,8 @@ export function ChatScreen({
   };
   const locateMessage = (messageId: string) => {
     pinToLatest.current = false;
+    setReadingHistory(true);
+    anchor.reset();
     invalidateReadConfirmation();
     draggingTranscript.current = false;
     userScroll.current = false;
@@ -577,8 +623,8 @@ export function ChatScreen({
       /> : null}
       <View onLayout={event => {
         const height = event.nativeEvent.layout.height;
-        setFeedbackLayout(previous => previous?.text === feedback && previous.width === dimensions.width && previous.fontScale === dimensions.fontScale && previous.height === height
-          ? previous : { text: feedback, width: dimensions.width, fontScale: dimensions.fontScale, height });
+        setFeedbackLayout(previous => previous?.text === feedback && previous.width === dimensions.width && previous.fontScale === fontScale && previous.height === height
+          ? previous : { text: feedback, width: dimensions.width, fontScale, height });
       }}>
         <InlineFeedback text={feedback} tone={error ? 'danger' : progress ? 'info' : projections.feedback.tone} />
       </View>
@@ -595,7 +641,7 @@ export function ChatScreen({
           ref={list}
           style={{ flex: 1 }}
           inverted={mode === 'history'}
-          maintainVisibleContentPosition={transcriptPositionMaintenance}
+          maintainVisibleContentPosition={readingHistory ? transcriptPositionMaintenance : undefined}
           data={listItems}
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
@@ -607,18 +653,27 @@ export function ChatScreen({
             draggingTranscript.current = true;
             userScroll.current = true;
             historyReady.current = true;
+            anchor.beginUserScroll();
             invalidateReadConfirmation();
           }}
           onScrollEndDrag={e => {
             if (!isCurrentObservation()) return;
             draggingTranscript.current = false;
             observeOffset(e, true);
+            anchor.endUserScroll();
           }}
           onMomentumScrollEnd={e => {
             if (!isCurrentObservation()) return;
             draggingTranscript.current = false;
-            observeOffset(e, userScroll.current);
+            const fromUser = userScroll.current;
+            observeOffset(e, fromUser);
             userScroll.current = false;
+            if (fromUser) anchor.endUserScroll();
+          }}
+          onMomentumScrollBegin={() => {
+            if (!isCurrentObservation() || !userScroll.current) return;
+            draggingTranscript.current = true;
+            anchor.beginUserScroll();
           }}
           onScroll={e => {
             observeOffset(e, draggingTranscript.current || userScroll.current);
@@ -632,6 +687,7 @@ export function ChatScreen({
               if (!activity.active) requireForegroundProof();
             }
             geometry.layoutHeight = e.nativeEvent.layout.height;
+            anchor.changed();
             reconcileLatest();
             pinIfNeeded();
             if (!observation.confirmed) measureLatest();
@@ -644,6 +700,7 @@ export function ChatScreen({
               if (!activity.active) requireForegroundProof();
             }
             geometry.contentHeight = height;
+            anchor.changed();
             reconcileLatest();
             pinIfNeeded();
             if (!observation.confirmed) measureLatest();
@@ -659,6 +716,7 @@ export function ChatScreen({
               if (!activity.active) requireForegroundProof();
             }
             geometry.visibleIds = visibleIds;
+            anchor.visible(visibleIds);
             if (activity.active) geometry.needsForegroundTail = false;
             reconcileLatest();
             if (!observation.confirmed) measureLatest();
@@ -680,15 +738,14 @@ export function ChatScreen({
               if (!activity.active) requireForegroundProof();
               else {
                 geometry.needsForegroundGeometry = true;
+                pinIfNeeded();
                 measureLatest();
               }
             } : undefined;
             if (item.kind === 'hidden') {
               return (
+                <TranscriptFrame id={item.messages[0]!.id} register={anchor.register} rowLayout={anchor.rowLayout} latestRow={latestRow} isLatest={isLatest} onLatestLayout={onLatestLayout}>
                 <Pressable
-                  ref={isLatest ? latestRow : undefined}
-                  collapsable={!isLatest}
-                  onLayout={onLatestLayout}
                   accessibilityRole="button"
                   accessibilityLabel={`恢复${item.messages.length}条已隐藏消息`}
                   onPress={() => {
@@ -698,13 +755,14 @@ export function ChatScreen({
                 >
                   <Text style={{ color: t.muted, fontSize: t.type.meta }}>{item.messages.length} 条已隐藏，点按恢复</Text>
                 </Pressable>
+                </TranscriptFrame>
               );
             }
             const sourceIndex = item.sourceIndex;
             const previousDay = sourceIndex > 0 ? getMessageDayKey(messages[sourceIndex - 1]?.createdAt) : '';
             const dayKey = getMessageDayKey(item.message.createdAt);
             return (
-              <View ref={isLatest ? latestRow : undefined} collapsable={!isLatest} onLayout={onLatestLayout}>
+              <TranscriptFrame id={item.message.id} register={anchor.register} rowLayout={anchor.rowLayout} latestRow={latestRow} isLatest={isLatest} onLatestLayout={onLatestLayout}>
               <MessageRow
                 message={item.message}
                 groupPosition={groupPositions[sourceIndex]}
@@ -724,7 +782,7 @@ export function ChatScreen({
                   if (api) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(e => setError(errorText(e)));
                 }}
               />
-              </View>
+              </TranscriptFrame>
             );
           }}
         />

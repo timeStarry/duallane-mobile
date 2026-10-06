@@ -23,7 +23,7 @@ const config: ExpoConfig = {
   scheme: 'com.timestarry.duallane', userInterfaceStyle: 'automatic',
   icon: './assets/icon.png',
   splash: { image: './assets/icon.png', resizeMode: 'contain', backgroundColor: '#F7F2EA' },
-  runtimeVersion: 'android-2',
+  runtimeVersion: 'android-3',
   android: { package: 'com.timestarry.duallane', versionCode, allowBackup: false, softwareKeyboardLayoutMode: 'pan',
     icon: './assets/icon.png',
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#F7F2EA' },

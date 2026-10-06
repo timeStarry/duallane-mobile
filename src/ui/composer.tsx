@@ -6,6 +6,7 @@ import { AttachmentPreview } from './files';
 import { IconButton, ObjectActionSheet } from './primitives';
 import { useTheme } from './theme';
 import { minimumComposerHeight } from './compactComposerLayout';
+import { useFontScale } from '../platform/font-scale';
 
 export function ReplyPreview({
   author,
@@ -65,7 +66,8 @@ export function Composer({
   trailing?: React.ReactNode;
 }) {
   const t = useTheme();
-  const { width, fontScale } = useWindowDimensions();
+  const { width } = useWindowDimensions();
+  const fontScale = useFontScale();
   const [actionsOpen, setActionsOpen] = useState(false);
   const [measuredWidth, setMeasuredWidth] = useState(0);
   const [leadingWidth, setLeadingWidth] = useState(0);

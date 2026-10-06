@@ -9,12 +9,14 @@ import {
 } from 'react-native-keyboard-controller';
 import { applyMentionSuggestions, clampImeHeight, composerDock, type ComposerPanel } from './composerDock';
 import { compactComposerLayout } from './compactComposerLayout';
+import { useFontScale } from '../platform/font-scale';
 
 export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery = '', topInset = 0) {
   const { setEnabled } = useKeyboardController();
   const keyboardVisible = useKeyboardState(state => state.isVisible);
   const imeBottom = useKeyboardState(state => state.height);
-  const { height: screenHeight, fontScale } = useWindowDimensions();
+  const { height: screenHeight } = useWindowDimensions();
+  const fontScale = useFontScale();
   const [panel, setPanel] = useState<ComposerPanel>('none');
   const mentionDismissed = useRef(false);
   const lastQuery = useRef(mentionQuery);

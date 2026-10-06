@@ -15,8 +15,10 @@
 
 Android 热字号回归必须在同一路由保持焦点和草稿，连续三轮 1×↔2×，在 10／15 秒
 检查标题、消息及卡片的实际字形和全文可达。48dp 控件、进程存活及 UIA 文本存在
-不能证明没有裁字；不得重进页面或冷启动后冒称热更新通过。共享 Text 仅在倍率
-变化时重建文字节点，输入框、列表和导航应保持；文字选区／TalkBack 焦点单独记录。
+不能证明没有裁字；不得重进页面或冷启动后冒称热更新通过。共享 Text 使用原生
+配置通知的倍率变化重建文字节点，输入框、列表和导航应保持；不能假设前台的
+Dimensions 字体缓存已更新。见 [字体通知 ADR](../adr/2026-10-06-android-font-metrics.md)。
+文字选区／TalkBack 焦点单独记录。
 
 - TypeScript、lint、unit/component/contract tests 和 `git diff --check`。
 - Android debug/release 构建，签名配置检查，APK/AAB 安装与启动 smoke。

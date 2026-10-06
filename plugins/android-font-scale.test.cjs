@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { test } = require('node:test');
-const { assertFontLayoutRuntime, configureMainActivity } = require('./android-font-scale.cjs');
+const { assertFontLayoutRuntime, configureMainActivity, installFontScalePackage, FONT_SCALE_SOURCE } = require('./android-font-scale.cjs');
 
 function manifest() {
   return { manifest: { application: [{ $: { 'android:name': '.MainApplication' }, activity: [
@@ -54,6 +54,7 @@ test('checked-in native project retains Expo callbacks and custom modules withou
   const contents = readFileSync(join(__dirname, '../android/app/src/main/java/com/timestarry/duallane/MainApplication.kt'), 'utf8');
   assert.match(contents, /ExpoReactHostFactory\.getDefaultReactHost\(/);
   assert.match(contents, /add\(SaveFilePackage\(\)\)/);
+  assert.match(contents, /add\(FontScalePackage\(\)\)/);
   assert.match(contents, /CronetNetworking\.install\(this\)/);
   assert.match(contents, /ApplicationLifecycleDispatcher\.onConfigurationChanged\(this, newConfig\)/);
   assert.doesNotMatch(contents, /duallaneFontScale|duallane-font-scale-|\.reload\(|ReactNativeFeatureFlags|CANARY/);
@@ -61,4 +62,55 @@ test('checked-in native project retains Expo callbacks and custom modules withou
   assert.equal((appConfig.match(/\.\/plugins\/android-font-scale\.cjs/g) ?? []).length, 1);
   const androidManifest = readFileSync(join(__dirname, '../android/app/src/main/AndroidManifest.xml'), 'utf8');
   assert.match(androidManifest, /android:configChanges="keyboard\|keyboardHidden\|orientation\|screenSize\|screenLayout\|uiMode\|smallestScreenSize\|fontScale"/);
+});
+
+test('font metrics package installs once in the reviewed Kotlin package list without changing lifecycle callbacks', () => {
+  const source = readFileSync(join(__dirname, '../android/app/src/main/java/com/timestarry/duallane/MainApplication.kt'), 'utf8');
+  const installed = installFontScalePackage(source);
+  assert.equal((installed.match(/add\(FontScalePackage\(\)\)/g) ?? []).length, 1);
+  assert.equal(installFontScalePackage(installed), installed);
+  assert.match(installed, /add\(SaveFilePackage\(\)\)/);
+  assert.match(installed, /ApplicationLifecycleDispatcher\.onConfigurationChanged\(this, newConfig\)/);
+  assert.match(installed, /CronetNetworking\.install\(this\)/);
+  const fresh = source.replace(/\s+add\(SaveFilePackage\(\)\)/, '').replace(/\s+add\(FontScalePackage\(\)\)/, '');
+  assert.match(installFontScalePackage(fresh), /add\(FontScalePackage\(\)\)/);
+});
+
+test('unknown or ambiguous package registration templates fail closed', () => {
+  const source = readFileSync(join(__dirname, '../android/app/src/main/java/com/timestarry/duallane/MainApplication.kt'), 'utf8');
+  for (const altered of [
+    source.replace('package com.timestarry.duallane', 'package different.app'),
+    source.replace('ExpoReactHostFactory.getDefaultReactHost(', 'UnknownFactory.create('),
+    source.replace('PackageList(this).packages.apply {', 'customPackages().apply {'),
+    source + '\n// PackageList(this).packages.apply {',
+    source.replace('PackageList(this).packages.apply {', 'PackageList(this).packages.apply {\n add(FontScalePackage())\n add(FontScalePackage())'),
+  ]) assert.throws(() => installFontScalePackage(altered), /android-font-scale: unsupported font layout runtime/);
+});
+
+test('commented, quoted, or conditional registrations cannot masquerade as an installed package', () => {
+  const source = readFileSync(join(__dirname, '../android/app/src/main/java/com/timestarry/duallane/MainApplication.kt'), 'utf8');
+  for (const registration of [
+    '// add(FontScalePackage())',
+    '/* add(FontScalePackage()) */',
+    '/*\n          add(FontScalePackage())\n          */',
+    'val text = "add(FontScalePackage())"',
+    'val text = """\n          add(FontScalePackage())\n          """',
+    'if (false) add(FontScalePackage())',
+  ]) assert.throws(() => installFontScalePackage(source.replace('add(FontScalePackage())', registration)),
+    /android-font-scale: unsupported font layout runtime/, registration);
+  const withoutPackage = source.replace(/^[ \t]*add\(FontScalePackage\(\)\)\r?\n/m, '');
+  assert.throws(() => installFontScalePackage(`${withoutPackage}\n// add(FontScalePackage())`),
+    /android-font-scale: unsupported font layout runtime/);
+});
+
+test('generated font module uses public configuration callbacks and emits only versioned system scale', () => {
+  assert.equal(typeof FONT_SCALE_SOURCE, 'string');
+  assert.equal(readFileSync(join(__dirname, '../android/app/src/main/java/com/timestarry/duallane/FontScaleModule.kt'), 'utf8').replaceAll('\r\n', '\n'), FONT_SCALE_SOURCE);
+  assert.match(FONT_SCALE_SOURCE, /registerComponentCallbacks\(this\)/);
+  assert.match(FONT_SCALE_SOURCE, /unregisterComponentCallbacks\(this\)/);
+  assert.match(FONT_SCALE_SOURCE, /newConfig\.fontScale/);
+  assert.match(FONT_SCALE_SOURCE, /next\.isFinite\(\) && next > 0f && next != fontScale/);
+  assert.match(FONT_SCALE_SOURCE, /putDouble\("fontScale", fontScale\.toDouble\(\)\)/);
+  assert.match(FONT_SCALE_SOURCE, /putDouble\("revision", revision\.toDouble\(\)\)/);
+  assert.doesNotMatch(FONT_SCALE_SOURCE, /Settings\.|Log\.|onHostResume|\.reload\(|ReactNativeFeatureFlags|didUpdateDimensions|DisplayMetricsHolder|SurfaceHandler/);
 });

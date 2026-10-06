@@ -36,6 +36,8 @@ const originalAppState = AppState.currentState;
 const mockNativeScrollToEnd = jest.fn();
 const mockMeasureViewport = jest.fn<void, [MeasureInWindowOnSuccessCallback]>();
 const mockMeasureTail = jest.fn<void, [MeasureInWindowOnSuccessCallback]>();
+const mockMeasureRawRow = jest.fn<void, Parameters<View['measureLayout']>>();
+const mockContentRef = { measureInWindow: jest.fn() };
 
 function dto(id: string, second: number, target: ChatTarget = conversationTarget, extra: Record<string, unknown> = {}) {
   return {
@@ -124,12 +126,14 @@ beforeEach(() => {
   mockNativeScrollToEnd.mockClear();
   mockMeasureViewport.mockReset();
   mockMeasureTail.mockReset();
+  mockMeasureRawRow.mockReset();
   jest.spyOn(FlatList.prototype, 'getNativeScrollRef').mockImplementation(() => (
     { measureInWindow: mockMeasureViewport } as unknown as ReturnType<FlatList['getNativeScrollRef']>
   ));
   jest.spyOn(View.prototype, 'measureInWindow').mockImplementation(mockMeasureTail);
+  jest.spyOn(View.prototype, 'measureLayout').mockImplementation(mockMeasureRawRow);
   jest.spyOn(FlatList.prototype, 'getScrollResponder').mockImplementation(() => (
-    { scrollToEnd: mockNativeScrollToEnd } as unknown as ReturnType<FlatList['getScrollResponder']>
+    { scrollToEnd: mockNativeScrollToEnd, getInnerViewRef: () => mockContentRef } as unknown as ReturnType<FlatList['getScrollResponder']>
   ));
 });
 
@@ -508,13 +512,13 @@ test('dirty resume retries native proof once on reaching the tail, not on every 
   expect(mockMeasureViewport).toHaveBeenCalledTimes(1);
   const list = view.UNSAFE_getByType(FlatList);
   for (const y of [200, 300, 600, 800]) fireEvent.scroll(list, offset(y));
-  // One correction measurement, not another measurement for each offset frame.
-  expect(mockMeasureViewport).toHaveBeenCalledTimes(2);
+  // Two different native corrections are bounded; subsequent offset frames do not retry.
+  expect(mockMeasureViewport).toHaveBeenCalledTimes(3);
   mockMeasureTail.mockImplementation(callback => callback(0, 500, 390, 100));
   fireEvent.scroll(list, offset(1000));
   await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
   for (let frame = 0; frame < 5; frame += 1) fireEvent.scroll(list, offset(1000));
-  expect(mockMeasureViewport).toHaveBeenCalledTimes(3);
+  expect(mockMeasureViewport).toHaveBeenCalledTimes(4);
 });
 
 test('an inverted transcript confirms a new visible tail when its native offset stays at zero', async () => {
@@ -557,6 +561,79 @@ test.each(['navigation', 'foreground'])('returning from %s preserves the user hi
   expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
   expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+});
+
+test('warm canonical/card refresh restores the actually visible history row instead of only avoiding scroll-to-latest', async () => {
+  seed(conversationTarget, Array.from({ length: 50 }, (_, index) => message(`message-${index}`, index)));
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await observeLatest(view, 'message-49');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  let nativeOffset = 300;
+  let anchorY = 150;
+  mockMeasureViewport.mockImplementation(callback => callback(0, 100, 390, 500));
+  mockMeasureTail.mockImplementation(callback => callback(0, anchorY, 390, 300));
+  mockMeasureRawRow.mockImplementation((_relative, callback) => callback(0, 500 + nativeOffset - (anchorY - 100) - 300, 390, 300));
+  fireEvent(list, 'scrollBeginDrag');
+  fireEvent.scroll(list, offset(nativeOffset));
+  visibleLatest(view, 'message-45');
+  fireEvent(list, 'scrollEndDrag', offset(nativeOffset));
+  fireEvent(list, 'momentumScrollEnd', offset(nativeOffset));
+  await act(async () => undefined);
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear().mockImplementation(({ offset: nextOffset }) => {
+    // Public native measurement observes the transformed inverted row, not a cell estimate.
+    anchorY += nextOffset - nativeOffset;
+    nativeOffset = nextOffset;
+  });
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+  act(() => {
+    useWorkspace.getState().upsertMessage(message('new-canonical-status', 51));
+    useWorkspace.getState().refreshCards();
+  });
+  // Fabric MVCP can preserve another raw cell while a resolved card changes height.
+  nativeOffset = 400;
+  anchorY = -150;
+  fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: nativeOffset }, contentSize: { height: 4500 }, layoutMeasurement: { height: 500 } } });
+  act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  await act(async () => undefined);
+  expect(FlatList.prototype.scrollToOffset).toHaveBeenCalledWith({ offset: 700, animated: false });
+  expect(anchorY).toBe(150);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+});
+
+test('a foreground native viewport that becomes visible after the first zero measurement is retried without invented scroll evidence', async () => {
+  seed(conversationTarget, [message('old', 0), message('latest-1', 1)]);
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent.scroll(list, offset(200));
+  mockMeasureViewport.mockImplementationOnce(callback => callback(0, 0, 0, 0));
+  mockMeasureViewport.mockImplementation(callback => callback(0, 100, 390, 500));
+  mockMeasureTail.mockImplementation(callback => callback(0, 230, 390, 370));
+  act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+  // Native is now visible with the same dimensions; it need not emit a layout,
+  // content-size, viewability or scroll callback just for becoming visible.
+  act(() => { jest.advanceTimersByTime(70); });
+  await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+  expect(view.queryByRole('button', { name: '回到最新' })).toBeNull();
+  expect(list.props.maintainVisibleContentPosition).toBeUndefined();
+  mockMeasureViewport.mockClear();
+  act(() => { jest.advanceTimersByTime(1000); });
+  expect(mockMeasureViewport).not.toHaveBeenCalled();
 });
 
 test('the final older page retains the mounted history direction and native stable-row anchor', async () => {
