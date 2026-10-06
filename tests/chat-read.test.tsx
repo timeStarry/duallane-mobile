@@ -411,6 +411,248 @@ test('async card relayout gets one offset correction per measured size without a
   await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
 });
 
+test.each(['inactive', 'orphan-end'])('a warm latest refresh cannot become user history from an %s drag callback', async source => {
+  seed(conversationTarget, [message('long-card', 0), message('latest-1', 1)]);
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  if (source === 'inactive') {
+    fireEvent(list, 'scrollBeginDrag');
+    fireEvent(list, 'scrollEndDrag', offset(685));
+  }
+  act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  if (source === 'orphan-end') fireEvent(list, 'scrollEndDrag', offset(685));
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  fireEvent(list, 'contentSizeChange', 390, 5500);
+  expect(list.props.maintainVisibleContentPosition).toBeUndefined();
+  expect(FlatList.prototype.scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: false });
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+});
+
+test.each([false, true])('warm latest settles the refreshed native tail after transient clamps unless a real user takes over (%s)', async userTakesOver => {
+  seed(conversationTarget, [message('long-card', 0), message('latest-1', 1)]);
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  let nativeOffset = 0, acceptsCommand = false;
+  mockMeasureViewport.mockImplementation(callback => callback(0, 100, 390, 500));
+  mockMeasureTail.mockImplementation(callback => callback(0, 230 + nativeOffset, 390, 370));
+  jest.mocked(FlatList.prototype.scrollToOffset).mockImplementation(({ offset: nextOffset }) => {
+    if (acceptsCommand) nativeOffset = nextOffset;
+  });
+  act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+  // Same canonical IDs and card revision; only transient redacted/resolved layout changes.
+  act(() => useWorkspace.getState().refreshCards());
+  fireEvent(list, 'contentSizeChange', 390, 1000);
+  act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  // Native restores offsets after the immediate commands; JS must not mistake them for a gesture.
+  for (const y of [200, 400, 685]) {
+    nativeOffset = y;
+    fireEvent.scroll(list, { nativeEvent: { ...offset(y).nativeEvent, contentSize: { height: 4500 } } });
+  }
+  expect(view.getByRole('button', { name: '回到最新' })).toBeTruthy();
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  if (userTakesOver) {
+    fireEvent(list, 'scrollBeginDrag');
+    fireEvent.scroll(list, { nativeEvent: { ...offset(685).nativeEvent, contentSize: { height: 4500 } } });
+    fireEvent(list, 'scrollEndDrag', { nativeEvent: { ...offset(685).nativeEvent, contentSize: { height: 4500 } } });
+    fireEvent(list, 'momentumScrollEnd', { nativeEvent: { ...offset(685).nativeEvent, contentSize: { height: 4500 } } });
+  }
+  acceptsCommand = true;
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  act(() => jest.advanceTimersByTime(70));
+  await act(async () => undefined);
+  expect(nativeOffset).toBe(userTakesOver ? 685 : 0);
+  expect(!!view.queryByRole('button', { name: '回到最新' })).toBe(userTakesOver);
+  expect(list.props.maintainVisibleContentPosition).toEqual(userTakesOver ? { minIndexForVisible: 0 } : undefined);
+  const settledCalls = jest.mocked(FlatList.prototype.scrollToOffset).mock.calls.length;
+  act(() => jest.advanceTimersByTime(1000));
+  expect(jest.mocked(FlatList.prototype.scrollToOffset).mock.calls.length).toBe(settledCalls);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+});
+
+test.each(['api', 'permission'])('a queued latest settling frame is rejected after %s authority changes', async change => {
+  seed(conversationTarget, [message('latest-1', 1)]);
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+  fireEvent(view.UNSAFE_getByType(FlatList), 'contentSizeChange', 390, 4500);
+  act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  mockNativeScrollToEnd.mockClear();
+  if (change === 'api') runtime.api = { json: jest.fn().mockResolvedValue({ messages: [] }) };
+  else act(() => useWorkspace.setState(state => ({ bootstrap: { ...state.bootstrap!, permissions: { ...state.bootstrap!.permissions, canReadConversations: false } } })));
+  act(() => jest.advanceTimersByTime(70));
+  expect(mockNativeScrollToEnd).not.toHaveBeenCalled();
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+});
+
+test.each(['offset', 'duplicate-layout'])('repeated %s proof revocations cannot renew the two-frame latest settling budget', async source => {
+  seed(conversationTarget, [message('latest-1', 1)]);
+  const listen = jest.spyOn(AppState, 'addEventListener');
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  const tail = view.getByTestId('chat-message-latest-1');
+  const rowLayout = { nativeEvent: { layout: { x: 0, y: 123, width: 390, height: 370 } } };
+  const onAppState = listen.mock.calls.find(([event]) => event === 'change')?.[1];
+  let nativeOffset = 685, acceptsCommand = false;
+  mockMeasureViewport.mockImplementation(callback => callback(0, 100, 390, 500));
+  mockMeasureTail.mockImplementation(callback => callback(0, 230 + nativeOffset, 390, 370));
+  jest.mocked(FlatList.prototype.scrollToOffset).mockImplementation(({ offset: nextOffset }) => {
+    if (acceptsCommand) nativeOffset = nextOffset;
+  });
+  act(() => { AppState.currentState = 'background'; onAppState?.('background'); });
+  fireEvent(list, 'contentSizeChange', 390, 1000);
+  act(() => { AppState.currentState = 'active'; onAppState?.('active'); });
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  fireEvent(tail, 'layout', rowLayout);
+  for (const y of [200, 400, 685]) {
+    nativeOffset = y;
+    fireEvent.scroll(list, { nativeEvent: { ...offset(y).nativeEvent, contentSize: { height: 4500 } } });
+  }
+  acceptsCommand = true;
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  act(() => jest.advanceTimersByTime(70));
+  expect(nativeOffset).toBe(0);
+  for (const y of [300, 400, 500, 600, 700]) {
+    nativeOffset = y;
+    fireEvent.scroll(list, { nativeEvent: { ...offset(y).nativeEvent, contentSize: { height: 4500 } } });
+    if (source === 'duplicate-layout') fireEvent(tail, 'layout', rowLayout);
+    act(() => jest.advanceTimersByTime(70));
+  }
+  expect(jest.mocked(FlatList.prototype.scrollToOffset).mock.calls.length).toBeLessThanOrEqual(2);
+  const calls = jest.mocked(FlatList.prototype.scrollToOffset).mock.calls.length;
+  act(() => jest.advanceTimersByTime(1000));
+  expect(jest.mocked(FlatList.prototype.scrollToOffset).mock.calls.length).toBe(calls);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+});
+
+test('a zero-velocity drag ends without a momentum callback and permits the next latest pin', async () => {
+  seed(conversationTarget, [message('latest-1', 1)]);
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'scrollBeginDrag');
+  fireEvent.scroll(list, offset(20));
+  fireEvent(list, 'scrollEndDrag', { nativeEvent: { ...offset(20).nativeEvent, velocity: { x: 0, y: 0 } } });
+  // Native is stationary: deliberately omit both momentum callbacks.
+  mockMeasureTail.mockImplementation(callback => callback(0, 0, 0, 0));
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  act(() => useWorkspace.getState().upsertMessage(message('latest-2', 2)));
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  expect(FlatList.prototype.scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: false });
+  // A later native offset is not part of the completed user's gesture.
+  fireEvent.scroll(list, { nativeEvent: { ...offset(300).nativeEvent, contentSize: { height: 4500 } } });
+  expect(list.props.maintainVisibleContentPosition).toBeUndefined();
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+  await observeLatest(view, 'latest-2');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenLastCalledWith('g1', 'latest-2', false));
+});
+
+test('latest settling never interrupts an actual drag-end fling near the tail', async () => {
+  seed(conversationTarget, [message('latest-1', 1)]);
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await observeLatest(view);
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  fireEvent(list, 'scrollBeginDrag');
+  fireEvent.scroll(list, offset(20));
+  fireEvent(list, 'scrollEndDrag', { nativeEvent: { ...offset(20).nativeEvent, velocity: { x: 0, y: 150 } } });
+  fireEvent(list, 'momentumScrollBegin');
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  act(() => jest.advanceTimersByTime(70));
+  expect(FlatList.prototype.scrollToOffset).not.toHaveBeenCalled();
+  fireEvent.scroll(list, { nativeEvent: { ...offset(300).nativeEvent, contentSize: { height: 4500 } } });
+  fireEvent(list, 'momentumScrollEnd', { nativeEvent: { ...offset(300).nativeEvent, contentSize: { height: 4500 } } });
+  expect(list.props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 });
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+});
+
+test.each(['nonzero', 'unknown'])('history layout cannot restore an anchor between %s EndDrag and MomentumBegin', async velocity => {
+  seed(conversationTarget, Array.from({ length: 50 }, (_, index) => message(`message-${index}`, index)));
+  const runtime = createRuntime();
+  runtime.open.mockResolvedValue(50);
+  const view = render(screen(runtime));
+  await observeLatest(view, 'message-49');
+  await waitFor(() => expect(runtime.markRead).toHaveBeenCalledTimes(1));
+  const list = view.UNSAFE_getByType(FlatList);
+  const row = view.getByTestId('chat-message-message-45');
+  let nativeOffset = 300, anchorY = 150, rowHeight = 300;
+  mockMeasureViewport.mockImplementation(callback => callback(0, 100, 390, 500));
+  mockMeasureTail.mockImplementation(callback => callback(0, anchorY, 390, rowHeight));
+  mockMeasureRawRow.mockImplementation((_relative, callback) => callback(0, 500 + nativeOffset - (anchorY - 100) - rowHeight, 390, rowHeight));
+  jest.mocked(FlatList.prototype.scrollToOffset).mockImplementation(({ offset: nextOffset }) => {
+    anchorY += nextOffset - nativeOffset;
+    nativeOffset = nextOffset;
+  });
+  fireEvent(row, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: rowHeight } } });
+  fireEvent(list, 'scrollBeginDrag');
+  fireEvent.scroll(list, offset(nativeOffset));
+  visibleLatest(view, 'message-45');
+  fireEvent(list, 'scrollEndDrag', { nativeEvent: { ...offset(nativeOffset).nativeEvent,
+    ...(velocity === 'nonzero' ? { velocity: { x: 0, y: 150 } } : {}),
+  } });
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  // A real card layout precedes native's momentum-start event. The ongoing
+  // user gesture must not capture and restore this temporary drag-end position.
+  rowHeight = 350;
+  anchorY = -100;
+  fireEvent(row, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: rowHeight } } });
+  fireEvent(list, 'contentSizeChange', 390, 4500);
+  expect(FlatList.prototype.scrollToOffset).not.toHaveBeenCalled();
+  expect(nativeOffset).toBe(300);
+  fireEvent(list, 'momentumScrollBegin');
+  nativeOffset = 450;
+  anchorY = 180;
+  fireEvent.scroll(list, { nativeEvent: { ...offset(nativeOffset).nativeEvent, contentSize: { height: 4500 } } });
+  fireEvent(list, 'momentumScrollEnd', { nativeEvent: { ...offset(nativeOffset).nativeEvent, contentSize: { height: 4500 } } });
+  jest.mocked(FlatList.prototype.scrollToOffset).mockClear();
+  // The actual momentum-end position may now be saved and restored normally.
+  rowHeight = 360;
+  anchorY = -100;
+  fireEvent(row, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: rowHeight } } });
+  expect(FlatList.prototype.scrollToOffset).toHaveBeenCalled();
+  expect(anchorY).toBe(180);
+  expect(runtime.markRead).toHaveBeenCalledTimes(1);
+});
+
+test('native transcript row IDs identify only mounted authorized messages without changing their spoken labels', async () => {
+  seed(conversationTarget, [message('first-card', 0), message('second-card', 1)]);
+  const view = render(screen(createRuntime()));
+  await act(async () => undefined);
+  expect(view.getByTestId('chat-message-first-card').props.collapsable).toBe(false);
+  expect(view.getByTestId('chat-message-second-card').props.accessibilityLabel).toBeUndefined();
+  act(() => useWorkspace.setState({ conversations: {}, messages: {} }));
+  expect(view.queryByTestId('chat-message-first-card')).toBeNull();
+  expect(view.queryByTestId('chat-message-second-card')).toBeNull();
+});
+
 test('a background message update cannot reuse the previously visible tail to read when resuming', async () => {
   seed(conversationTarget, [message('latest-1', 1)]);
   const listen = jest.spyOn(AppState, 'addEventListener');

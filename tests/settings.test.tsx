@@ -86,6 +86,7 @@ test('profile save sends nickname and keeps the input after a failure', async ()
   fireEvent.changeText(view.getByLabelText('显示名'), '新名字');
   fireEvent.press(view.getByRole('button', { name: '保存' }));
   await waitFor(() => expect(runtime.updateProfile).toHaveBeenCalledWith({ nickname: '新名字', searchDiscoverable: true }));
+  await waitFor(() => expect(view.getByText(/无法连接到服务器/)).toBeTruthy());
   expect(view.getByLabelText('显示名').props.value).toBe('新名字');
 });
 

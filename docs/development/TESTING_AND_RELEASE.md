@@ -20,6 +20,12 @@ Android 热字号回归必须在同一路由保持焦点和草稿，连续三轮
 Dimensions 字体缓存已更新。见 [字体通知 ADR](../adr/2026-10-06-android-font-metrics.md)。
 文字选区／TalkBack 焦点单独记录。
 
+头像回归须在正式包使用合成 JPEG／PNG／WebP：系统选择取消、预览取消、明确上传、
+恢复 GitHub 头像分别检查；选择不得自行发请求。空图片、超过 5 MiB、损坏图片应保留
+原头像并给出可重试反馈。头像保存期间保留未提交的显示名／查找可见性，再从 Web
+确认 canonical 图像；恢复测试后还原原自定义图像。源码中的迟到回调和撤权回归不
+代替真实系统选择器、裁剪像素、放大字体及读屏路径验收。
+
 - TypeScript、lint、unit/component/contract tests 和 `git diff --check`。
 - Android debug/release 构建，签名配置检查，APK/AAB 安装与启动 smoke。
 - `version: 1` 消息、未知 block/kind/major、plainText 缺失、恶意 HTML 的 fallback fixture。

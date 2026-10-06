@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, FlatList, Keyboard, Pressable, ScrollView, View, useWindowDimensions, type ViewToken } from 'react-native';
+import { AppState, FlatList, Keyboard, Pressable, ScrollView, View, useWindowDimensions, type LayoutRectangle, type ViewToken } from 'react-native';
 import { Text } from '../../ui/Text';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -60,13 +60,13 @@ const composerSpaceSettleMs = 600;
 
 function TranscriptFrame({ id, register, rowLayout, latestRow, isLatest, onLatestLayout, children }: {
   id: string; register: (id: string, row: View | null) => void; rowLayout: (id: string, height: number) => void;
-  latestRow: React.RefObject<View | null>; isLatest: boolean; onLatestLayout?: () => void; children: React.ReactNode;
+  latestRow: React.RefObject<View | null>; isLatest: boolean; onLatestLayout?: (layout: LayoutRectangle) => void; children: React.ReactNode;
 }) {
   const ref = useCallback((row: View | null) => {
     register(id, row);
     if (isLatest) latestRow.current = row;
   }, [id, isLatest, latestRow, register]);
-  return <View ref={ref} collapsable={false} onLayout={event => { rowLayout(id, event.nativeEvent.layout.height); onLatestLayout?.(); }}>{children}</View>;
+  return <View ref={ref} collapsable={false} testID={`chat-message-${id}`} onLayout={event => { rowLayout(id, event.nativeEvent.layout.height); onLatestLayout?.(event.nativeEvent.layout); }}>{children}</View>;
 }
 
 export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Runtime; open: (id: string) => void; openTopic: (topic: Topic) => void }) {
@@ -190,6 +190,7 @@ export function ChatScreen({
   }), [accountKey, key, mode]);
   const observation = useMemo(() => ({
     geometry, lastId, focusMessageId, confirmed: false, nativeTailVisible: false,
+    rowLayout: undefined as LayoutRectangle | undefined,
     revision: 0, layoutRevision: 0, correctedRevision: -1, correctionCount: 0, measuredScrollRevision: -1,
   }), [geometry, lastId, focusMessageId]);
   const currentObservation = useRef(observation);
@@ -197,6 +198,8 @@ export function ChatScreen({
   const activity = useMemo(() => ({ active: focused && foreground }), [focused, foreground]);
   const currentActivity = useRef(activity);
   currentActivity.current = activity;
+  const [latestLayout, setLatestLayout] = useState<{ observation: typeof observation; revision: number }>();
+  const latestFrameBudget = useRef<{ observation: typeof observation; activity: typeof activity; revision: number; remaining: number } | undefined>(undefined);
   const [readConfirmation, setReadConfirmation] = useState<{ observation: typeof observation; revision: number }>();
   const [progress, setProgress] = useState('');
   const feedback = error || progress || projections.feedback.text;
@@ -216,6 +219,7 @@ export function ChatScreen({
   const readMarker = useRef<{ accountKey: string; key: string; messageId: string } | undefined>(undefined);
   const draggingTranscript = useRef(false);
   const userScroll = useRef(false);
+  const userGesture = useRef<{ activity: typeof activity; geometry: typeof geometry; api: Runtime['api'] } | undefined>(undefined);
   const historyReady = useRef(false);
   const [newMessages, setNewMessages] = useState(false);
   const focusInvocation = useRef(0);
@@ -247,6 +251,7 @@ export function ChatScreen({
     setReadConfirmation(undefined);
     draggingTranscript.current = false;
     userScroll.current = false;
+    userGesture.current = undefined;
     historyReady.current = false;
     setNewMessages(!!focusMessageId);
     setResolvedFocus(undefined);
@@ -346,6 +351,7 @@ export function ChatScreen({
     anchor.reset();
     draggingTranscript.current = false;
     userScroll.current = false;
+    userGesture.current = undefined;
     invalidateReadConfirmation();
     currentObservation.current.correctedRevision = -1;
     currentObservation.current.correctionCount = 0;
@@ -358,7 +364,7 @@ export function ChatScreen({
     measureLatest(true);
   }, [anchor, invalidateReadConfirmation, measureLatest, reconcileLatest]);
   const pinIfNeeded = useCallback(() => {
-    if (currentObservation.current !== observation || currentActivity.current !== activity || !activity.active || useWorkspace.getState().accountKey !== accountKey || !pinToLatest.current || draggingTranscript.current) return;
+    if (currentObservation.current !== observation || currentActivity.current !== activity || !activity.active || AppState.currentState !== 'active' || useWorkspace.getState().accountKey !== accountKey || !pinToLatest.current || draggingTranscript.current || userScroll.current) return;
     userScroll.current = false;
     if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated: false });
     else scrollResponderToEnd(list.current?.getScrollResponder(), false);
@@ -370,7 +376,10 @@ export function ChatScreen({
     const revokedNativeProof = observation.nativeTailVisible;
     const sizeChanged = geometry.contentHeight !== contentSize.height || geometry.layoutHeight !== layoutMeasurement.height;
     const changed = sizeChanged || geometry.offsetY !== contentOffset.y;
-    if (sizeChanged) observation.layoutRevision += 1;
+    if (sizeChanged) {
+      observation.layoutRevision += 1;
+      setLatestLayout({ observation, revision: observation.layoutRevision });
+    }
     if (changed) invalidateReadConfirmation();
     if (!activity.active && changed) requireForegroundProof();
     geometry.offsetY = contentOffset.y;
@@ -409,6 +418,7 @@ export function ChatScreen({
     if (!activity.active) {
       draggingTranscript.current = false;
       userScroll.current = false;
+      userGesture.current = undefined;
       return;
     }
     if (!lastId) return;
@@ -424,19 +434,35 @@ export function ChatScreen({
   }, [accountKey, activity, geometry, key, lastId, measureLatest, mode, observation, pinIfNeeded, reconcileLatest, requireForegroundProof]);
   useEffect(() => {
     if (!activity.active || !lastId || observation.confirmed || !pinToLatest.current) return;
-    let cancelled = false, frame: number | undefined, remaining = 2;
+    const api = runtime.api;
+    const previous = latestFrameBudget.current;
+    const budget = previous?.observation === observation && previous.activity === activity && previous.revision === observation.layoutRevision
+      ? previous : { observation, activity, revision: observation.layoutRevision, remaining: 2 };
+    latestFrameBudget.current = budget;
+    if (!budget.remaining) return;
+    let cancelled = false, frame: number | undefined;
     const retry = () => {
       frame = requestAnimationFrame(() => {
-        if (cancelled || currentActivity.current !== activity || currentObservation.current !== observation || !pinToLatest.current || draggingTranscript.current || observation.confirmed) return;
-        // AppState can precede the native window becoming measurable. Retry only
-        // twice in this activity/tail generation, without fabricating visibility.
+        const state = useWorkspace.getState();
+        if (cancelled || currentActivity.current !== activity || currentObservation.current !== observation || AppState.currentState !== 'active' || runtime.api !== api
+          || latestFrameBudget.current !== budget || budget.revision !== observation.layoutRevision || !budget.remaining
+          || state.accountKey !== observation.geometry.accountKey || !state.bootstrap?.permissions.canReadConversations
+          || !state.conversations[targetConversationId] || state.messages[observation.geometry.key]?.at(-1)?.id !== lastId
+          || (targetKind === 'topic' && (!state.topics[targetId]?.joined || state.topics[targetId]?.conversationId !== targetConversationId))
+          || !pinToLatest.current || draggingTranscript.current || userScroll.current || observation.confirmed) return;
+        // Refresh can clamp offsets after an immediate command, before the
+        // window/card layout settles. Retry twice per activity/tail/layout;
+        // only the following native measurement can confirm visibility/read.
+        // A revoked proof wakes the remaining budget; it cannot renew it.
+        budget.remaining--;
+        pinIfNeeded();
         measureLatest(true);
-        if (--remaining > 0 && !observation.confirmed) retry();
+        if (budget.remaining > 0 && !observation.confirmed) retry();
       });
     };
     retry();
     return () => { cancelled = true; if (frame !== undefined) cancelAnimationFrame(frame); };
-  }, [activity, lastId, measureLatest, observation]);
+  }, [activity, lastId, latestLayout, measureLatest, observation, pinIfNeeded, readConfirmation, runtime, targetConversationId, targetId, targetKind]);
   const loadOlder = () => {
     const current = () => currentObservation.current.geometry === geometry && useWorkspace.getState().accountKey === accountKey;
     if (!hasOlder || !current()) return;
@@ -646,43 +672,56 @@ export function ChatScreen({
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
           onScrollBeginDrag={() => {
-            if (!isCurrentObservation()) return;
+            if (!isCurrentObservation() || !activity.active || AppState.currentState !== 'active') return;
             focusInvocation.current += 1;
             setFocusRequest(undefined);
             setResolvedFocus(undefined);
             draggingTranscript.current = true;
             userScroll.current = true;
+            userGesture.current = { activity, geometry, api: runtime.api };
             historyReady.current = true;
             anchor.beginUserScroll();
             invalidateReadConfirmation();
           }}
           onScrollEndDrag={e => {
-            if (!isCurrentObservation()) return;
+            if (!isCurrentObservation() || !activity.active || AppState.currentState !== 'active' || !draggingTranscript.current || !userScroll.current
+              || userGesture.current?.activity !== activity || userGesture.current.geometry !== geometry || userGesture.current.api !== runtime.api) return;
             draggingTranscript.current = false;
             observeOffset(e, true);
-            anchor.endUserScroll();
+            // Android always supplies both velocities. A stationary release may
+            // have no momentum callback; unknown velocity cannot prove it stopped.
+            if (e.nativeEvent.velocity?.x === 0 && e.nativeEvent.velocity.y === 0) {
+              userScroll.current = false;
+              userGesture.current = undefined;
+              anchor.endUserScroll();
+            }
           }}
           onMomentumScrollEnd={e => {
             if (!isCurrentObservation()) return;
             draggingTranscript.current = false;
-            const fromUser = userScroll.current;
+            const fromUser = activity.active && AppState.currentState === 'active' && userScroll.current && userGesture.current?.activity === activity && userGesture.current.geometry === geometry && userGesture.current.api === runtime.api;
             observeOffset(e, fromUser);
             userScroll.current = false;
+            userGesture.current = undefined;
             if (fromUser) anchor.endUserScroll();
           }}
           onMomentumScrollBegin={() => {
-            if (!isCurrentObservation() || !userScroll.current) return;
+            if (!isCurrentObservation() || !activity.active || AppState.currentState !== 'active' || !userScroll.current || userGesture.current?.activity !== activity
+              || userGesture.current.geometry !== geometry || userGesture.current.api !== runtime.api) return;
             draggingTranscript.current = true;
             anchor.beginUserScroll();
           }}
           onScroll={e => {
-            observeOffset(e, draggingTranscript.current || userScroll.current);
+            const fromUser = activity.active && AppState.currentState === 'active' && userScroll.current && userGesture.current?.activity === activity
+              && userGesture.current.geometry === geometry && userGesture.current.api === runtime.api;
+            observeOffset(e, fromUser);
           }}
           scrollEventThrottle={100}
           onLayout={e => {
             if (!isCurrentObservation()) return;
             if (geometry.layoutHeight !== e.nativeEvent.layout.height) {
               observation.layoutRevision += 1;
+              setLatestLayout({ observation, revision: observation.layoutRevision });
               invalidateReadConfirmation();
               if (!activity.active) requireForegroundProof();
             }
@@ -696,6 +735,7 @@ export function ChatScreen({
             if (!isCurrentObservation()) return;
             if (geometry.contentHeight !== height) {
               observation.layoutRevision += 1;
+              setLatestLayout({ observation, revision: observation.layoutRevision });
               invalidateReadConfirmation();
               if (!activity.active) requireForegroundProof();
             }
@@ -731,9 +771,13 @@ export function ChatScreen({
           ListEmptyComponent={!loading ? <EmptyState title="还没有消息" /> : null}
           renderItem={({ item }) => {
             const isLatest = item.kind === 'hidden' ? item.messages.some(message => message.id === lastId) : item.message.id === lastId;
-            const onLatestLayout = isLatest ? () => {
+            const onLatestLayout = isLatest ? (layout: LayoutRectangle) => {
               if (!isCurrentObservation()) return;
+              const previous = observation.rowLayout;
+              if (previous && previous.x === layout.x && previous.y === layout.y && previous.width === layout.width && previous.height === layout.height) return;
+              observation.rowLayout = layout;
               observation.layoutRevision += 1;
+              setLatestLayout({ observation, revision: observation.layoutRevision });
               invalidateReadConfirmation();
               if (!activity.active) requireForegroundProof();
               else {

@@ -11,6 +11,7 @@ import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conv
 import { composeBlocks } from '../domain/compose';
 import { assertAllowedCardAction } from '../domain/actions';
 import { clearAccountFiles } from './transfers';
+import { clearAvatarSelections, cleanupAvatarCopies, readAvatarBytes, type AvatarSelection } from './avatar';
 import { mergeMessages, useWorkspace } from '../domain/store';
 import { releaseSchema, updateDecision } from '../domain/updates';
 import { ReplayTracker } from '../domain/replay';
@@ -34,6 +35,8 @@ export class Runtime {
   private epoch=0;
   // A denied resource invalidates permission snapshots that began before the denial.
   private authorizationRevision=0;
+  private avatarRevision=0;
+  private avatarRequest=0;
   private pendingTopicDrafts:{account:string;drafts:Record<string,Draft>}|null=null;
   private socket:WebSocket|null=null;
   private retry:ReturnType<typeof setTimeout>|null=null;
@@ -64,7 +67,7 @@ export class Runtime {
     },()=>{if(this.api===api)void this.logout(false);},()=>this.api===api&&epoch===this.epoch&&!this.forced());
     this.api=api;setMediaClient(api);setMediaAccount(useWorkspace.getState().accountKey);return api;
   }
-  start(){this.attach();if(this.starting)return this.starting;const task=this.restore();this.starting=task;void task.finally(()=>{if(this.starting===task)this.starting=null;});return task;}
+  start(){this.attach();if(this.starting)return this.starting;try{cleanupAvatarCopies();}catch{/* Disposable cache cleanup cannot prevent restoring credentials. */}const task=this.restore();this.starting=task;void task.finally(()=>{if(this.starting===task)this.starting=null;});return task;}
   private async restore(){
     const epoch=this.epoch;
     useWorkspace.setState({busy:true});
@@ -138,10 +141,15 @@ export class Runtime {
       useWorkspace.getState().setMessages(id,messages);
     }
   }
-  async bootstrap(refreshMessages=false){const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;let authorizationRevision=this.authorizationRevision;if(this.forced())return;
+  async bootstrap(refreshMessages=false){const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,avatarRevision=this.avatarRevision;let authorizationRevision=this.authorizationRevision;if(this.forced())return;
     const loaded=Object.keys(useWorkspace.getState().messages);
-    const b=await api.json('/api/workspace/bootstrap',bootstrapSchema);if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account||this.authorizationRevision!==authorizationRevision)return;
+    let b=await api.json('/api/workspace/bootstrap',bootstrapSchema);if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account||this.authorizationRevision!==authorizationRevision)return;
     const key=`${api.origin}:${b.auth.currentUser.id}`;
+    // A pre-mutation snapshot still applies authorization; only its old self-avatar is superseded.
+    const currentUser=useWorkspace.getState().bootstrap?.auth.currentUser;
+    if(avatarRevision!==this.avatarRevision&&account===key&&currentUser?.id===b.auth.currentUser.id){
+      b={...b,auth:{...b.auth,currentUser:{...b.auth.currentUser,avatarUrl:currentUser.avatarUrl}},members:b.members.map(member=>member.id===currentUser.id?{...member,avatarUrl:currentUser.avatarUrl}:member)};
+    }
     const state=useWorkspace.getState(),visibleIds=new Set(b.permissions.canReadConversations?b.conversations.map(conversation=>conversation.id):[]);
     const deniedTopics=new Set(Object.values(state.topics).filter(topic=>!visibleIds.has(topic.conversationId)).map(topic=>`topic:${topic.id}`));
     if((state.bootstrap?.permissions.canReadConversations&&!b.permissions.canReadConversations)||Object.keys(state.conversations).some(id=>!visibleIds.has(id)))authorizationRevision=++this.authorizationRevision;
@@ -318,16 +326,51 @@ export class Runtime {
   }
   async notification(id:string,level:'all'|'mentions'|'muted'){await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}/notification`,z.unknown(),{level},'PATCH');await this.bootstrap();}
   async updateProfile(patch:{nickname?:string|null;searchDiscoverable?:boolean;recallReason?:string}){
-    const epoch=this.epoch;
-    const result=await this.requireApi().json('/api/workspace/me/profile',profileResponseSchema,patch,'PATCH');
-    if(!this.current(epoch))throw new Error('Stale session');
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,avatarRevision=this.avatarRevision;
+    const result=await api.json('/api/workspace/me/profile',profileResponseSchema,patch,'PATCH');
+    if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account)throw new Error('Stale session');
     useWorkspace.setState(s=>{
       if(!s.bootstrap||s.bootstrap.auth.currentUser.id!==result.user.id)return s;
-      const bootstrap={...s.bootstrap,auth:{...s.bootstrap.auth,currentUser:{...s.bootstrap.auth.currentUser,...result.user}},members:s.bootstrap.members.map(member=>member.id===result.user.id?{...member,...result.user}:member)};
+      const user=avatarRevision===this.avatarRevision?result.user:{...result.user,avatarUrl:s.bootstrap.auth.currentUser.avatarUrl};
+      const bootstrap={...s.bootstrap,auth:{...s.bootstrap.auth,currentUser:{...s.bootstrap.auth.currentUser,...user}},members:s.bootstrap.members.map(member=>member.id===result.user.id?{...member,...user}:member)};
       cache.set(`${s.accountKey}:bootstrap`,bootstrap);
       return {bootstrap};
     });
     return result.user;
+  }
+  avatarScope(){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,userId=useWorkspace.getState().bootstrap?.auth.currentUser.id;
+    return ()=>!!account&&!!userId&&this.current(epoch)&&this.api===api&&!this.forced()&&useWorkspace.getState().accountKey===account&&useWorkspace.getState().bootstrap?.auth.currentUser.id===userId;
+  }
+  async updateAvatar(selection:AvatarSelection,current:()=>boolean=()=>true){
+    try{
+      const scoped=this.avatarScope();
+      if(!scoped()||!current())throw new Error('Stale session');
+      const bytes=readAvatarBytes(selection);
+      if(!scoped()||!current())throw new Error('Stale session');
+      return await this.mutateAvatar({method:'PUT',headers:{'Content-Type':selection.mimeType},body:bytes},()=>scoped()&&current());
+    }finally{selection.dispose();}
+  }
+  async clearAvatar(current:()=>boolean=()=>true){return this.mutateAvatar({method:'DELETE'},current);}
+  private async mutateAvatar(init:RequestInit,current:()=>boolean){
+    const scoped=this.avatarScope(),api=this.requireApi(),request=++this.avatarRequest,userId=useWorkspace.getState().bootstrap?.auth.currentUser.id;
+    const valid=()=>scoped()&&current()&&request===this.avatarRequest;
+    if(!valid())throw new Error('Stale session');
+    const response=await api.raw('/api/workspace/me/avatar',init);
+    if(!valid())throw new Error('Stale session');
+    let payload:unknown;
+    try{payload=await response.json();}catch{throw new ApiError('response.invalid',response.status,'body.non_json');}
+    if(!valid())throw new Error('Stale session');
+    const result=profileResponseSchema.safeParse(payload);
+    if(!result.success||result.data.user.id!==userId||result.data.user.avatarUrl===undefined)throw new ApiError('response.invalid',response.status,'body.schema');
+    const avatarUrl=result.data.user.avatarUrl;
+    this.avatarRevision++;
+    useWorkspace.setState(s=>{
+      if(!s.bootstrap)return s;
+      const bootstrap={...s.bootstrap,auth:{...s.bootstrap.auth,currentUser:{...s.bootstrap.auth.currentUser,avatarUrl}},members:s.bootstrap.members.map(member=>member.id===userId?{...member,avatarUrl}:member)};
+      cache.set(`${s.accountKey}:bootstrap`,bootstrap);return {bootstrap};
+    });
+    return result.data.user;
   }
   async chatSettings(){
     return this.requireApi().json('/api/workspace/me/emote-settings',chatSettingsResponseSchema);
@@ -588,7 +631,7 @@ export class Runtime {
   private startHttpSync(){if(this.poll||!this.active)return;void this.httpSync();this.poll=setInterval(()=>{void this.httpSync();},8000);}
   private stopHttpSync(){if(this.poll)clearInterval(this.poll);this.poll=null;}
   private async httpSync(){if(!this.active||!this.api?.session||useWorkspace.getState().connection==='已连接')return;try{await this.bootstrap(true);if(this.active&&useWorkspace.getState().connection!=='已连接')useWorkspace.setState({connection:'实时未接通，已用 HTTP 同步'});}catch{/* WebSocket retry continues */}}
-  async logout(remote=true){const api=this.api,session=api?.session;this.epoch++;api?.invalidate();this.stopHttpSync();this.disconnect();this.api=null;this.pendingTopicDrafts=null;this.notified.clear();this.inFlight.clear();this.resuming=null;this.starting=null;const key=useWorkspace.getState().accountKey;useWorkspace.getState().reset();if(key){clearAccountFiles(key);clearAccountPreviewCache(key);cache.clearAccount(key);}setMediaAccount('');setMediaClient(null);await credentials.clear();await clearNotifications();
+  async logout(remote=true){const api=this.api,session=api?.session;this.epoch++;api?.invalidate();this.stopHttpSync();this.disconnect();this.api=null;this.pendingTopicDrafts=null;this.notified.clear();this.inFlight.clear();this.resuming=null;this.starting=null;const key=useWorkspace.getState().accountKey;useWorkspace.getState().reset();if(key){clearAccountFiles(key);clearAccountPreviewCache(key);cache.clearAccount(key);}const avatarCleanup=key?clearAvatarSelections(key).catch(()=>undefined):Promise.resolve();setMediaAccount('');setMediaClient(null);await credentials.clear();await clearNotifications();await avatarCleanup;
     if(remote&&api&&session){try{await api.raw('/api/auth/mobile/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refreshToken:session.refreshToken})},false);}catch{/* Local logout must still complete offline. */}}api?.invalidate();
   }
   dispose(){this.active=false;this.stopHttpSync();this.disconnect();this.stopAppState?.();this.stopAppState=null;}
