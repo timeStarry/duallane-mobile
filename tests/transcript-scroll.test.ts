@@ -1,4 +1,19 @@
-import { hasOlderMessages, isPinnedToLatest, newestFirstTranscript, scrollResponderToEnd, shouldLoadOlderHistory, transcriptMode } from '../src/domain/transcript-scroll';
+import { hasOlderMessages, isMeasuredTailVisible, isPinnedToLatest, newestFirstTranscript, scrollResponderToEnd, shouldLoadOlderHistory, transcriptMode } from '../src/domain/transcript-scroll';
+
+test.each([
+  [{ x: 0, y: 500, width: 390, height: 100 }, true],
+  [{ x: 0, y: -500, width: 390, height: 1100 }, true],
+  [{ x: 0, y: -500, width: 390, height: 3000 }, false],
+  [{ x: 0, y: 100, width: 390, height: 100 }, true],
+  [{ x: 0, y: 500, width: 390, height: 102 }, false],
+  [{ x: 0, y: 600, width: 390, height: 100 }, false],
+  [{ x: 0, y: 0, width: 390, height: 100 }, false],
+  [{ x: 400, y: 500, width: 390, height: 100 }, false],
+  [{ x: 0, y: 500, width: 0, height: 100 }, false],
+  [{ x: 0, y: Number.NaN, width: 390, height: 100 }, false],
+])('native tail rectangle %j confirms its visible end: %s', (tail, expected) => {
+  expect(isMeasuredTailVisible({ x: 0, y: 100, width: 390, height: 500 }, tail)).toBe(expected);
+});
 
 test('newest-first transcript puts the latest chronological item at index 0', () => {
   expect(newestFirstTranscript(['old', 'mid', 'new'])).toEqual(['new', 'mid', 'old']);
