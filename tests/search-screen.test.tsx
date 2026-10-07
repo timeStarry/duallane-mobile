@@ -16,7 +16,11 @@ import { ConversationRow, TopicRow } from '../src/ui/chrome';
 
 let mockFocused = true;
 const mockSetEnabled = jest.fn();
+const mockAssureFocusedInputVisible = jest.fn();
 let mockKeyboardVisible = false;
+let mockKeyboardHeight = 0;
+let mockKeyboardWindow = { width: 390, height: 844 };
+let mockFontScale = 1;
 jest.mock('@react-navigation/native', () => ({
   useIsFocused: () => mockFocused,
   useFocusEffect: (effect: () => void | (() => void)) => {
@@ -32,10 +36,15 @@ jest.mock('react-native-keyboard-controller', () => {
     useKeyboardController: () => ({ setEnabled: mockSetEnabled }),
     KeyboardController: { setInputMode: jest.fn(), setDefaultMode: jest.fn() },
     AndroidSoftInputModes: { SOFT_INPUT_ADJUST_NOTHING: 48 },
-    useKeyboardState: (selector: (state: { isVisible: boolean }) => unknown) => selector({ isVisible: mockKeyboardVisible }),
-    KeyboardAwareScrollView: React.forwardRef<InstanceType<typeof ScrollView>, React.ComponentProps<typeof ScrollView>>((props, ref) => <ScrollView {...props} ref={ref} />),
+    useKeyboardState: (selector: (state: { isVisible: boolean; height: number }) => unknown) => selector({ isVisible: mockKeyboardVisible, height: mockKeyboardHeight }),
+    useWindowDimensions: () => mockKeyboardWindow,
+    KeyboardAwareScrollView: React.forwardRef<{ assureFocusedInputVisible: () => void }, React.ComponentProps<typeof ScrollView>>((props, ref) => {
+      React.useImperativeHandle(ref, () => ({ assureFocusedInputVisible: mockAssureFocusedInputVisible }));
+      return <ScrollView {...props} />;
+    }),
   };
 });
+jest.mock('../src/platform/font-scale', () => ({ useFontScale: () => mockFontScale }));
 jest.mock('../src/platform/storage', () => ({ cache: { get: jest.fn(), set: jest.fn(), remove: jest.fn() } }));
 jest.mock('../src/ui/RemoteImage', () => ({ RemoteImage: () => null }));
 
@@ -50,7 +59,9 @@ let values: Map<string, unknown>;
 
 beforeEach(() => {
   jest.useFakeTimers();
-  mockFocused = true; mockKeyboardVisible = false; values = new Map(); useWorkspace.getState().reset();
+  mockFocused = true; mockKeyboardVisible = false; mockKeyboardHeight = 0;
+  mockKeyboardWindow = { width: 390, height: 844 }; mockFontScale = 1;
+  values = new Map(); useWorkspace.getState().reset();
   useWorkspace.getState().applyBootstrap(bootstrap, account); useWorkspace.getState().setTopics([topic]);
   jest.mocked(cache.get).mockReset().mockImplementation(key => values.get(key));
   jest.mocked(cache.set).mockReset().mockImplementation((key, value) => { values.set(key, value); return { changes: 1, lastInsertRowId: 1 }; });
@@ -342,4 +353,60 @@ test('keyword edits, history visibility and result changes preserve the same inp
   expect(view.getByLabelText('搜索会话和话题')).toBe(input);
   expect(view.UNSAFE_getByType(KeyboardAwareScrollView)).toBe(aware);
   expect(input.props.allowFontScaling).not.toBe(false);
+});
+
+test('rotation, keyboard height and font changes refresh the focused input without replacing its host', () => {
+  const { view, rerender } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  const aware = view.UNSAFE_getByType(KeyboardAwareScrollView);
+  fireEvent(input, 'focus');
+  mockKeyboardVisible = true; mockKeyboardHeight = 310; rerender();
+  mockAssureFocusedInputVisible.mockClear();
+  mockKeyboardWindow = { width: 844, height: 390 }; rerender();
+  expect(mockAssureFocusedInputVisible).toHaveBeenCalled();
+  mockAssureFocusedInputVisible.mockClear();
+  mockKeyboardHeight = 296; rerender();
+  expect(mockAssureFocusedInputVisible).toHaveBeenCalled();
+  mockAssureFocusedInputVisible.mockClear();
+  mockFontScale = 2; rerender();
+  expect(mockAssureFocusedInputVisible).toHaveBeenCalled();
+  mockAssureFocusedInputVisible.mockClear();
+  fireEvent(input, 'layout', { nativeEvent: { layout: { x: 16, y: 88, width: 360, height: 72 } } });
+  expect(mockAssureFocusedInputVisible).toHaveBeenCalled();
+  expect(view.getByLabelText('搜索会话和话题')).toBe(input);
+  expect(view.UNSAFE_getByType(KeyboardAwareScrollView)).toBe(aware);
+  expect(StyleSheet.flatten(view.getByTestId('search-page').props.style).paddingBottom ?? 0).toBe(0);
+});
+
+test('first entry in landscape resynchronizes after focus and the real viewport layout', () => {
+  mockKeyboardWindow = { width: 844, height: 390 };
+  mockKeyboardVisible = true; mockKeyboardHeight = 296;
+  const { view } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  expect(input.props.autoFocus).toBe(true);
+  fireEvent(input, 'focus');
+  expect(mockAssureFocusedInputVisible).toHaveBeenCalled();
+  mockAssureFocusedInputVisible.mockClear();
+  fireEvent(view.UNSAFE_getByType(FlatList), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 844, height: 390 } } });
+  expect(mockAssureFocusedInputVisible).toHaveBeenCalled();
+});
+
+test('visibility refresh stops after input or route blur and rejects stale layout after unmount', () => {
+  const { view, rerender } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  fireEvent(input, 'focus');
+  const oldLayout = input.props.onLayout;
+  fireEvent(input, 'blur');
+  mockAssureFocusedInputVisible.mockClear();
+  mockKeyboardVisible = true; mockKeyboardHeight = 310; rerender();
+  fireEvent(input, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 48 } } });
+  expect(mockAssureFocusedInputVisible).not.toHaveBeenCalled();
+  fireEvent(input, 'focus'); mockFocused = false; rerender();
+  mockAssureFocusedInputVisible.mockClear();
+  act(() => oldLayout());
+  mockKeyboardWindow = { width: 844, height: 390 }; rerender();
+  expect(mockAssureFocusedInputVisible).not.toHaveBeenCalled();
+  view.unmount();
+  act(() => oldLayout());
+  expect(mockAssureFocusedInputVisible).not.toHaveBeenCalled();
 });

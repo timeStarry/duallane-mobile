@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Keyboard, Pressable, View, type ScrollViewProps } from 'react-native';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
-import { AndroidSoftInputModes, KeyboardAwareScrollView, KeyboardController, useKeyboardController, useKeyboardState } from 'react-native-keyboard-controller';
+import { AndroidSoftInputModes, KeyboardAwareScrollView, KeyboardController, useKeyboardController, useKeyboardState, useWindowDimensions as useKeyboardWindowDimensions } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronLeft, X } from 'lucide-react-native';
 import type { Runtime } from '../../data/runtime';
@@ -13,6 +13,7 @@ import { AppHeader, ConversationRow, TopicRow } from '../../ui/chrome';
 import { Button, EmptyState, IconButton, InlineFeedback, Input, Label } from '../../ui/primitives';
 import { Text } from '../../ui/Text';
 import { useTheme } from '../../ui/theme';
+import { useFontScale } from '../../platform/font-scale';
 
 type Result = { kind: 'conversation'; conversation: Conversation } | { kind: 'topic'; topic: Topic };
 
@@ -28,6 +29,11 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   const insets = useSafeAreaInsets();
   const { setEnabled } = useKeyboardController();
   const keyboardVisible = useKeyboardState(state => state.isVisible);
+  const keyboardHeight = useKeyboardState(state => state.height);
+  const { width, height } = useKeyboardWindowDimensions();
+  const fontScale = useFontScale();
+  const list = useRef<FlatList<Result>>(null);
+  const inputFocused = useRef(false);
   useFocusEffect(useCallback(() => {
     // The aware scroll surface owns the IME spacer; native pan must not also
     // shift the page. Restore the process default when another route takes over.
@@ -64,6 +70,13 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
       && state.accountKey === accountKey && state.bootstrap?.space.id === spaceId && state.bootstrap.auth.currentUser.id === userId;
   }, [context, accountKey, spaceId, userId, runtime, api, validAccount]);
   const current = useCallback(() => currentScope() && active.current === activity && activity.live && activity.focused, [activity, currentScope]);
+  const assureInputVisible = useCallback(() => {
+    if (!current() || !inputFocused.current) return;
+    // VirtualizedList owns the scroll-component ref. Its public host accessor
+    // exposes the aware surface, which refreshes native input bounds first.
+    const scroll = list.current?.getNativeScrollRef();
+    if (scroll && 'assureFocusedInputVisible' in scroll && typeof scroll.assureFocusedInputVisible === 'function') scroll.assureFocusedInputVisible();
+  }, [current]);
 
   const publishHistory = useCallback((history: string[], query?: string, error = '') => {
     setSnapshot(previous => current() ? {
@@ -99,6 +112,13 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
     return () => { activity.live = false; };
   }, [activity, api, canRead, context, current, publishHistory, refreshTopics]);
 
+  useEffect(() => {
+    // A still-focused input need not emit a new focus event after rotation or
+    // a font change. Re-read its layout using the same native window metrics
+    // as KeyboardAwareScrollView; its spacer remains the only IME offset.
+    if (keyboardVisible) assureInputVisible();
+  }, [assureInputVisible, keyboardVisible, keyboardHeight, width, height, fontScale]);
+
   const visible = snapshot?.context === context ? snapshot : undefined;
   const query = visible?.query ?? '';
   const history = visible?.history ?? [];
@@ -133,7 +153,8 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
 
   return (
     <View testID="search-page" style={{ flex: 1, backgroundColor: t.bg }}>
-      <FlatList data={results} keyExtractor={item => item.kind === 'conversation' ? `conversation:${item.conversation.id}` : `topic:${item.topic.id}`}
+      <FlatList ref={list} data={results} keyExtractor={item => item.kind === 'conversation' ? `conversation:${item.conversation.id}` : `topic:${item.topic.id}`}
+        onLayout={assureInputVisible}
         renderScrollComponent={renderScrollComponent} removeClippedSubviews={false}
         style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: (focused && keyboardVisible ? 0 : insets.bottom) + t.space.lg }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
         ListHeaderComponent={<View>
@@ -145,6 +166,7 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
           <Input accessibilityLabel="搜索会话和话题" placeholder="搜索会话和话题" autoFocus={autoFocus.current} style={{ flex: 1 }}
             editable={validAccount} disableFullscreenUI maxLength={SEARCH_TERM_LIMIT} returnKeyType="search" value={query}
+            onFocus={() => { inputFocused.current = true; assureInputVisible(); }} onBlur={() => { inputFocused.current = false; }} onLayout={assureInputVisible}
             onChangeText={value => { if (current()) setSnapshot(previous => current() ? { context, query: value, history: previous?.context === context ? previous.history : [], error: '' } : previous); }}
             onSubmitEditing={submit} />
           {query ? <IconButton label="清空搜索关键词" onPress={() => { if (current()) setSnapshot(previous => previous?.context === context ? { ...previous, query: '', error: '' } : previous); }}><X size={20} color={t.muted} /></IconButton> : null}
