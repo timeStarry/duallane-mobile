@@ -70,6 +70,12 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
   const ready = useWorkspace(s => s.ready);
   const busy = useWorkspace(s => s.busy);
   const error = useWorkspace(s => s.error);
+  const accountKey = useWorkspace(s => s.accountKey);
+  const spaceId = useWorkspace(s => s.bootstrap?.space.id ?? '');
+  const searchContext = useMemo(() => ({ accountKey, spaceId, api: runtime.api }), [accountKey, spaceId, runtime.api]);
+  const [searchRoute, setSearchRoute] = useState<typeof searchContext>();
+  const searchVisible = searchRoute === searchContext;
+  const syncSearchRoute = () => setSearchRoute(navigation.getCurrentRoute()?.name === 'Search' ? searchContext : undefined);
   const policy = useWorkspace(s => s.policy);
   const forced = policy ? updateDecision(policy, installed) === 'forced' : false;
 
@@ -144,7 +150,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
       tabBar={props => <DualLaneTabBar {...props} />}
       screenOptions={{ headerShown: false }}
     >
-      <Tabs.Screen name="聊天">{() => <ConversationsScreen runtime={runtime} openSearch={() => nav.navigate('Search')} open={id => nav.navigate('Chat', { id })} openTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })} />}</Tabs.Screen>
+      <Tabs.Screen name="聊天">{() => <ConversationsScreen runtime={runtime} openSearch={() => { setSearchRoute(searchContext); nav.navigate('Search'); }} open={id => nav.navigate('Chat', { id })} openTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })} />}</Tabs.Screen>
       <Tabs.Screen name="文件">{() => <FilesScreen runtime={runtime} transfers={transfers} />}</Tabs.Screen>
       <Tabs.Screen name="成员">{() => <MembersScreen runtime={runtime} open={id => nav.navigate('Chat', { id })} />}</Tabs.Screen>
       <Tabs.Screen name="我的">{() => <AccountNavigator runtime={runtime} mode={mode} setMode={setMode} />}</Tabs.Screen>
@@ -158,12 +164,12 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
     </SafeAreaView>
   ) : (
     <View style={{ flex: 1, backgroundColor: t.bg }}>
-      {error ? <SafeAreaView edges={['top', 'left', 'right']}>
+      {error && !searchVisible ? <SafeAreaView edges={['top', 'left', 'right']}>
         <Notice text={error} />
       </SafeAreaView> : null}
       {/* Recompute navigation insets from the remaining frame without remounting routes. */}
       <SafeAreaProvider>
-      <NavigationContainer ref={navigation}>
+      <NavigationContainer ref={navigation} onReady={syncSearchRoute} onStateChange={syncSearchRoute}>
         <Stack.Navigator
           screenOptions={{
             header: props => <StackHeader {...props} />,

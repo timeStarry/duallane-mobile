@@ -13,6 +13,7 @@ import { SEARCH_SCOPE_TEXT } from '../src/domain/search';
 import { ThemeProvider } from '../src/ui/theme';
 import { resolveTheme } from '../src/ui/tokens';
 import { AppHeader, ConversationRow, TopicRow } from '../src/ui/chrome';
+import { Notice } from '../src/ui/primitives';
 
 let mockFocused = true;
 const mockSetEnabled = jest.fn();
@@ -124,6 +125,42 @@ test('standalone search focuses input, states its loaded scope, and typing does 
   const style = StyleSheet.flatten(back.props.style);
   expect(style.minWidth).toBeGreaterThanOrEqual(48); expect(style.minHeight).toBeGreaterThanOrEqual(48);
   fireEvent.press(back); expect(onBack).toHaveBeenCalledTimes(1);
+});
+
+test('current global Notice shares Search scroll content after the input and preserves the input and history feedback', () => {
+  const globalError = 'Synthetic global network error';
+  act(() => useWorkspace.setState({ error: globalError }));
+  const { view, rerender } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  fireEvent.changeText(input, 'Design');
+  jest.mocked(cache.get).mockImplementation(() => { throw new Error('Synthetic history failure'); });
+  fireEvent(input, 'submitEditing');
+  const list = view.UNSAFE_getByType(FlatList);
+  const notice = view.getByText(globalError);
+  expect(list.findAll((node: unknown) => node === notice)).toHaveLength(1);
+  expect(notice.props.accessibilityLiveRegion).toBe('polite');
+  expect(view.getByText('本机搜索历史未保存，仍可打开搜索结果。')).toBeTruthy();
+  act(() => useWorkspace.setState({ error: 'Synthetic changed network error' })); rerender();
+  expect(view.getByText('Synthetic changed network error')).toBeTruthy();
+  expect(view.getByLabelText('搜索会话和话题')).toBe(input);
+  expect(input.props.value).toBe('Design');
+  expect(view.getByText('本机搜索历史未保存，仍可打开搜索结果。')).toBeTruthy();
+  expect(useWorkspace.getState().error).toBe('Synthetic changed network error');
+});
+
+test.each(['covered', 'account', 'api', 'space'] as const)('Search does not copy global feedback into a different or inactive scope after %s', change => {
+  const globalError = 'Synthetic account-scoped network error';
+  act(() => useWorkspace.setState({ error: globalError }));
+  const { view, rerender, runtime } = screen();
+  expect(view.getByText(globalError)).toBeTruthy();
+  if (change === 'covered') { mockFocused = false; rerender(); }
+  else if (change === 'account') act(() => useWorkspace.setState({ accountKey: `${origin}:u2`, bootstrap: { ...bootstrap, auth: { currentUser: { ...bootstrap.auth.currentUser, id: 'u2' } } } }));
+  else if (change === 'api') { runtime.api = { origin } as Runtime['api']; rerender(); }
+  else act(() => useWorkspace.setState({ bootstrap: { ...bootstrap, space: { id: 's2', name: 'Other synthetic space' } } }));
+  expect(view.queryByText(globalError)).toBeNull();
+  expect(view.UNSAFE_getByType(Notice).props.text).toBe('');
+  expect(useWorkspace.getState().error).toBe(globalError);
+  if (change === 'covered') { mockFocused = true; rerender(); expect(view.getByText(globalError)).toBeTruthy(); }
 });
 
 test('canonical conversation/topic rows open their current objects and record query only on opening', () => {
@@ -566,6 +603,7 @@ test.each([Number.NaN, -1])('invalid RN keyboard screenY %s cannot dismiss', scr
 });
 
 test('insufficient-space feedback does not replace current history or topic failures and clears on route blur', async () => {
+  act(() => useWorkspace.setState({ error: 'Synthetic global network error' }));
   jest.mocked(cache.get).mockImplementation(() => { throw new Error('Synthetic history failure'); });
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
   const runtime = { api: { origin }, listTopics: jest.fn().mockRejectedValue(new Error('Synthetic topic failure')) } as unknown as Runtime;
@@ -579,6 +617,11 @@ test('insufficient-space feedback does not replace current history or topic fail
   expect(view.getByText(insufficientSpaceText)).toBeTruthy();
   expect(view.getByText('本机搜索历史暂时无法读取，仍可筛选已加载的内容。')).toBeTruthy();
   expect(view.getByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeTruthy();
+  expect(view.getByText('Synthetic global network error')).toBeTruthy();
+  act(() => useWorkspace.setState({ error: 'Synthetic changed global error' }));
+  expect(view.getByText('本机搜索历史暂时无法读取，仍可筛选已加载的内容。')).toBeTruthy();
+  expect(view.getByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeTruthy();
+  expect(view.getByText('Synthetic changed global error')).toBeTruthy();
   mockFocused = false; view.rerender(element());
   expect(view.queryByText(insufficientSpaceText)).toBeNull();
 });

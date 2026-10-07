@@ -10,7 +10,7 @@ import type { Conversation, Topic } from '../../domain/contracts';
 import { normalizeSearchTerm, SEARCH_SCOPE_TEXT, SEARCH_TERM_LIMIT, searchLoadedWorkspace } from '../../domain/search';
 import { useWorkspace } from '../../domain/store';
 import { ConversationRow, TopicRow } from '../../ui/chrome';
-import { Button, EmptyState, IconButton, InlineFeedback, Input, Label } from '../../ui/primitives';
+import { Button, EmptyState, IconButton, InlineFeedback, Input, Label, Notice } from '../../ui/primitives';
 import { Text } from '../../ui/Text';
 import { useTheme } from '../../ui/theme';
 import { useFontScale } from '../../platform/font-scale';
@@ -24,6 +24,7 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   const bootstrap = useWorkspace(state => state.bootstrap);
   const conversations = useWorkspace(state => state.conversations);
   const topics = useWorkspace(state => state.topics);
+  const globalError = useWorkspace(state => state.error);
   const focused = useIsFocused();
   const t = useTheme();
   const insets = useSafeAreaInsets();
@@ -51,6 +52,10 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   const api = runtime.api;
   const validAccount = !!spaceId && !!userId && accountKey.endsWith(`:${userId}`) && (!api || accountKey === `${api.origin}:${userId}`);
   const context = useMemo(() => ({ runtime, api, accountKey, spaceId, userId }), [runtime, api, accountKey, spaceId, userId]);
+  const globalFeedback = useRef({ context, text: globalError });
+  // Keep a global error's original scope through covered routes and identity
+  // changes; an unchanged old error must not be copied into a new account.
+  if (globalFeedback.current.text !== globalError) globalFeedback.current = { context, text: globalError };
   const viewportScope = useMemo(() => ({ context, width, height }), [context, width, height]);
   const rowScope = useMemo(() => ({ viewportScope, fontScale }), [viewportScope, fontScale]);
   const layoutScopes = useRef({ viewportScope, rowScope });
@@ -273,6 +278,7 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
           {query ? <IconButton label="清空搜索关键词" onPress={() => { if (current()) setSnapshot(previous => previous?.context === context ? { ...previous, query: '', error: '' } : previous); }}><X size={20} color={t.muted} /></IconButton> : null}
         </View>
         <Button title="搜索" onPress={submit} disabled={!term || !validAccount} />
+        <Notice text={focused && validAccount && globalFeedback.current.context === context ? globalFeedback.current.text : ''} />
         <InlineFeedback text={spaceFeedback === context ? '当前窗口空间不足，键盘已收起，请转为竖屏输入。' : ''} tone="warning" />
         <Label muted>{SEARCH_SCOPE_TEXT}</Label>
         <InlineFeedback text={visible?.error ?? ''} tone="warning" />
