@@ -83,26 +83,47 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
   }, [forced]);
   useEffect(() => {
     let cancelled = false;
+    let invocation = 0;
     const open = async (response: Notifications.NotificationResponse) => {
       if (!navigation.isReady() || !ready || forced) return;
       const target = notificationTarget.safeParse(response.notification.request.content.data);
       const s = useWorkspace.getState();
       if (!target.success || target.data.userId !== s.bootstrap?.auth.currentUser.id || target.data.origin !== runtime.api?.origin) return;
+      const request = ++invocation;
+      const api = runtime.api, accountKey = s.accountKey;
+      const route = navigation.getCurrentRoute();
+      const routeContext = z.object({ id: z.string(), conversationId: z.string().optional(), focusMessageId: z.string().optional() });
+      const params = routeContext.safeParse(route?.params);
+      const preserveLoadedWindow = params.success && (target.data.topicId
+        ? route?.name === 'Topic' && params.data.id === target.data.topicId && params.data.conversationId === target.data.conversationId
+        : route?.name === 'Chat' && params.data.id === target.data.conversationId);
+      const current = () => {
+        const nextRoute = navigation.getCurrentRoute(), nextParams = routeContext.safeParse(nextRoute?.params);
+        const sameContext = params.success && nextParams.success
+          ? params.data.id === nextParams.data.id && params.data.conversationId === nextParams.data.conversationId && params.data.focusMessageId === nextParams.data.focusMessageId
+          : route?.params === nextRoute?.params;
+        return !cancelled && invocation === request && runtime.api === api && api?.origin === target.data.origin && useWorkspace.getState().accountKey === accountKey
+          && useWorkspace.getState().bootstrap?.auth.currentUser.id === target.data.userId && nextRoute?.key === route?.key && nextRoute?.name === route?.name && sameContext;
+      };
       try {
         if (target.data.topicId) {
-          await runtime.openTopic(target.data.topicId);
-          if (!cancelled && useWorkspace.getState().bootstrap?.auth.currentUser.id === target.data.userId) {
+          const loaded = await (preserveLoadedWindow ? runtime.openTopic(target.data.topicId, { preserveLoadedWindow: true }) : runtime.openTopic(target.data.topicId));
+          if (loaded !== undefined && current() && !preserveLoadedWindow) {
             const topic = useWorkspace.getState().topics[target.data.topicId];
             navigation.navigate('Topic', { id: target.data.topicId, conversationId: topic?.conversationId ?? target.data.conversationId });
           }
         } else {
-          await runtime.open(target.data.conversationId);
-          if (!cancelled && useWorkspace.getState().bootstrap?.auth.currentUser.id === target.data.userId) navigation.navigate('Chat', { id: target.data.conversationId });
+          const loaded = await (preserveLoadedWindow ? runtime.open(target.data.conversationId, { preserveLoadedWindow: true }) : runtime.open(target.data.conversationId));
+          if (loaded !== undefined && current() && !preserveLoadedWindow) navigation.navigate('Chat', { id: target.data.conversationId });
         }
       } catch (e) {
-        if (!cancelled) {
+        if (current()) {
           useWorkspace.setState({ error: errorText(e) });
-          navigation.navigate('Workspace');
+          const state = useWorkspace.getState();
+          const topic = target.data.topicId ? state.topics[target.data.topicId] : undefined;
+          const readable = !!state.bootstrap?.permissions.canReadConversations && !!state.conversations[target.data.conversationId]
+            && (!target.data.topicId || (!!topic?.joined && topic.conversationId === target.data.conversationId));
+          if (!preserveLoadedWindow || !readable) navigation.navigate('Workspace');
         }
       } finally {
         await Notifications.clearLastNotificationResponseAsync();

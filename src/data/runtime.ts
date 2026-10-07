@@ -195,6 +195,25 @@ export class Runtime {
     }
     throw new Error('消息正在同步，请重试');
   }
+  private clearDeniedMessageWindow(bucket:string,current:()=>boolean){
+    if(!current())return;
+    const topicId=bucket.startsWith('topic:')?bucket.slice(6):undefined;
+    const state=useWorkspace.getState(),account=state.accountKey;
+    this.authorizationRevision++;
+    const removed=new Set([bucket,...Object.keys(state.messages).filter(id=>!topicId&&id.startsWith('topic:')&&state.topics[id.slice(6)]?.conversationId===bucket),...(!topicId?Object.values(state.topics).filter(topic=>topic.conversationId===bucket).map(topic=>`topic:${topic.id}`):[])]);
+    if(topicId){
+      const topic=state.topics[topicId];
+      if(topic)state.upsertTopic({...topic,joined:false});
+      else useWorkspace.setState(s=>({
+        messages:Object.fromEntries(Object.entries(s.messages).filter(([id])=>id!==bucket)),
+        drafts:Object.fromEntries(Object.entries(s.drafts).filter(([id])=>id!==bucket)),
+        messageReads:Object.fromEntries(Object.entries(s.messageReads).filter(([id])=>id!==bucket)),
+      }));
+    }
+    else if(state.bootstrap)state.applyBootstrap({...state.bootstrap,conversations:Object.values(state.conversations).filter(conversation=>conversation.id!==bucket)},account);
+    for(const id of removed){cache.remove(`${account}:messages:${id}`);if(this.pendingTopicDrafts?.account===account)delete this.pendingTopicDrafts.drafts[id];}
+    const next=useWorkspace.getState();this.persistDrafts(account);if(next.bootstrap)cache.set(`${account}:bootstrap`,next.bootstrap);
+  }
   private async refreshMessageWindow(bucket:string){
     const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,authorizationRevision=this.authorizationRevision;
     const topicId=bucket.startsWith('topic:')?bucket.slice(6):undefined;
@@ -202,24 +221,7 @@ export class Runtime {
     const current=()=>this.current(epoch)&&this.api===api&&useWorkspace.getState().accountKey===account&&this.authorizationRevision===authorizationRevision
       &&(!topicId||useWorkspace.getState().topics[topicId]?.conversationId===parent);
     const readable=()=>current()&&this.canReadBucket(bucket);
-    const clearDenied=()=>{
-      if(!current())return;
-      this.authorizationRevision++;
-      const state=useWorkspace.getState();
-      const removed=new Set([bucket,...Object.keys(state.messages).filter(id=>!topicId&&id.startsWith('topic:')&&state.topics[id.slice(6)]?.conversationId===bucket),...(!topicId?Object.values(state.topics).filter(topic=>topic.conversationId===bucket).map(topic=>`topic:${topic.id}`):[])]);
-      if(topicId){
-        const topic=state.topics[topicId];
-        if(topic)state.upsertTopic({...topic,joined:false});
-        else useWorkspace.setState(s=>({
-          messages:Object.fromEntries(Object.entries(s.messages).filter(([id])=>id!==bucket)),
-          drafts:Object.fromEntries(Object.entries(s.drafts).filter(([id])=>id!==bucket)),
-          messageReads:Object.fromEntries(Object.entries(s.messageReads).filter(([id])=>id!==bucket)),
-        }));
-      }
-      else if(state.bootstrap)state.applyBootstrap({...state.bootstrap,conversations:Object.values(state.conversations).filter(conversation=>conversation.id!==bucket)},account);
-      for(const id of removed){cache.remove(`${account}:messages:${id}`);if(this.pendingTopicDrafts?.account===account)delete this.pendingTopicDrafts.drafts[id];}
-      const next=useWorkspace.getState();this.persistDrafts(account);if(next.bootstrap)cache.set(`${account}:bootstrap`,next.bootstrap);
-    };
+    const clearDenied=()=>this.clearDeniedMessageWindow(bucket,current);
     const compare=(left:Message,right:Message)=>left.createdAt.localeCompare(right.createdAt)||left.id.localeCompare(right.id);
     for(let attempt=0;attempt<3;attempt++){
       if(!readable()){if(current()&&!this.canReadBucket(bucket))clearDenied();return 0;}
@@ -264,8 +266,42 @@ export class Runtime {
   }
   async messages(id:string,before?:string){return this.loadMessages(id,before);}
   async topicMessages(id:string,before?:string){return this.loadMessages(`topic:${id}`,before);}
-  async open(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}));if(!this.current(epoch))return;useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));return this.messages(id);}
-  async openTopic(id:string){const epoch=this.epoch;const result=await this.requireApi().json(`/api/workspace/topics/${encodeURIComponent(id)}`,z.object({topic:topicSchema}));if(!this.current(epoch))return;useWorkspace.getState().upsertTopic(result.topic);if(result.topic.joined)return this.topicMessages(id);}
+  async open(id:string,options?:{preserveLoadedWindow?:boolean}){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,authorizationRevision=this.authorizationRevision;
+    const preserve=!!options?.preserveLoadedWindow&&useWorkspace.getState().messages[id]!==undefined;
+    const current=()=>this.current(epoch)&&this.api===api&&useWorkspace.getState().accountKey===account&&this.authorizationRevision===authorizationRevision;
+    try{
+      const result=await api.json(`/api/workspace/conversations/${encodeURIComponent(id)}`,z.object({conversation:conversationSchema}));
+      if(!current()||!useWorkspace.getState().bootstrap?.permissions.canReadConversations||(preserve&&!this.canReadBucket(id)))return;
+      if(result.conversation.id!==id)throw new ApiError('response.invalid',0,'body.schema');
+      useWorkspace.setState(s=>({conversations:{...s.conversations,[id]:result.conversation}}));
+      // A same-route notification revalidates its loaded history; a latest page
+      // alone cannot establish that older authorized rows were deleted.
+      return preserve?this.refreshMessageWindow(id):this.messages(id);
+    }catch(error){
+      if(error instanceof ApiError&&[403,404].includes(error.status))this.clearDeniedMessageWindow(id,current);
+      throw error;
+    }
+  }
+  async openTopic(id:string,options?:{preserveLoadedWindow?:boolean}){
+    const bucket=`topic:${id}`,api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey,authorizationRevision=this.authorizationRevision;
+    const preserve=!!options?.preserveLoadedWindow&&useWorkspace.getState().messages[bucket]!==undefined;
+    const parent=useWorkspace.getState().topics[id]?.conversationId;
+    const current=()=>this.current(epoch)&&this.api===api&&useWorkspace.getState().accountKey===account&&this.authorizationRevision===authorizationRevision
+      &&useWorkspace.getState().topics[id]?.conversationId===parent;
+    try{
+      const result=await api.json(`/api/workspace/topics/${encodeURIComponent(id)}`,z.object({topic:topicSchema}));
+      if(!current()||!useWorkspace.getState().bootstrap?.permissions.canReadConversations||(preserve&&!this.canReadBucket(bucket)))return;
+      if(result.topic.id!==id||(preserve&&result.topic.conversationId!==parent))throw new ApiError('response.invalid',0,'body.schema');
+      useWorkspace.getState().upsertTopic(result.topic);
+      if(preserve&&!result.topic.joined)this.clearDeniedMessageWindow(bucket,current);
+      if(result.topic.joined)return preserve?this.refreshMessageWindow(bucket):this.topicMessages(id);
+      return 0;
+    }catch(error){
+      if(error instanceof ApiError&&[403,404].includes(error.status))this.clearDeniedMessageWindow(bucket,current);
+      throw error;
+    }
+  }
   async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];mentionSpans?:MentionSpan[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;}){
     const s=useWorkspace.getState();const topicId=options?.topicId??existing?.topicId;const conversationId=existing?.conversationId??id;
     const bucket=topicId?`topic:${topicId}`:conversationId;

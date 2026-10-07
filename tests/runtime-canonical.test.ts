@@ -43,6 +43,205 @@ beforeEach(async()=>{
 });
 afterEach(()=>{runtime.dispose();jest.restoreAllMocks();});
 
+test.each([false,true])('same-target notification open preserves the 75-row authorized history until its fresh window completes (topic=%s)',async isTopic=>{
+  const bucket=isTopic?'topic:t1':'c1',loaded=windowRows(75,isTopic);
+  const fresh=windowRows(76,isTopic).filter(row=>row.id!=='window-010').map(row=>row.id==='window-011'?{...row,recalledAt:'2026-01-02T00:00:00Z',plainText:'synthetic recall notice'}:row);
+  useWorkspace.getState().setMessages(bucket,loaded.map(row=>parseMessage(row)!));
+  const previous=useWorkspace.getState().messages[bucket],pending=deferred<Awaited<ReturnType<typeof fetch>>>(),started=deferred<void>();
+  fetchMock.mockImplementation(async url=>{
+    const path=String(url);
+    if(path.endsWith('/conversations/c1'))return response({conversation});
+    if(path.endsWith('/topics/t1'))return response({topic});
+    if(!path.includes('/messages?'))return fallback(path);
+    if(new URL(path).searchParams.has('before')){started.resolve();return pending.promise;}
+    return response({messages:windowPage(path,fresh)});
+  });
+  const opening=isTopic?runtime.openTopic('t1',{preserveLoadedWindow:true}):runtime.open('c1',{preserveLoadedWindow:true});
+  await Promise.race([started.promise,opening]);
+  expect(useWorkspace.getState().messages[bucket]).toBe(previous);
+  expect(useWorkspace.getState().messageReads[bucket]).toBeUndefined();
+  pending.resolve(response({messages:windowPage('https://workspace.example/messages?before=window-026',fresh)}));
+  await opening;
+  const rows=useWorkspace.getState().messages[bucket]!;
+  expect(rows.map(row=>row.id)).toEqual(fresh.map(row=>row.id));
+  expect(rows.some(row=>row.id==='window-001')).toBe(true);
+  expect(rows.some(row=>row.id==='window-010')).toBe(false);
+  expect(rows.find(row=>row.id==='window-011')).toMatchObject({recalledAt:'2026-01-02T00:00:00Z',attachments:[],blocks:[]});
+  expect(rows.at(-1)?.id).toBe('window-075');
+  expect(useWorkspace.getState().messageReads[bucket]).toEqual({revision:1,source:runtime.api,before:undefined});
+});
+
+test.each([false,true])('ordinary open retains latest-page behavior for a different notification target (topic=%s)',async isTopic=>{
+  const bucket=isTopic?'topic:t1':'c1',loaded=windowRows(75,isTopic),fresh=windowRows(76,isTopic);
+  useWorkspace.getState().setMessages(bucket,loaded.map(row=>parseMessage(row)!));
+  fetchMock.mockImplementation(async url=>{
+    const path=String(url);
+    if(path.endsWith('/conversations/c1'))return response({conversation});
+    if(path.endsWith('/topics/t1'))return response({topic});
+    return path.includes('/messages?')?response({messages:windowPage(path,fresh)}):fallback(path);
+  });
+  await (isTopic?runtime.openTopic('t1'):runtime.open('c1'));
+  expect(useWorkspace.getState().messages[bucket]?.map(row=>row.id)).toEqual(fresh.slice(-50).map(row=>row.id));
+  expect(fetchMock.mock.calls.filter(([url])=>String(url).includes('/messages?'))).toHaveLength(1);
+});
+
+test.each([false,true])('preserve option on an unloaded notification target still performs its ordinary authorized first page (topic=%s)',async isTopic=>{
+  const bucket=isTopic?'topic:t1':'c1',fresh=windowRows(76,isTopic);
+  expect(useWorkspace.getState().messages[bucket]).toBeUndefined();
+  fetchMock.mockImplementation(async url=>{
+    const path=String(url);
+    if(path.endsWith('/conversations/c1'))return response({conversation});
+    if(path.endsWith('/topics/t1'))return response({topic});
+    return path.includes('/messages?')?response({messages:windowPage(path,fresh)}):fallback(path);
+  });
+  await (isTopic?runtime.openTopic('t1',{preserveLoadedWindow:true}):runtime.open('c1',{preserveLoadedWindow:true}));
+  expect(useWorkspace.getState().messages[bucket]?.map(row=>row.id)).toEqual(fresh.slice(-50).map(row=>row.id));
+  expect(fetchMock.mock.calls.filter(([url])=>String(url).includes('/messages?'))).toHaveLength(1);
+});
+
+test('same-target notification applies canonical topic departure before any message request',async()=>{
+  useWorkspace.getState().setMessages('topic:t1',windowRows(75,true).map(row=>parseMessage(row)!));
+  useWorkspace.getState().setDraft('topic:t1','synthetic draft');
+  fetchMock.mockImplementation(async url=>String(url).endsWith('/topics/t1')?response({topic:{...topic,joined:false}}):fallback(String(url)));
+  await runtime.openTopic('t1',{preserveLoadedWindow:true});
+  expect(useWorkspace.getState().topics.t1?.joined).toBe(false);
+  expect(useWorkspace.getState().messages['topic:t1']).toBeUndefined();
+  expect(useWorkspace.getState().drafts['topic:t1']).toBeUndefined();
+  expect(fetchMock.mock.calls.some(([url])=>String(url).includes('/messages?'))).toBe(false);
+  expect(jest.mocked(cache.remove)).toHaveBeenCalledWith(`${useWorkspace.getState().accountKey}:messages:topic:t1`);
+});
+
+test('ordinary notification topic open completes authorized unjoined metadata without requesting messages',async()=>{
+  fetchMock.mockImplementation(async url=>String(url).endsWith('/topics/t1')?response({topic:{...topic,joined:false,canJoin:true}}):fallback(String(url)));
+  await expect(runtime.openTopic('t1')).resolves.toBe(0);
+  expect(useWorkspace.getState().topics.t1).toMatchObject({joined:false,canJoin:true});
+  expect(fetchMock.mock.calls.some(([url])=>String(url).includes('/messages?'))).toBe(false);
+});
+
+test.each([false,true])('same-target notification does not publish a partial latest window when its older page fails (topic=%s)',async isTopic=>{
+  const bucket=isTopic?'topic:t1':'c1',loaded=windowRows(75,isTopic),fresh=windowRows(76,isTopic);
+  useWorkspace.getState().setMessages(bucket,loaded.map(row=>parseMessage(row)!));
+  const previous=useWorkspace.getState().messages[bucket];
+  jest.mocked(cache.set).mockClear();
+  fetchMock.mockImplementation(async url=>{
+    const path=String(url);
+    if(path.endsWith('/conversations/c1'))return response({conversation});
+    if(path.endsWith('/topics/t1'))return response({topic});
+    if(!path.includes('/messages?'))return fallback(path);
+    if(new URL(path).searchParams.has('before'))throw new Error('offline');
+    return response({messages:windowPage(path,fresh)});
+  });
+  await expect(isTopic?runtime.openTopic('t1',{preserveLoadedWindow:true}):runtime.open('c1',{preserveLoadedWindow:true})).rejects.toThrow('request.network');
+  expect(useWorkspace.getState().messages[bucket]).toBe(previous);
+  expect(useWorkspace.getState().messageReads[bucket]).toBeUndefined();
+  expect(jest.mocked(cache.set).mock.calls.some(([key])=>key.endsWith(`:messages:${bucket}`))).toBe(false);
+});
+
+test.each([false,true])('same-target notification clears denied metadata and its loaded history (topic=%s)',async isTopic=>{
+  const bucket=isTopic?'topic:t1':'c1';
+  useWorkspace.getState().setMessages(bucket,windowRows(75,isTopic).map(row=>parseMessage(row)!));
+  useWorkspace.getState().setDraft(bucket,'synthetic draft');
+  fetchMock.mockImplementation(async url=>String(url).endsWith(isTopic?'/topics/t1':'/conversations/c1')?response({error:{code:'permission.denied'}},403):fallback(String(url)));
+  await expect(isTopic?runtime.openTopic('t1',{preserveLoadedWindow:true}):runtime.open('c1',{preserveLoadedWindow:true})).rejects.toThrow();
+  expect(useWorkspace.getState().messages[bucket]).toBeUndefined();
+  expect(useWorkspace.getState().drafts[bucket]).toBeUndefined();
+});
+
+test.each([[false,403],[false,404],[true,403],[true,404]] as const)('ordinary notification open clears rejected metadata and all stored reader state (topic=%s,status=%s)',async(isTopic,status)=>{
+  const bucket=isTopic?'topic:t1':'c1',account=useWorkspace.getState().accountKey;
+  useWorkspace.getState().acceptMessageRead(bucket,windowRows(75,isTopic).map(row=>parseMessage(row)!),runtime.api!);
+  useWorkspace.getState().setDraft(bucket,'synthetic denied draft');
+  if(!isTopic){
+    useWorkspace.getState().upsertTopic({...topic,id:'no-loaded-message-child'});
+    useWorkspace.getState().setDraft('topic:no-loaded-message-child','synthetic child draft');
+  }
+  jest.mocked(cache.remove).mockClear();jest.mocked(cache.set).mockClear();
+  fetchMock.mockImplementation(async url=>String(url).endsWith(isTopic?'/topics/t1':'/conversations/c1')?response({error:{code:status===403?'permission.denied':'resource.not_found'}},status):fallback(String(url)));
+  await expect(isTopic?runtime.openTopic('t1'):runtime.open('c1')).rejects.toThrow();
+  const state=useWorkspace.getState();
+  expect(state.messages[bucket]).toBeUndefined();expect(state.drafts[bucket]).toBeUndefined();expect(state.messageReads[bucket]).toBeUndefined();
+  expect(cache.remove).toHaveBeenCalledWith(`${account}:messages:${bucket}`);
+  const drafts=jest.mocked(cache.set).mock.calls.filter(([key])=>key===`${account}:drafts`).at(-1)?.[1];
+  expect(drafts).toBeDefined();expect(drafts).not.toHaveProperty(bucket);
+  if(isTopic)expect(state.topics.t1?.joined).toBe(false);
+  else{
+    expect(state.conversations.c1).toBeUndefined();expect(state.topics['no-loaded-message-child']).toBeUndefined();
+    expect(state.drafts['topic:no-loaded-message-child']).toBeUndefined();
+    expect(cache.remove).toHaveBeenCalledWith(`${account}:messages:topic:no-loaded-message-child`);
+  }
+  expect(fetchMock.mock.calls.some(([url])=>String(url).includes('/messages?'))).toBe(false);
+});
+
+test.each([[false,'account'],[true,'account'],[false,'api'],[true,'api'],[false,'authorization'],[true,'authorization']] as const)('a late ordinary metadata denial cannot clear a changed reader scope (topic=%s,change=%s)',async(isTopic,changed)=>{
+  const bucket=isTopic?'topic:t1':'c1';
+  useWorkspace.getState().setMessages(bucket,windowRows(75,isTopic).map(row=>parseMessage(row)!));
+  useWorkspace.getState().setDraft(bucket,'synthetic current draft');
+  const pending=deferred<Awaited<ReturnType<typeof fetch>>>(),started=deferred<void>();
+  fetchMock.mockImplementation(async url=>{
+    const path=String(url);
+    if(path.endsWith(isTopic?'/topics/t1':'/conversations/c1')){started.resolve();return pending.promise;}
+    if(path.endsWith('/topics/revision-topic/leave'))return response({topic:{...topic,id:'revision-topic',joined:false}});
+    return fallback(path);
+  });
+  const opening=isTopic?runtime.openTopic('t1'):runtime.open('c1');await started.promise;
+  if(changed==='account'){
+    const snapshot=useWorkspace.getState().bootstrap!;
+    useWorkspace.getState().applyBootstrap({...snapshot,auth:{currentUser:{...snapshot.auth.currentUser,id:'u3'}}},'synthetic-next-account');
+    useWorkspace.getState().upsertTopic(topic);
+    useWorkspace.getState().setMessages(bucket,[parseMessage({...message,id:'synthetic-next-account-row',...(isTopic?{topicId:'t1'}:{})})!]);
+    useWorkspace.getState().setDraft(bucket,'synthetic next-account draft');
+  }else if(changed==='api'){
+    runtime.api=new ApiClient('https://next.example',async()=>undefined,()=>undefined);
+  }else await runtime.leaveTopic('revision-topic');
+  const state=useWorkspace.getState(),previous=state.messages[bucket],draft=state.drafts[bucket],metadata=isTopic?state.topics.t1:state.conversations.c1;
+  jest.mocked(cache.remove).mockClear();jest.mocked(cache.set).mockClear();
+  pending.resolve(response({error:{code:'permission.denied'}},403));
+  await expect(opening).rejects.toThrow();
+  expect(useWorkspace.getState().messages[bucket]).toBe(previous);expect(useWorkspace.getState().drafts[bucket]).toBe(draft);
+  expect(isTopic?useWorkspace.getState().topics.t1:useWorkspace.getState().conversations.c1).toBe(metadata);
+  expect(cache.remove).not.toHaveBeenCalled();expect(cache.set).not.toHaveBeenCalled();
+});
+
+test('a late ordinary topic metadata denial cannot clear a newer parent context',async()=>{
+  const pending=deferred<Awaited<ReturnType<typeof fetch>>>(),started=deferred<void>();
+  fetchMock.mockImplementation(async url=>{
+    if(String(url).endsWith('/topics/t1')){started.resolve();return pending.promise;}
+    return fallback(String(url));
+  });
+  const opening=runtime.openTopic('t1');await started.promise;
+  const state=useWorkspace.getState();
+  state.applyBootstrap({...state.bootstrap!,conversations:[...Object.values(state.conversations),{...state.conversations.c1!,id:'c2'}]},state.accountKey);
+  useWorkspace.getState().upsertTopic({...topic,conversationId:'c2'});
+  useWorkspace.getState().setMessages('topic:t1',[parseMessage({...message,conversationId:'c2',topicId:'t1'})!]);
+  useWorkspace.getState().setDraft('topic:t1','synthetic new-parent draft');
+  const previous=useWorkspace.getState().messages['topic:t1'],draft=useWorkspace.getState().drafts['topic:t1'];
+  jest.mocked(cache.remove).mockClear();jest.mocked(cache.set).mockClear();
+  pending.resolve(response({error:{code:'permission.denied'}},403));
+  await expect(opening).rejects.toThrow();
+  expect(useWorkspace.getState().messages['topic:t1']).toBe(previous);expect(useWorkspace.getState().drafts['topic:t1']).toBe(draft);
+  expect(useWorkspace.getState().topics.t1).toMatchObject({conversationId:'c2',joined:true});
+  expect(cache.remove).not.toHaveBeenCalled();expect(cache.set).not.toHaveBeenCalled();
+});
+
+test.each(['account','api','revocation'] as const)('same-target metadata cannot reopen an invalidated scope (%s)',async changed=>{
+  useWorkspace.getState().setMessages('c1',windowRows(75).map(row=>parseMessage(row)!));
+  const pending=deferred<Awaited<ReturnType<typeof fetch>>>(),started=deferred<void>();
+  fetchMock.mockImplementation(async url=>{
+    if(String(url).endsWith('/conversations/c1')){started.resolve();return pending.promise;}
+    return fallback(String(url));
+  });
+  const opening=runtime.open('c1',{preserveLoadedWindow:true});await started.promise;
+  if(changed==='account')useWorkspace.setState({accountKey:'synthetic-other-account',conversations:{},messages:{}});
+  else if(changed==='api'){runtime.api=new ApiClient('https://other.example',async()=>undefined,()=>undefined);useWorkspace.setState({conversations:{},messages:{}});}
+  else useWorkspace.getState().applyBootstrap({...useWorkspace.getState().bootstrap!,conversations:[]},useWorkspace.getState().accountKey);
+  pending.resolve(response({conversation}));
+  if(changed==='api')await expect(opening).rejects.toThrow('Session unavailable');
+  else await opening;
+  expect(useWorkspace.getState().conversations.c1).toBeUndefined();
+  expect(useWorkspace.getState().messages.c1).toBeUndefined();
+  expect(fetchMock.mock.calls.some(([url])=>String(url).includes('/messages?'))).toBe(false);
+});
+
 test.each([false,true])('resume atomically revalidates the loaded 75-row history window and adds a new tail (topic=%s)',async isTopic=>{
   const bucket=isTopic?'topic:t1':'c1',loaded=windowRows(75,isTopic),fresh=windowRows(76,isTopic);
   useWorkspace.getState().setMessages(bucket,loaded.map(row=>parseMessage(row)!));
