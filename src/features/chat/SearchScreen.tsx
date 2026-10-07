@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Keyboard, Pressable, View } from 'react-native';
-import { useIsFocused } from '@react-navigation/native';
+import { FlatList, Keyboard, Pressable, View, type ScrollViewProps } from 'react-native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { AndroidSoftInputModes, KeyboardAwareScrollView, KeyboardController, useKeyboardController, useKeyboardState } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronLeft, X } from 'lucide-react-native';
 import type { Runtime } from '../../data/runtime';
@@ -25,6 +26,18 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   const focused = useIsFocused();
   const t = useTheme();
   const insets = useSafeAreaInsets();
+  const { setEnabled } = useKeyboardController();
+  const keyboardVisible = useKeyboardState(state => state.isVisible);
+  useFocusEffect(useCallback(() => {
+    // The aware scroll surface owns the IME spacer; native pan must not also
+    // shift the page. Restore the process default when another route takes over.
+    setEnabled(true);
+    KeyboardController.setInputMode(AndroidSoftInputModes.SOFT_INPUT_ADJUST_NOTHING);
+    return () => { setEnabled(false); KeyboardController.setDefaultMode(); };
+  }, [setEnabled]));
+  const renderScrollComponent = useCallback((props: ScrollViewProps) => (
+    <KeyboardAwareScrollView {...props} enabled={focused} bottomOffset={t.space.sm} />
+  ), [focused, t.space.sm]);
   const spaceId = bootstrap?.space.id ?? '';
   const userId = bootstrap?.auth.currentUser.id ?? '';
   const canRead = bootstrap?.permissions.canReadConversations === true;
@@ -120,6 +133,10 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
 
   return (
     <View testID="search-page" style={{ flex: 1, backgroundColor: t.bg }}>
+      <FlatList data={results} keyExtractor={item => item.kind === 'conversation' ? `conversation:${item.conversation.id}` : `topic:${item.topic.id}`}
+        renderScrollComponent={renderScrollComponent} removeClippedSubviews={false}
+        style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: (focused && keyboardVisible ? 0 : insets.bottom) + t.space.lg }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
+        ListHeaderComponent={<View>
       <AppHeader title="搜索" includeTopInset leading={<IconButton label="返回" onPress={() => {
         const state = useWorkspace.getState();
         if (active.current === activity && activity.live && activity.focused && state.accountKey === accountKey && runtime.api === api) { Keyboard.dismiss(); onBack(); }
@@ -127,7 +144,7 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
       <View style={{ padding: t.space.lg, gap: t.space.md }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
           <Input accessibilityLabel="搜索会话和话题" placeholder="搜索会话和话题" autoFocus={autoFocus.current} style={{ flex: 1 }}
-            editable={validAccount} maxLength={SEARCH_TERM_LIMIT} returnKeyType="search" value={query}
+            editable={validAccount} disableFullscreenUI maxLength={SEARCH_TERM_LIMIT} returnKeyType="search" value={query}
             onChangeText={value => { if (current()) setSnapshot(previous => current() ? { context, query: value, history: previous?.context === context ? previous.history : [], error: '' } : previous); }}
             onSubmitEditing={submit} />
           {query ? <IconButton label="清空搜索关键词" onPress={() => { if (current()) setSnapshot(previous => previous?.context === context ? { ...previous, query: '', error: '' } : previous); }}><X size={20} color={t.muted} /></IconButton> : null}
@@ -138,9 +155,7 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
         <InlineFeedback text={topicFailure?.context === context ? topicFailure.text : ''} tone="warning" />
         {topicFailure?.context === context && bootstrap?.permissions.canReadConversations ? <Button title="重试加载话题" variant="ghost" onPress={() => { void refreshTopics(); }} /> : null}
       </View>
-      <FlatList data={results} keyExtractor={item => item.kind === 'conversation' ? `conversation:${item.conversation.id}` : `topic:${item.topic.id}`}
-        style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: insets.bottom + t.space.lg }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
-        ListHeaderComponent={!term ? <View style={{ paddingHorizontal: t.space.lg, gap: t.space.sm }}>
+        {!term ? <View style={{ paddingHorizontal: t.space.lg, gap: t.space.sm }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: t.space.sm }}>
             <Label>本机搜索历史</Label>
             {history.length ? <Button title="清空历史" variant="ghost" onPress={() => {
@@ -161,6 +176,7 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
             }}><X size={20} color={t.muted} /></IconButton>
           </View>)}
         </View> : null}
+        </View>}
         ListEmptyComponent={<EmptyState title={!validAccount ? '登录后可搜索' : term ? '没有匹配的已加载内容' : history.length ? '输入关键词筛选' : '还没有搜索历史'}
           detail={term ? '试试会话名称、私聊对方姓名或 GitHub 用户名、话题标题或简介；这里只搜索当前可见的已加载内容，不搜索消息正文。' : '提交搜索或打开结果后，关键词仅保存在本机。'} />}
         renderItem={({ item, index }) => <View>

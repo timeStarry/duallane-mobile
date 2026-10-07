@@ -1,6 +1,7 @@
 import React from 'react';
-import { act, cleanup, fireEvent, render } from '@testing-library/react-native';
+import { act, cleanup, fireEvent, render, within } from '@testing-library/react-native';
 import { FlatList, Keyboard, StyleSheet } from 'react-native';
+import { KeyboardAwareScrollView, KeyboardController } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { SearchScreen } from '../src/features/chat/SearchScreen';
 import type { Runtime } from '../src/data/runtime';
@@ -14,7 +15,27 @@ import { resolveTheme } from '../src/ui/tokens';
 import { ConversationRow, TopicRow } from '../src/ui/chrome';
 
 let mockFocused = true;
-jest.mock('@react-navigation/native', () => ({ useIsFocused: () => mockFocused }));
+const mockSetEnabled = jest.fn();
+let mockKeyboardVisible = false;
+jest.mock('@react-navigation/native', () => ({
+  useIsFocused: () => mockFocused,
+  useFocusEffect: (effect: () => void | (() => void)) => {
+    const React = jest.requireActual<typeof import('react')>('react');
+    const focused = mockFocused;
+    React.useEffect(() => focused ? effect() : undefined, [effect, focused]);
+  },
+}));
+jest.mock('react-native-keyboard-controller', () => {
+  const React = jest.requireActual<typeof import('react')>('react');
+  const { ScrollView } = jest.requireActual<typeof import('react-native')>('react-native');
+  return {
+    useKeyboardController: () => ({ setEnabled: mockSetEnabled }),
+    KeyboardController: { setInputMode: jest.fn(), setDefaultMode: jest.fn() },
+    AndroidSoftInputModes: { SOFT_INPUT_ADJUST_NOTHING: 48 },
+    useKeyboardState: (selector: (state: { isVisible: boolean }) => unknown) => selector({ isVisible: mockKeyboardVisible }),
+    KeyboardAwareScrollView: React.forwardRef<InstanceType<typeof ScrollView>, React.ComponentProps<typeof ScrollView>>((props, ref) => <ScrollView {...props} ref={ref} />),
+  };
+});
 jest.mock('../src/platform/storage', () => ({ cache: { get: jest.fn(), set: jest.fn(), remove: jest.fn() } }));
 jest.mock('../src/ui/RemoteImage', () => ({ RemoteImage: () => null }));
 
@@ -29,7 +50,7 @@ let values: Map<string, unknown>;
 
 beforeEach(() => {
   jest.useFakeTimers();
-  mockFocused = true; values = new Map(); useWorkspace.getState().reset();
+  mockFocused = true; mockKeyboardVisible = false; values = new Map(); useWorkspace.getState().reset();
   useWorkspace.getState().applyBootstrap(bootstrap, account); useWorkspace.getState().setTopics([topic]);
   jest.mocked(cache.get).mockReset().mockImplementation(key => values.get(key));
   jest.mocked(cache.set).mockReset().mockImplementation((key, value) => { values.set(key, value); return { changes: 1, lastInsertRowId: 1 }; });
@@ -265,4 +286,60 @@ test('late topic refresh failure cannot publish old scope feedback, and an unrea
   await act(async () => { reject(new Error('Old scope failure')); });
   expect(listTopics).toHaveBeenCalledTimes(1);
   expect(view.queryByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeNull();
+});
+
+test('short-window controls and history share the keyboard-aware scroll surface', () => {
+  values.set(searchHistoryKey({ accountKey: account, spaceId: 's1' })!, ['Design']);
+  const { view, rerender } = screen();
+  const list = view.UNSAFE_getByType(FlatList);
+  expect(view.UNSAFE_getAllByType(FlatList)).toHaveLength(1);
+  const content = within(list);
+  expect(content.getByRole('button', { name: '返回' })).toBeTruthy();
+  expect(content.getByLabelText('搜索会话和话题')).toBeTruthy();
+  expect(content.getByRole('button', { name: '搜索' })).toBeTruthy();
+  expect(content.getByText(SEARCH_SCOPE_TEXT)).toBeTruthy();
+  expect(content.getByRole('button', { name: '搜索历史：Design' })).toBeTruthy();
+  const aware = view.UNSAFE_getByType(KeyboardAwareScrollView);
+  expect(aware.props.enabled).toBe(true);
+  expect(aware.props.bottomOffset).toBe(8);
+  expect(list.props.removeClippedSubviews).toBe(false);
+  expect(content.getByLabelText('搜索会话和话题').props.disableFullscreenUI).toBe(true);
+  expect(StyleSheet.flatten(view.getByTestId('search-page').props.style).paddingBottom ?? 0).toBe(0);
+  expect(StyleSheet.flatten(list.props.contentContainerStyle).paddingBottom).toBe(40);
+  mockKeyboardVisible = true; rerender();
+  expect(StyleSheet.flatten(view.UNSAFE_getByType(FlatList).props.contentContainerStyle).paddingBottom).toBe(16);
+});
+
+test('keyboard ownership restores pan on blur and unmount without intercepting system back', () => {
+  const { view, rerender } = screen();
+  expect(mockSetEnabled).toHaveBeenLastCalledWith(true);
+  expect(KeyboardController.setInputMode).toHaveBeenLastCalledWith(48);
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  const modeCalls = jest.mocked(KeyboardController.setInputMode).mock.calls.length;
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design Group');
+  expect(KeyboardController.setInputMode).toHaveBeenCalledTimes(modeCalls);
+  mockFocused = false; rerender();
+  expect(mockSetEnabled).toHaveBeenLastCalledWith(false);
+  expect(KeyboardController.setDefaultMode).toHaveBeenCalledTimes(1);
+  expect(view.UNSAFE_getByType(KeyboardAwareScrollView).props.enabled).toBe(false);
+  mockFocused = true; rerender();
+  expect(mockSetEnabled).toHaveBeenLastCalledWith(true);
+  expect(view.getByLabelText('搜索会话和话题').props.value).toBe('Design Group');
+  view.unmount();
+  expect(mockSetEnabled).toHaveBeenLastCalledWith(false);
+  expect(KeyboardController.setDefaultMode).toHaveBeenCalledTimes(2);
+});
+
+test('keyword edits, history visibility and result changes preserve the same input host and scroll component', () => {
+  const { view } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  const aware = view.UNSAFE_getByType(KeyboardAwareScrollView);
+  fireEvent.changeText(input, 'Design');
+  expect(view.getByLabelText('搜索会话和话题')).toBe(input);
+  expect(view.UNSAFE_getByType(KeyboardAwareScrollView)).toBe(aware);
+  fireEvent(input, 'submitEditing');
+  fireEvent.press(view.getByRole('button', { name: '清空搜索关键词' }));
+  expect(view.getByLabelText('搜索会话和话题')).toBe(input);
+  expect(view.UNSAFE_getByType(KeyboardAwareScrollView)).toBe(aware);
+  expect(input.props.allowFontScaling).not.toBe(false);
 });
