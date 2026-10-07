@@ -83,6 +83,24 @@ test('nested text, selection, accessibility, style and press behavior pass throu
   expect(onPress).toHaveBeenCalledTimes(1);
 });
 
+test.each([
+  { kind: 'emoji', name: '合成群聊', emoji: '🎨', glyph: '🎨' },
+  { kind: 'initial', name: 'Taylor', emoji: undefined, glyph: 'T' },
+])('decorative avatar $kind keeps its fixed-size glyph while the identity and body follow system font changes', ({ name, emoji, glyph }) => {
+  const view = render(<SafeAreaProvider initialMetrics={metrics}>
+    <AppHeader title={name} identity={{ name, id: 'synthetic-avatar', emoji }} />
+    <Text>合成正文</Text>
+  </SafeAreaProvider>);
+  for (const fontScale of [1, 2, 1]) {
+    resize(fontScale);
+    expect(view.getByText(glyph).props.allowFontScaling).toBe(false);
+    expect(view.getByText(name).props.allowFontScaling).toBeUndefined();
+    expect(view.getByText(name).props.maxFontSizeMultiplier).toBeUndefined();
+    expect(view.getByText('合成正文').props.allowFontScaling).toBeUndefined();
+    expect(view.getByText('合成正文').props.maxFontSizeMultiplier).toBeUndefined();
+  }
+});
+
 test('hot font changes refresh header and message text while preserving the route, list, composer host and edited draft', () => {
   const navigation = createNavigationContainerRef<{ Chat: undefined }>();
   const mount = jest.fn();
@@ -94,7 +112,7 @@ test('hot font changes refresh header and message text while preserving the rout
     const [draft, setDraft] = useState('未发送');
     useEffect(() => { mount(); return unmount; }, []);
     return <View testID="chat-route">
-      <AppHeader title="合成会话" />
+      <AppHeader title="合成会话" identity={{ name: '合成会话', id: 'synthetic-chat', emoji: '🎨', shape: 'group' }} />
       <FlatList data={[message]} keyExtractor={item => item.id} renderItem={({ item }) => <MessageContent message={item} download={jest.fn()} />} />
       <Composer value={draft} onChangeText={setDraft} onSend={onSend} onFocus={onFocus} />
     </View>;
@@ -111,11 +129,15 @@ test('hot font changes refresh header and message text while preserving the rout
   const listInstance = view.UNSAFE_getByType(FlatList).instance;
   const header = view.getByText('合成会话');
   const messageText = view.getByText('合成消息');
+  expect(header.props.allowFontScaling).toBeUndefined();
+  expect(messageText.props.allowFontScaling).toBeUndefined();
   fireEvent(input, 'focus');
   fireEvent.changeText(input, '第一行草稿\n第二行');
   resize(2);
   expect(view.getByText('合成会话') === header).toBe(false);
   expect(view.getByText('合成消息') === messageText).toBe(false);
+  expect(view.getByText('合成会话').props.allowFontScaling).toBeUndefined();
+  expect(view.getByText('合成消息').props.allowFontScaling).toBeUndefined();
   expect(view.UNSAFE_getByType(FlatList).instance).toBe(listInstance);
   expect(view.getByLabelText('消息')).toBe(input);
   expect(view.UNSAFE_getByType(TextInput).instance).toBe(inputInstance);

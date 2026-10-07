@@ -103,9 +103,9 @@ export function Avatar({
       }}
     >
       {emoji ? (
-        <Text style={{ fontSize: size * 0.52 }}>{emoji}</Text>
+        <Text allowFontScaling={false} style={{ fontSize: size * 0.52 }}>{emoji}</Text>
       ) : showInitial ? (
-        <Text style={{ color: t.text, fontWeight: '600', fontSize: size * 0.38 }}>{letter}</Text>
+        <Text allowFontScaling={false} style={{ color: t.text, fontWeight: '600', fontSize: size * 0.38 }}>{letter}</Text>
       ) : null}
       {showImage ? <RemoteImage uri={safeUri} style={{ position: 'absolute', left: 0, top: 0, width: size, height: size }} showLoadingIndicator={false} onError={() => setImageFailed(true)} /> : null}
       {shape === 'bot' ? (
