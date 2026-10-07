@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, within } from '@testing-library/react-native';
-import { FlatList, Keyboard, StyleSheet } from 'react-native';
+import { DeviceEventEmitter, FlatList, Keyboard, StyleSheet, View } from 'react-native';
 import { KeyboardAwareScrollView, KeyboardController } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { SearchScreen } from '../src/features/chat/SearchScreen';
@@ -21,6 +21,8 @@ let mockKeyboardVisible = false;
 let mockKeyboardHeight = 0;
 let mockKeyboardWindow = { width: 390, height: 844 };
 let mockFontScale = 1;
+let mockRNKeyboardMetrics: ReturnType<typeof Keyboard.metrics>;
+const mockMeasureSearchBar = jest.fn<void, Parameters<View['measure']>>();
 jest.mock('@react-navigation/native', () => ({
   useIsFocused: () => mockFocused,
   useFocusEffect: (effect: () => void | (() => void)) => {
@@ -61,6 +63,10 @@ beforeEach(() => {
   jest.useFakeTimers();
   mockFocused = true; mockKeyboardVisible = false; mockKeyboardHeight = 0;
   mockKeyboardWindow = { width: 390, height: 844 }; mockFontScale = 1;
+  mockRNKeyboardMetrics = undefined;
+  mockMeasureSearchBar.mockReset();
+  jest.spyOn(Keyboard, 'metrics').mockImplementation(() => mockRNKeyboardMetrics);
+  jest.spyOn(View.prototype, 'measure').mockImplementation(mockMeasureSearchBar);
   values = new Map(); useWorkspace.getState().reset();
   useWorkspace.getState().applyBootstrap(bootstrap, account); useWorkspace.getState().setTopics([topic]);
   jest.mocked(cache.get).mockReset().mockImplementation(key => values.get(key));
@@ -82,6 +88,24 @@ function measureSearch(view: ReturnType<typeof render>, viewportHeight: number, 
   fireEvent(view.UNSAFE_getByType(FlatList), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 844, height: viewportHeight } } });
   fireEvent(view.getByTestId('search-bar'), 'layout', { nativeEvent: { layout: { x: 16, y: 8, width: 812, height: rowHeight } } });
 }
+
+function showRNKeyboard(screenY: number) {
+  mockRNKeyboardMetrics = { screenX: 0, screenY, width: 844, height: 296 };
+  act(() => DeviceEventEmitter.emit('keyboardDidShow', { duration: 0, easing: 'keyboard', endCoordinates: mockRNKeyboardMetrics }));
+}
+
+test.each([48, 69])('visible native row height %s is not dismissed even if viewport is already reduced or nav height differs', rowHeight => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  mockKeyboardWindow = { width: 844, height: 390 };
+  const { view, rerender } = screen();
+  fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
+  mockMeasureSearchBar.mockImplementation(callback => callback(16, 8, 812, rowHeight, 16, 32));
+  mockKeyboardVisible = true; mockKeyboardHeight = 310; rerender();
+  showRNKeyboard(108);
+  measureSearch(view, 80, rowHeight);
+  expect(dismiss).not.toHaveBeenCalled();
+  expect(view.queryByText('当前窗口空间不足，键盘已收起，请转为竖屏输入。')).toBeNull();
+});
 
 test('standalone search focuses input, states its loaded scope, and typing does not save history', () => {
   const { view, onBack } = screen();
@@ -471,47 +495,74 @@ test('visibility refresh stops after input or route blur and rejects stale layou
 });
 
 const insufficientSpaceText = '当前窗口空间不足，键盘已收起，请转为竖屏输入。';
+type RowMeasurement = Parameters<View['measure']>[0];
 
-test('measured insufficient space dismisses once and preserves query and feedback after keyboard hide', () => {
+function latestRowMeasurement(): RowMeasurement {
+  const callback = mockMeasureSearchBar.mock.calls.at(-1)?.[0];
+  if (!callback) throw new Error('No native row measurement was requested');
+  return callback;
+}
+
+function measureRow(callback: RowMeasurement, pageY = 60, rowHeight = 69, rowWidth = 812) {
+  act(() => callback(16, 8, rowWidth, rowHeight, 16, pageY));
+}
+
+test('an occluded absolute row dismisses once and preserves query and feedback after its own blur and keyboard hide', () => {
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
   const { view, rerender } = screen();
   const input = view.getByLabelText('搜索会话和话题');
   fireEvent.changeText(input, 'Design'); fireEvent(input, 'focus');
+  mockMeasureSearchBar.mockImplementation(callback => callback(16, 8, 812, 69, 16, 60));
   mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
-  measureSearch(view, 300, 64);
+  showRNKeyboard(108);
+  measureSearch(view, 300, 69);
   expect(dismiss).toHaveBeenCalledTimes(1);
   expect(view.getByText(insufficientSpaceText)).toBeTruthy();
   expect(input.props.value).toBe('Design');
-  measureSearch(view, 300, 64);
+  measureSearch(view, 300, 69);
   expect(dismiss).toHaveBeenCalledTimes(1);
   fireEvent(input, 'blur');
   mockKeyboardVisible = false; mockKeyboardHeight = 0; rerender();
+  mockRNKeyboardMetrics = undefined;
+  act(() => DeviceEventEmitter.emit('keyboardDidHide', {}));
   expect(view.getByText(insufficientSpaceText)).toBeTruthy();
   expect(view.getByLabelText('搜索会话和话题')).toBe(input);
-  measureSearch(view, 500, 64);
-  expect(view.queryByText(insufficientSpaceText)).toBeNull();
-  fireEvent(input, 'focus'); mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
+  mockMeasureSearchBar.mockImplementation(callback => callback(16, 8, 812, 69, 16, 32));
+  fireEvent(input, 'focus'); mockKeyboardVisible = true; rerender(); showRNKeyboard(108);
   expect(dismiss).toHaveBeenCalledTimes(1);
+  expect(view.queryByText(insufficientSpaceText)).toBeNull();
 });
 
-test.each([[0, 64], [300, 0], [-1, 64], [332, 64]] as const)('unmeasured, invalid or sufficient geometry %s/%s does not dismiss', (viewport, row) => {
+test.each([[Number.NaN, 69, 812], [-1, 69, 812], [60, 0, 812], [60, -1, 812], [60, 69, 0], [39, 69, 812]] as const)
+('invalid native measurement or visible boundary %s/%s/%s does not dismiss', (pageY, rowHeight, rowWidth) => {
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
   const { view, rerender } = screen();
   fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
-  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
-  measureSearch(view, viewport, row);
+  mockKeyboardVisible = true; rerender(); showRNKeyboard(108);
+  measureRow(latestRowMeasurement(), pageY, rowHeight, rowWidth);
   expect(dismiss).not.toHaveBeenCalled();
   expect(view.queryByText(insufficientSpaceText)).toBeNull();
 });
 
-test('the measured row top padding counts toward the space required by the whole input row', () => {
+test('controller height or local layout alone cannot dismiss without a native keyboard frame and completed measure', () => {
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
   const { view, rerender } = screen();
   fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
-  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
-  measureSearch(view, 328, 64); // 68 visible dp fits height 64, but not measured y8 + height64.
-  expect(dismiss).toHaveBeenCalledTimes(1);
-  expect(view.getByText(insufficientSpaceText)).toBeTruthy();
+  mockKeyboardVisible = true; mockKeyboardHeight = 1000; rerender(); measureSearch(view, 80, 69);
+  expect(mockMeasureSearchBar).not.toHaveBeenCalled();
+  showRNKeyboard(108);
+  expect(mockMeasureSearchBar).toHaveBeenCalled();
+  expect(dismiss).not.toHaveBeenCalled(); // Native measure has not returned.
+});
+
+test.each([Number.NaN, -1])('invalid RN keyboard screenY %s cannot dismiss', screenY => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  const { view, rerender } = screen();
+  fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
+  mockMeasureSearchBar.mockImplementation(callback => callback(16, 8, 812, 69, 16, 60));
+  mockKeyboardVisible = true; rerender(); showRNKeyboard(screenY); measureSearch(view, 80, 69);
+  expect(mockMeasureSearchBar).not.toHaveBeenCalled();
+  expect(dismiss).not.toHaveBeenCalled();
 });
 
 test('insufficient-space feedback does not replace current history or topic failures and clears on route blur', async () => {
@@ -522,8 +573,8 @@ test('insufficient-space feedback does not replace current history or topic fail
   const view = render(element());
   await act(async () => { await Promise.resolve(); });
   fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
-  mockKeyboardVisible = true; mockKeyboardHeight = 260; view.rerender(element());
-  measureSearch(view, 300, 64);
+  mockMeasureSearchBar.mockImplementation(callback => callback(16, 8, 812, 69, 16, 60));
+  mockKeyboardVisible = true; view.rerender(element()); showRNKeyboard(108);
   expect(dismiss).toHaveBeenCalledTimes(1);
   expect(view.getByText(insufficientSpaceText)).toBeTruthy();
   expect(view.getByText('本机搜索历史暂时无法读取，仍可筛选已加载的内容。')).toBeTruthy();
@@ -532,89 +583,71 @@ test('insufficient-space feedback does not replace current history or topic fail
   expect(view.queryByText(insufficientSpaceText)).toBeNull();
 });
 
-test.each(['input-blur', 'route-blur', 'invalid-account', 'api', 'space', 'unmount'] as const)('layout cannot close another keyboard after %s', reason => {
+test.each(['input-blur', 'route-blur', 'invalid-account', 'api', 'space', 'unmount'] as const)
+('an asynchronous native measurement cannot close another keyboard after %s', reason => {
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
   const { view, rerender, runtime } = screen();
   const input = view.getByLabelText('搜索会话和话题');
-  fireEvent(input, 'focus');
-  measureSearch(view, 300, 64);
-  const viewportLayout = view.UNSAFE_getByType(FlatList).props.onLayout;
-  const rowLayout = view.getByTestId('search-bar').props.onLayout;
+  fireEvent(input, 'focus'); mockKeyboardVisible = true; rerender(); showRNKeyboard(108);
+  const callback = latestRowMeasurement();
   if (reason === 'input-blur') fireEvent(input, 'blur');
   else if (reason === 'route-blur') { mockFocused = false; rerender(); }
   else if (reason === 'invalid-account') act(() => useWorkspace.setState({ accountKey: `${origin}:u2` }));
   else if (reason === 'api') { runtime.api = { origin: 'https://other.test' } as Runtime['api']; rerender(); }
   else if (reason === 'space') act(() => useWorkspace.setState({ bootstrap: { ...bootstrap, space: { id: 's2', name: 'Other synthetic space' } } }));
   else view.unmount();
-  mockKeyboardVisible = true; mockKeyboardHeight = 260;
-  if (reason !== 'unmount') rerender();
-  act(() => {
-    viewportLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 844, height: 300 } } });
-    rowLayout({ nativeEvent: { layout: { x: 16, y: 8, width: 812, height: 64 } } });
-  });
+  measureRow(callback);
   expect(dismiss).not.toHaveBeenCalled();
   if (reason !== 'unmount') expect(view.queryByText(insufficientSpaceText)).toBeNull();
   if (reason === 'route-blur') {
-    mockFocused = true; rerender();
-    expect(dismiss).not.toHaveBeenCalled(); // Returning alone does not mean this Input regained native focus.
+    mockFocused = true; rerender(); measureRow(callback);
+    expect(dismiss).not.toHaveBeenCalled(); // Returning alone is not native input focus.
   }
 });
 
-test('new window metrics reject old measurements until both current layouts arrive, then same-window IME height still applies', () => {
+test.each(['window', 'font', 'frame', 'hide'] as const)('old asynchronous row measure is rejected after %s changes', change => {
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
-  mockKeyboardWindow = { width: 844, height: 390 };
   const { view, rerender } = screen();
   const input = view.getByLabelText('搜索会话和话题');
-  fireEvent(input, 'focus');
-  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
-  measureSearch(view, 360, 69);
-  const oldViewport = view.UNSAFE_getByType(FlatList).props.onLayout;
-  const oldRow = view.getByTestId('search-bar').props.onLayout;
-  mockKeyboardWindow = { width: 390, height: 844 }; mockKeyboardHeight = 310; rerender();
+  fireEvent(input, 'focus'); mockKeyboardVisible = true; rerender(); showRNKeyboard(108);
+  const oldMeasure = latestRowMeasurement();
+  if (change === 'window') { mockKeyboardWindow = { width: 844, height: 390 }; rerender(); }
+  else if (change === 'font') { mockFontScale = 2; rerender(); }
+  else if (change === 'frame') showRNKeyboard(200);
+  else { mockRNKeyboardMetrics = undefined; act(() => DeviceEventEmitter.emit('keyboardDidHide', {})); }
+  measureRow(oldMeasure);
   expect(dismiss).not.toHaveBeenCalled();
-  act(() => {
-    oldViewport({ nativeEvent: { layout: { x: 0, y: 0, width: 844, height: 360 } } });
-    oldRow({ nativeEvent: { layout: { x: 16, y: 8, width: 812, height: 69 } } });
-  });
-  expect(dismiss).not.toHaveBeenCalled();
-  fireEvent(view.getByTestId('search-bar'), 'layout', { nativeEvent: { layout: { x: 16, y: 8, width: 358, height: 69 } } });
-  expect(dismiss).not.toHaveBeenCalled();
-  fireEvent(view.UNSAFE_getByType(FlatList), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 750 } } });
-  expect(dismiss).not.toHaveBeenCalled();
-  mockKeyboardHeight = 710; rerender();
-  expect(dismiss).toHaveBeenCalledTimes(1);
   expect(view.getByLabelText('搜索会话和话题')).toBe(input);
 });
 
-test('a new window can dismiss only after its current viewport and row both confirm insufficient space', () => {
+test('window rotation rejects cached RN metrics until a fresh native keyboard frame, then checks the measured row', () => {
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
-  mockKeyboardWindow = { width: 844, height: 390 };
   const { view, rerender } = screen();
   fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
-  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
-  measureSearch(view, 360, 69);
-  mockKeyboardWindow = { width: 390, height: 844 }; mockKeyboardHeight = 310; rerender();
+  mockKeyboardVisible = true; rerender(); showRNKeyboard(108);
+  measureRow(latestRowMeasurement(), 32);
+  mockMeasureSearchBar.mockClear();
+  mockKeyboardWindow = { width: 844, height: 390 }; mockKeyboardHeight = 310; rerender();
+  measureSearch(view, 80, 69);
+  expect(mockMeasureSearchBar).not.toHaveBeenCalled();
   expect(dismiss).not.toHaveBeenCalled();
-  fireEvent(view.UNSAFE_getByType(FlatList), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 350 } } });
-  expect(dismiss).not.toHaveBeenCalled();
-  fireEvent(view.getByTestId('search-bar'), 'layout', { nativeEvent: { layout: { x: 16, y: 8, width: 358, height: 69 } } });
+  showRNKeyboard(108);
+  measureRow(latestRowMeasurement());
   expect(dismiss).toHaveBeenCalledTimes(1);
-  expect(view.getByText(insufficientSpaceText)).toBeTruthy();
 });
 
-test('font changes retain a current window viewport but require a new row measurement without remounting', () => {
+test('font-only change and same-window controller height request fresh absolute measurement without a second spacer or remount', () => {
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
   const { view, rerender } = screen();
   const input = view.getByLabelText('搜索会话和话题');
-  fireEvent(input, 'focus');
-  mockKeyboardVisible = true; mockKeyboardHeight = 280; rerender();
-  measureSearch(view, 350, 48);
-  const oldRow = view.getByTestId('search-bar').props.onLayout;
+  fireEvent(input, 'focus'); mockKeyboardVisible = true; rerender(); showRNKeyboard(108);
+  measureRow(latestRowMeasurement(), 32, 48);
   mockFontScale = 2; rerender();
+  measureRow(latestRowMeasurement(), 32, 69);
   expect(dismiss).not.toHaveBeenCalled();
-  act(() => oldRow({ nativeEvent: { layout: { x: 16, y: 8, width: 358, height: 90 } } }));
-  expect(dismiss).not.toHaveBeenCalled();
-  fireEvent(view.getByTestId('search-bar'), 'layout', { nativeEvent: { layout: { x: 16, y: 8, width: 358, height: 69 } } });
+  mockKeyboardHeight = 320; rerender();
+  measureRow(latestRowMeasurement(), 60, 69);
   expect(dismiss).toHaveBeenCalledTimes(1);
   expect(view.getByLabelText('搜索会话和话题')).toBe(input);
+  expect(StyleSheet.flatten(view.getByTestId('search-page').props.style).paddingBottom ?? 0).toBe(0);
 });

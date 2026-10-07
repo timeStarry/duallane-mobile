@@ -33,6 +33,7 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   const { width, height } = useKeyboardWindowDimensions();
   const fontScale = useFontScale();
   const list = useRef<FlatList<Result>>(null);
+  const searchBar = useRef<View>(null);
   const inputFocused = useRef(false);
   useFocusEffect(useCallback(() => {
     // The aware scroll surface owns the IME spacer; native pan must not also
@@ -68,6 +69,11 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
     row?: { scope: typeof rowScope; height: number; top: number };
   }>({});
   const [inputHasFocus, setInputHasFocus] = useState(false);
+  const [keyboardFrame, setKeyboardFrame] = useState<{ scope: typeof viewportScope; coordinates: NonNullable<ReturnType<typeof Keyboard.metrics>> }>();
+  const latestKeyboardFrame = useRef<typeof keyboardFrame>(undefined);
+  const lastNativeMetrics = useRef<typeof keyboardFrame>(undefined);
+  const keyboardShowing = useRef(keyboardVisible);
+  keyboardShowing.current = keyboardVisible;
   const [spaceFeedback, setSpaceFeedback] = useState<typeof context>();
   const spaceDismissed = useRef(false);
   const spaceDismissBlurPending = useRef(false);
@@ -96,9 +102,8 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
     const changed = part === 'viewport'
       ? searchLayout.viewport?.scope !== viewportScope || searchLayout.viewport.height !== measuredHeight
       : searchLayout.row?.scope !== rowScope || searchLayout.row.height !== measuredHeight || searchLayout.row.top !== rowTop;
-    if (changed) {
+    if (changed && !spaceDismissed.current) {
       setSpaceFeedback(undefined);
-      spaceDismissed.current = false;
       spaceDismissBlurPending.current = false;
     }
     setSearchLayout(previous => {
@@ -151,23 +156,54 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   }, [context, focused, width, height, fontScale]);
 
   useEffect(() => {
+    const receive = (coordinates: NonNullable<ReturnType<typeof Keyboard.metrics>>) => {
+      if (!current()) return;
+      const valid = Number.isFinite(coordinates.screenY) && coordinates.screenY >= 0
+        && Number.isFinite(coordinates.height) && coordinates.height > 0
+        && Number.isFinite(coordinates.width) && coordinates.width > 0;
+      const frame = valid ? { scope: viewportScope, coordinates } : undefined;
+      lastNativeMetrics.current = { scope: viewportScope, coordinates };
+      latestKeyboardFrame.current = frame;
+      setKeyboardFrame(frame);
+    };
+    const shown = Keyboard.addListener('keyboardDidShow', event => receive(event.endCoordinates));
+    const hidden = Keyboard.addListener('keyboardDidHide', () => {
+      latestKeyboardFrame.current = undefined;
+      setKeyboardFrame(undefined);
+    });
+    const metrics = Keyboard.metrics();
+    // RN may retain a portrait DidShow frame through a focused rotation. A new
+    // window needs a new native frame; controller height cannot replace it.
+    if (metrics && (metrics !== lastNativeMetrics.current?.coordinates || lastNativeMetrics.current.scope === viewportScope)) receive(metrics);
+    return () => { shown.remove(); hidden.remove(); latestKeyboardFrame.current = undefined; };
+  }, [current, viewportScope]);
+
+  useEffect(() => {
     if (!keyboardVisible) { spaceDismissed.current = false; return; }
-    const { viewport, row } = searchLayout;
-    // Rotation invalidates both measurements. A font-only change invalidates
-    // the row, while an unchanged viewport need not emit another onLayout.
-    if (!current() || !inputHasFocus || !inputFocused.current || viewport?.scope !== viewportScope || row?.scope !== rowScope
-      || viewport.height <= 0 || row.height <= 0) return;
-    if (viewport.height - keyboardHeight >= row.top + row.height) {
-      setSpaceFeedback(undefined);
-      spaceDismissed.current = false;
-      return;
-    }
-    if (spaceDismissed.current) return;
-    spaceDismissed.current = true;
-    spaceDismissBlurPending.current = true;
-    setSpaceFeedback(context);
-    Keyboard.dismiss();
-  }, [context, current, inputHasFocus, keyboardVisible, keyboardHeight, searchLayout, viewportScope, rowScope]);
+    const bar = searchBar.current;
+    if (!current() || !inputHasFocus || !inputFocused.current || !bar || !keyboardFrame
+      || keyboardFrame.scope !== viewportScope || latestKeyboardFrame.current !== keyboardFrame) return;
+    let measuring = true;
+    bar.measure((_x, _y, measuredWidth, measuredHeight, _pageX, pageY) => {
+      if (!measuring || !current() || !inputFocused.current || !keyboardShowing.current || searchBar.current !== bar
+        || layoutScopes.current.rowScope !== rowScope || latestKeyboardFrame.current !== keyboardFrame
+        || !Number.isFinite(pageY) || pageY < 0 || !Number.isFinite(measuredHeight) || measuredHeight <= 0
+        || !Number.isFinite(measuredWidth) || measuredWidth <= 0) return;
+      // Fabric measure is root-relative and RN screenY is screen-relative. This
+      // edge-to-edge Activity's root starts at screen y0; do not subtract nav/IME.
+      if (pageY + measuredHeight <= keyboardFrame.coordinates.screenY) {
+        setSpaceFeedback(undefined);
+        spaceDismissed.current = false;
+        return;
+      }
+      if (spaceDismissed.current) return;
+      spaceDismissed.current = true;
+      spaceDismissBlurPending.current = true;
+      setSpaceFeedback(context);
+      Keyboard.dismiss();
+    });
+    return () => { measuring = false; };
+  }, [context, current, inputHasFocus, keyboardVisible, keyboardHeight, keyboardFrame, searchLayout, viewportScope, rowScope]);
 
   useEffect(() => {
     // A still-focused input need not emit a new focus event after rotation or
@@ -216,7 +252,7 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
         style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: (focused && keyboardVisible ? 0 : insets.bottom) + t.space.lg }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
         ListHeaderComponent={<View>
       <View style={{ paddingHorizontal: t.space.lg, paddingVertical: t.space.sm, gap: t.space.md }}>
-        <View testID="search-bar" onLayout={event => recordLayout('row', event)} style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
+        <View ref={searchBar} testID="search-bar" onLayout={event => recordLayout('row', event)} style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
           <IconButton label="返回" onPress={() => {
             const state = useWorkspace.getState();
             if (active.current === activity && activity.live && activity.focused && state.accountKey === accountKey && runtime.api === api) { Keyboard.dismiss(); onBack(); }
