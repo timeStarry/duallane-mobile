@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Keyboard, Pressable, View, type ScrollViewProps } from 'react-native';
+import { FlatList, Keyboard, Pressable, View, type LayoutChangeEvent, type ScrollViewProps } from 'react-native';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { AndroidSoftInputModes, KeyboardAwareScrollView, KeyboardController, useKeyboardController, useKeyboardState, useWindowDimensions as useKeyboardWindowDimensions } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,7 +9,7 @@ import { clearSearchHistory, deleteSearchHistory, readSearchHistory, recordSearc
 import type { Conversation, Topic } from '../../domain/contracts';
 import { normalizeSearchTerm, SEARCH_SCOPE_TEXT, SEARCH_TERM_LIMIT, searchLoadedWorkspace } from '../../domain/search';
 import { useWorkspace } from '../../domain/store';
-import { AppHeader, ConversationRow, TopicRow } from '../../ui/chrome';
+import { ConversationRow, TopicRow } from '../../ui/chrome';
 import { Button, EmptyState, IconButton, InlineFeedback, Input, Label } from '../../ui/primitives';
 import { Text } from '../../ui/Text';
 import { useTheme } from '../../ui/theme';
@@ -50,6 +50,10 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   const api = runtime.api;
   const validAccount = !!spaceId && !!userId && accountKey.endsWith(`:${userId}`) && (!api || accountKey === `${api.origin}:${userId}`);
   const context = useMemo(() => ({ runtime, api, accountKey, spaceId, userId }), [runtime, api, accountKey, spaceId, userId]);
+  const viewportScope = useMemo(() => ({ context, width, height }), [context, width, height]);
+  const rowScope = useMemo(() => ({ viewportScope, fontScale }), [viewportScope, fontScale]);
+  const layoutScopes = useRef({ viewportScope, rowScope });
+  layoutScopes.current = { viewportScope, rowScope };
   const activity = useMemo(() => ({ context, focused, live: false }), [context, focused]);
   const active = useRef(activity);
   active.current = activity;
@@ -59,6 +63,14 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   const refreshing = useRef<{ context: typeof context } | undefined>(undefined);
   const [snapshot, setSnapshot] = useState<{ context: typeof context; query: string; history: string[]; error: string }>();
   const [topicFailure, setTopicFailure] = useState<{ context: typeof context; text: string }>();
+  const [searchLayout, setSearchLayout] = useState<{
+    viewport?: { scope: typeof viewportScope; height: number };
+    row?: { scope: typeof rowScope; height: number; top: number };
+  }>({});
+  const [inputHasFocus, setInputHasFocus] = useState(false);
+  const [spaceFeedback, setSpaceFeedback] = useState<typeof context>();
+  const spaceDismissed = useRef(false);
+  const spaceDismissBlurPending = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
@@ -77,6 +89,25 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
     const scroll = list.current?.getNativeScrollRef();
     if (scroll && 'assureFocusedInputVisible' in scroll && typeof scroll.assureFocusedInputVisible === 'function') scroll.assureFocusedInputVisible();
   }, [current]);
+  const recordLayout = useCallback((part: 'viewport' | 'row', event: LayoutChangeEvent) => {
+    if (!current() || layoutScopes.current.viewportScope !== viewportScope || (part === 'row' && layoutScopes.current.rowScope !== rowScope)) return;
+    const measuredHeight = Number.isFinite(event.nativeEvent.layout.height) && event.nativeEvent.layout.height > 0 ? event.nativeEvent.layout.height : 0;
+    const rowTop = Number.isFinite(event.nativeEvent.layout.y) ? Math.max(0, event.nativeEvent.layout.y) : 0;
+    const changed = part === 'viewport'
+      ? searchLayout.viewport?.scope !== viewportScope || searchLayout.viewport.height !== measuredHeight
+      : searchLayout.row?.scope !== rowScope || searchLayout.row.height !== measuredHeight || searchLayout.row.top !== rowTop;
+    if (changed) {
+      setSpaceFeedback(undefined);
+      spaceDismissed.current = false;
+      spaceDismissBlurPending.current = false;
+    }
+    setSearchLayout(previous => {
+      if (part === 'viewport') return previous.viewport?.scope === viewportScope && previous.viewport.height === measuredHeight
+        ? previous : { ...previous, viewport: { scope: viewportScope, height: measuredHeight } };
+      return previous.row?.scope === rowScope && previous.row.height === measuredHeight && previous.row.top === rowTop
+        ? previous : { ...previous, row: { scope: rowScope, height: measuredHeight, top: rowTop } };
+    });
+  }, [current, viewportScope, rowScope, searchLayout]);
 
   const publishHistory = useCallback((history: string[], query?: string, error = '') => {
     setSnapshot(previous => current() ? {
@@ -111,6 +142,32 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
     }
     return () => { activity.live = false; };
   }, [activity, api, canRead, context, current, publishHistory, refreshTopics]);
+
+  useEffect(() => {
+    setSpaceFeedback(undefined);
+    spaceDismissed.current = false;
+    spaceDismissBlurPending.current = false;
+    if (!focused) { inputFocused.current = false; setInputHasFocus(false); }
+  }, [context, focused, width, height, fontScale]);
+
+  useEffect(() => {
+    if (!keyboardVisible) { spaceDismissed.current = false; return; }
+    const { viewport, row } = searchLayout;
+    // Rotation invalidates both measurements. A font-only change invalidates
+    // the row, while an unchanged viewport need not emit another onLayout.
+    if (!current() || !inputHasFocus || !inputFocused.current || viewport?.scope !== viewportScope || row?.scope !== rowScope
+      || viewport.height <= 0 || row.height <= 0) return;
+    if (viewport.height - keyboardHeight >= row.top + row.height) {
+      setSpaceFeedback(undefined);
+      spaceDismissed.current = false;
+      return;
+    }
+    if (spaceDismissed.current) return;
+    spaceDismissed.current = true;
+    spaceDismissBlurPending.current = true;
+    setSpaceFeedback(context);
+    Keyboard.dismiss();
+  }, [context, current, inputHasFocus, keyboardVisible, keyboardHeight, searchLayout, viewportScope, rowScope]);
 
   useEffect(() => {
     // A still-focused input need not emit a new focus event after rotation or
@@ -154,24 +211,33 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   return (
     <View testID="search-page" style={{ flex: 1, paddingTop: insets.top, backgroundColor: t.bg }}>
       <FlatList ref={list} data={results} keyExtractor={item => item.kind === 'conversation' ? `conversation:${item.conversation.id}` : `topic:${item.topic.id}`}
-        onLayout={assureInputVisible}
+        onLayout={event => { recordLayout('viewport', event); assureInputVisible(); }}
         renderScrollComponent={renderScrollComponent} removeClippedSubviews={false}
         style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: (focused && keyboardVisible ? 0 : insets.bottom) + t.space.lg }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
         ListHeaderComponent={<View>
-      <AppHeader title="搜索" includeTopInset={false} leading={<IconButton label="返回" onPress={() => {
-        const state = useWorkspace.getState();
-        if (active.current === activity && activity.live && activity.focused && state.accountKey === accountKey && runtime.api === api) { Keyboard.dismiss(); onBack(); }
-      }}><ChevronLeft size={24} color={t.text} /></IconButton>} />
-      <View style={{ padding: t.space.lg, gap: t.space.md }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
+      <View style={{ paddingHorizontal: t.space.lg, paddingVertical: t.space.sm, gap: t.space.md }}>
+        <View testID="search-bar" onLayout={event => recordLayout('row', event)} style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
+          <IconButton label="返回" onPress={() => {
+            const state = useWorkspace.getState();
+            if (active.current === activity && activity.live && activity.focused && state.accountKey === accountKey && runtime.api === api) { Keyboard.dismiss(); onBack(); }
+          }}><ChevronLeft size={24} color={t.text} /></IconButton>
           <Input accessibilityLabel="搜索会话和话题" placeholder="搜索会话和话题" autoFocus={autoFocus.current} style={{ flex: 1 }}
             editable={validAccount} disableFullscreenUI maxLength={SEARCH_TERM_LIMIT} returnKeyType="search" value={query}
-            onFocus={() => { inputFocused.current = true; assureInputVisible(); }} onBlur={() => { inputFocused.current = false; }} onLayout={assureInputVisible}
+            onFocus={() => { if (!current()) return; inputFocused.current = true; setInputHasFocus(true); spaceDismissBlurPending.current = false; spaceDismissed.current = false; assureInputVisible(); }}
+            onBlur={() => {
+              if (!current()) return;
+              inputFocused.current = false; setInputHasFocus(false);
+              // Keyboard.dismiss also blurs the field: keep this explanation
+              // until a later user/window change rather than clearing it here.
+              if (!spaceDismissBlurPending.current) setSpaceFeedback(undefined);
+              spaceDismissBlurPending.current = false;
+            }} onLayout={assureInputVisible}
             onChangeText={value => { if (current()) setSnapshot(previous => current() ? { context, query: value, history: previous?.context === context ? previous.history : [], error: '' } : previous); }}
             onSubmitEditing={submit} />
           {query ? <IconButton label="清空搜索关键词" onPress={() => { if (current()) setSnapshot(previous => previous?.context === context ? { ...previous, query: '', error: '' } : previous); }}><X size={20} color={t.muted} /></IconButton> : null}
         </View>
         <Button title="搜索" onPress={submit} disabled={!term || !validAccount} />
+        <InlineFeedback text={spaceFeedback === context ? '当前窗口空间不足，键盘已收起，请转为竖屏输入。' : ''} tone="warning" />
         <Label muted>{SEARCH_SCOPE_TEXT}</Label>
         <InlineFeedback text={visible?.error ?? ''} tone="warning" />
         <InlineFeedback text={topicFailure?.context === context ? topicFailure.text : ''} tone="warning" />

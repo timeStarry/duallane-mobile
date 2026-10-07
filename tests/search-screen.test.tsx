@@ -67,7 +67,7 @@ beforeEach(() => {
   jest.mocked(cache.set).mockReset().mockImplementation((key, value) => { values.set(key, value); return { changes: 1, lastInsertRowId: 1 }; });
   jest.mocked(cache.remove).mockReset().mockImplementation(key => { values.delete(key); return { changes: 1, lastInsertRowId: 1 }; });
 });
-afterEach(() => { cleanup(); jest.clearAllTimers(); jest.useRealTimers(); useWorkspace.getState().reset(); });
+afterEach(() => { cleanup(); jest.clearAllTimers(); jest.useRealTimers(); jest.restoreAllMocks(); useWorkspace.getState().reset(); });
 
 function screen() {
   const listTopics = jest.fn().mockResolvedValue(undefined);
@@ -76,6 +76,11 @@ function screen() {
   const element = () => <SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={open} openTopic={openTopic} onBack={onBack} /></SafeAreaProvider>;
   const view = render(element());
   return { view, runtime, listTopics, open, openTopic, onBack, rerender: () => view.rerender(element()) };
+}
+
+function measureSearch(view: ReturnType<typeof render>, viewportHeight: number, rowHeight: number) {
+  fireEvent(view.UNSAFE_getByType(FlatList), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 844, height: viewportHeight } } });
+  fireEvent(view.getByTestId('search-bar'), 'layout', { nativeEvent: { layout: { x: 16, y: 8, width: 812, height: rowHeight } } });
 }
 
 test('standalone search focuses input, states its loaded scope, and typing does not save history', () => {
@@ -321,14 +326,14 @@ test('short-window controls and history share the keyboard-aware scroll surface'
   expect(StyleSheet.flatten(view.UNSAFE_getByType(FlatList).props.contentContainerStyle).paddingBottom).toBe(16);
 });
 
-test('top safe area stays outside the scroll viewport without being added again by its header', () => {
+test('top safe area stays outside the scroll viewport without a duplicate header inset', () => {
   const { view, rerender } = screen();
   const page = view.getByTestId('search-page');
   const input = view.getByLabelText('搜索会话和话题');
   const aware = view.UNSAFE_getByType(KeyboardAwareScrollView);
   expect(StyleSheet.flatten(page.props.style).paddingTop).toBe(metrics.insets.top);
   expect(within(aware).queryByTestId('search-page')).toBeNull();
-  expect(view.UNSAFE_getByType(AppHeader).props.includeTopInset).toBe(false);
+  expect(view.UNSAFE_queryByType(AppHeader)).toBeNull();
   expect(StyleSheet.flatten(view.UNSAFE_getByType(FlatList).props.contentContainerStyle).paddingTop ?? 0).toBe(0);
   mockKeyboardVisible = true; mockKeyboardHeight = 296;
   mockKeyboardWindow = { width: 844, height: 390 }; mockFontScale = 2; rerender();
@@ -339,6 +344,40 @@ test('top safe area stays outside the scroll viewport without being added again 
   const backStyle = StyleSheet.flatten(view.getByRole('button', { name: '返回' }).props.style);
   expect(backStyle.minWidth).toBeGreaterThanOrEqual(48);
   expect(backStyle.minHeight).toBeGreaterThanOrEqual(48);
+});
+
+test('the native search bar keeps Back and the same Input in one row across typing and rotation', () => {
+  const { view, rerender, onBack } = screen();
+  const bar = view.getByTestId('search-bar');
+  const controls = within(bar);
+  const input = controls.getByLabelText('搜索会话和话题');
+  const back = controls.getByRole('button', { name: '返回' });
+  const barStyle = StyleSheet.flatten(bar.props.style);
+  expect(barStyle.flexDirection).toBe('row');
+  expect(barStyle.gap).toBe(8);
+  let form = bar.parent;
+  while (form && StyleSheet.flatten(form.props.style)?.paddingHorizontal === undefined) form = form.parent;
+  const formStyle = StyleSheet.flatten(form?.props.style);
+  expect(formStyle?.paddingHorizontal).toBe(16);
+  expect(formStyle?.paddingVertical).toBe(8);
+  const backStyle = StyleSheet.flatten(back.props.style);
+  expect(backStyle.minWidth).toBeGreaterThanOrEqual(48);
+  expect(backStyle.minHeight).toBeGreaterThanOrEqual(48);
+  expect(controls.queryByRole('button', { name: '搜索' })).toBeNull();
+  fireEvent.changeText(input, 'Design');
+  expect(controls.getByRole('button', { name: '清空搜索关键词' })).toBeTruthy();
+  mockKeyboardVisible = true; mockKeyboardHeight = 296;
+  mockKeyboardWindow = { width: 844, height: 390 }; mockFontScale = 2; rerender();
+  expect(view.getByTestId('search-bar')).toBe(bar);
+  expect(controls.getByLabelText('搜索会话和话题')).toBe(input);
+  expect(input.props.value).toBe('Design');
+  fireEvent.press(controls.getByRole('button', { name: '清空搜索关键词' }));
+  expect(controls.getByLabelText('搜索会话和话题')).toBe(input);
+  expect(input.props.value).toBe('');
+  expect(input.props.autoFocus).toBe(true);
+  expect(input.props.allowFontScaling).not.toBe(false);
+  fireEvent.press(back);
+  expect(onBack).toHaveBeenCalledTimes(1);
 });
 
 test('keyboard ownership restores pan on blur and unmount without intercepting system back', () => {
@@ -429,4 +468,153 @@ test('visibility refresh stops after input or route blur and rejects stale layou
   view.unmount();
   act(() => oldLayout());
   expect(mockAssureFocusedInputVisible).not.toHaveBeenCalled();
+});
+
+const insufficientSpaceText = '当前窗口空间不足，键盘已收起，请转为竖屏输入。';
+
+test('measured insufficient space dismisses once and preserves query and feedback after keyboard hide', () => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  const { view, rerender } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  fireEvent.changeText(input, 'Design'); fireEvent(input, 'focus');
+  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
+  measureSearch(view, 300, 64);
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  expect(view.getByText(insufficientSpaceText)).toBeTruthy();
+  expect(input.props.value).toBe('Design');
+  measureSearch(view, 300, 64);
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  fireEvent(input, 'blur');
+  mockKeyboardVisible = false; mockKeyboardHeight = 0; rerender();
+  expect(view.getByText(insufficientSpaceText)).toBeTruthy();
+  expect(view.getByLabelText('搜索会话和话题')).toBe(input);
+  measureSearch(view, 500, 64);
+  expect(view.queryByText(insufficientSpaceText)).toBeNull();
+  fireEvent(input, 'focus'); mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
+  expect(dismiss).toHaveBeenCalledTimes(1);
+});
+
+test.each([[0, 64], [300, 0], [-1, 64], [332, 64]] as const)('unmeasured, invalid or sufficient geometry %s/%s does not dismiss', (viewport, row) => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  const { view, rerender } = screen();
+  fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
+  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
+  measureSearch(view, viewport, row);
+  expect(dismiss).not.toHaveBeenCalled();
+  expect(view.queryByText(insufficientSpaceText)).toBeNull();
+});
+
+test('the measured row top padding counts toward the space required by the whole input row', () => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  const { view, rerender } = screen();
+  fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
+  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
+  measureSearch(view, 328, 64); // 68 visible dp fits height 64, but not measured y8 + height64.
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  expect(view.getByText(insufficientSpaceText)).toBeTruthy();
+});
+
+test('insufficient-space feedback does not replace current history or topic failures and clears on route blur', async () => {
+  jest.mocked(cache.get).mockImplementation(() => { throw new Error('Synthetic history failure'); });
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  const runtime = { api: { origin }, listTopics: jest.fn().mockRejectedValue(new Error('Synthetic topic failure')) } as unknown as Runtime;
+  const element = () => <SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></SafeAreaProvider>;
+  const view = render(element());
+  await act(async () => { await Promise.resolve(); });
+  fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
+  mockKeyboardVisible = true; mockKeyboardHeight = 260; view.rerender(element());
+  measureSearch(view, 300, 64);
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  expect(view.getByText(insufficientSpaceText)).toBeTruthy();
+  expect(view.getByText('本机搜索历史暂时无法读取，仍可筛选已加载的内容。')).toBeTruthy();
+  expect(view.getByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeTruthy();
+  mockFocused = false; view.rerender(element());
+  expect(view.queryByText(insufficientSpaceText)).toBeNull();
+});
+
+test.each(['input-blur', 'route-blur', 'invalid-account', 'api', 'space', 'unmount'] as const)('layout cannot close another keyboard after %s', reason => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  const { view, rerender, runtime } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  fireEvent(input, 'focus');
+  measureSearch(view, 300, 64);
+  const viewportLayout = view.UNSAFE_getByType(FlatList).props.onLayout;
+  const rowLayout = view.getByTestId('search-bar').props.onLayout;
+  if (reason === 'input-blur') fireEvent(input, 'blur');
+  else if (reason === 'route-blur') { mockFocused = false; rerender(); }
+  else if (reason === 'invalid-account') act(() => useWorkspace.setState({ accountKey: `${origin}:u2` }));
+  else if (reason === 'api') { runtime.api = { origin: 'https://other.test' } as Runtime['api']; rerender(); }
+  else if (reason === 'space') act(() => useWorkspace.setState({ bootstrap: { ...bootstrap, space: { id: 's2', name: 'Other synthetic space' } } }));
+  else view.unmount();
+  mockKeyboardVisible = true; mockKeyboardHeight = 260;
+  if (reason !== 'unmount') rerender();
+  act(() => {
+    viewportLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 844, height: 300 } } });
+    rowLayout({ nativeEvent: { layout: { x: 16, y: 8, width: 812, height: 64 } } });
+  });
+  expect(dismiss).not.toHaveBeenCalled();
+  if (reason !== 'unmount') expect(view.queryByText(insufficientSpaceText)).toBeNull();
+  if (reason === 'route-blur') {
+    mockFocused = true; rerender();
+    expect(dismiss).not.toHaveBeenCalled(); // Returning alone does not mean this Input regained native focus.
+  }
+});
+
+test('new window metrics reject old measurements until both current layouts arrive, then same-window IME height still applies', () => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  mockKeyboardWindow = { width: 844, height: 390 };
+  const { view, rerender } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  fireEvent(input, 'focus');
+  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
+  measureSearch(view, 360, 69);
+  const oldViewport = view.UNSAFE_getByType(FlatList).props.onLayout;
+  const oldRow = view.getByTestId('search-bar').props.onLayout;
+  mockKeyboardWindow = { width: 390, height: 844 }; mockKeyboardHeight = 310; rerender();
+  expect(dismiss).not.toHaveBeenCalled();
+  act(() => {
+    oldViewport({ nativeEvent: { layout: { x: 0, y: 0, width: 844, height: 360 } } });
+    oldRow({ nativeEvent: { layout: { x: 16, y: 8, width: 812, height: 69 } } });
+  });
+  expect(dismiss).not.toHaveBeenCalled();
+  fireEvent(view.getByTestId('search-bar'), 'layout', { nativeEvent: { layout: { x: 16, y: 8, width: 358, height: 69 } } });
+  expect(dismiss).not.toHaveBeenCalled();
+  fireEvent(view.UNSAFE_getByType(FlatList), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 750 } } });
+  expect(dismiss).not.toHaveBeenCalled();
+  mockKeyboardHeight = 710; rerender();
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  expect(view.getByLabelText('搜索会话和话题')).toBe(input);
+});
+
+test('a new window can dismiss only after its current viewport and row both confirm insufficient space', () => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  mockKeyboardWindow = { width: 844, height: 390 };
+  const { view, rerender } = screen();
+  fireEvent(view.getByLabelText('搜索会话和话题'), 'focus');
+  mockKeyboardVisible = true; mockKeyboardHeight = 260; rerender();
+  measureSearch(view, 360, 69);
+  mockKeyboardWindow = { width: 390, height: 844 }; mockKeyboardHeight = 310; rerender();
+  expect(dismiss).not.toHaveBeenCalled();
+  fireEvent(view.UNSAFE_getByType(FlatList), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 350 } } });
+  expect(dismiss).not.toHaveBeenCalled();
+  fireEvent(view.getByTestId('search-bar'), 'layout', { nativeEvent: { layout: { x: 16, y: 8, width: 358, height: 69 } } });
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  expect(view.getByText(insufficientSpaceText)).toBeTruthy();
+});
+
+test('font changes retain a current window viewport but require a new row measurement without remounting', () => {
+  const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+  const { view, rerender } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  fireEvent(input, 'focus');
+  mockKeyboardVisible = true; mockKeyboardHeight = 280; rerender();
+  measureSearch(view, 350, 48);
+  const oldRow = view.getByTestId('search-bar').props.onLayout;
+  mockFontScale = 2; rerender();
+  expect(dismiss).not.toHaveBeenCalled();
+  act(() => oldRow({ nativeEvent: { layout: { x: 16, y: 8, width: 358, height: 90 } } }));
+  expect(dismiss).not.toHaveBeenCalled();
+  fireEvent(view.getByTestId('search-bar'), 'layout', { nativeEvent: { layout: { x: 16, y: 8, width: 358, height: 69 } } });
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  expect(view.getByLabelText('搜索会话和话题')).toBe(input);
 });
