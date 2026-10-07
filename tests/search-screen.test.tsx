@@ -1,0 +1,268 @@
+import React from 'react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react-native';
+import { FlatList, Keyboard, StyleSheet } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SearchScreen } from '../src/features/chat/SearchScreen';
+import type { Runtime } from '../src/data/runtime';
+import { bootstrapSchema, conversationSchema, topicSchema } from '../src/domain/contracts';
+import { useWorkspace } from '../src/domain/store';
+import { cache } from '../src/platform/storage';
+import { searchHistoryKey } from '../src/data/search-history';
+import { SEARCH_SCOPE_TEXT } from '../src/domain/search';
+import { ThemeProvider } from '../src/ui/theme';
+import { resolveTheme } from '../src/ui/tokens';
+import { ConversationRow, TopicRow } from '../src/ui/chrome';
+
+let mockFocused = true;
+jest.mock('@react-navigation/native', () => ({ useIsFocused: () => mockFocused }));
+jest.mock('../src/platform/storage', () => ({ cache: { get: jest.fn(), set: jest.fn(), remove: jest.fn() } }));
+jest.mock('../src/ui/RemoteImage', () => ({ RemoteImage: () => null }));
+
+const origin = 'https://synthetic.test';
+const account = `${origin}:u1`;
+const group = conversationSchema.parse({ id: 'g1', displayTitle: 'Design Group', type: 'group', lastActivityAt: '2026-10-07T00:00:00.000Z' });
+const direct = conversationSchema.parse({ id: 'd1', displayTitle: 'Other Person', type: 'direct', lastActivityAt: '2026-10-07T00:00:00.000Z' });
+const topic = topicSchema.parse({ id: 't1', conversationId: 'g1', title: 'Design Topic', descriptionPreview: 'Synthetic summary' });
+const bootstrap = bootstrapSchema.parse({ auth: { currentUser: { id: 'u1', displayName: 'Synthetic' } }, space: { id: 's1', name: 'Synthetic' }, eventCursor: 0, permissions: { canReadConversations: true }, policy: { dailyQuotaBytes: 1, remainingQuotaBytes: 1, messageRetentionCount: 50 }, members: [], conversations: [group, direct], files: [] });
+const metrics = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 24, right: 0, bottom: 24, left: 0 } };
+let values: Map<string, unknown>;
+
+beforeEach(() => {
+  jest.useFakeTimers();
+  mockFocused = true; values = new Map(); useWorkspace.getState().reset();
+  useWorkspace.getState().applyBootstrap(bootstrap, account); useWorkspace.getState().setTopics([topic]);
+  jest.mocked(cache.get).mockReset().mockImplementation(key => values.get(key));
+  jest.mocked(cache.set).mockReset().mockImplementation((key, value) => { values.set(key, value); return { changes: 1, lastInsertRowId: 1 }; });
+  jest.mocked(cache.remove).mockReset().mockImplementation(key => { values.delete(key); return { changes: 1, lastInsertRowId: 1 }; });
+});
+afterEach(() => { cleanup(); jest.clearAllTimers(); jest.useRealTimers(); useWorkspace.getState().reset(); });
+
+function screen() {
+  const listTopics = jest.fn().mockResolvedValue(undefined);
+  const runtime = { api: { origin }, listTopics } as unknown as Runtime;
+  const open = jest.fn(), openTopic = jest.fn(), onBack = jest.fn();
+  const element = () => <SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={open} openTopic={openTopic} onBack={onBack} /></SafeAreaProvider>;
+  const view = render(element());
+  return { view, runtime, listTopics, open, openTopic, onBack, rerender: () => view.rerender(element()) };
+}
+
+test('standalone search focuses input, states its loaded scope, and typing does not save history', () => {
+  const { view, onBack } = screen();
+  const input = view.getByLabelText('搜索会话和话题');
+  expect(input.props.autoFocus).toBe(true); expect(input.props.returnKeyType).toBe('search');
+  expect(view.getByText(SEARCH_SCOPE_TEXT)).toBeTruthy();
+  expect(view.getByText('还没有搜索历史')).toBeTruthy();
+  expect(view.UNSAFE_getByType(FlatList).props.keyboardShouldPersistTaps).toBe('handled');
+  fireEvent.changeText(input, ' design ');
+  expect(view.getByText('会话')).toBeTruthy(); expect(view.getByText('话题')).toBeTruthy();
+  expect(view.queryByText('Other Person')).toBeNull();
+  expect(cache.set).not.toHaveBeenCalled();
+  fireEvent(input, 'submitEditing');
+  expect(values.get(searchHistoryKey({ accountKey: account, spaceId: 's1' })!)).toEqual(['design']);
+  const back = view.getByRole('button', { name: '返回' });
+  const style = StyleSheet.flatten(back.props.style);
+  expect(style.minWidth).toBeGreaterThanOrEqual(48); expect(style.minHeight).toBeGreaterThanOrEqual(48);
+  fireEvent.press(back); expect(onBack).toHaveBeenCalledTimes(1);
+});
+
+test('canonical conversation/topic rows open their current objects and record query only on opening', () => {
+  const { view, open, openTopic } = screen();
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  fireEvent.press(view.getByRole('button', { name: /打开Design Group/ }));
+  expect(open).toHaveBeenCalledWith('g1'); expect(cache.set).toHaveBeenCalledTimes(1);
+  fireEvent.press(view.getByRole('button', { name: /打开话题Design Topic/ }));
+  expect(openTopic).toHaveBeenCalledWith(topic);
+  expect(values.get(searchHistoryKey({ accountKey: account, spaceId: 's1' })!)).toEqual(['Design']);
+});
+
+test('history can be reused, individually deleted and cleared without recording every edit', () => {
+  values.set(searchHistoryKey({ accountKey: account, spaceId: 's1' })!, ['Design', 'Other']);
+  const { view } = screen();
+  fireEvent.press(view.getByRole('button', { name: '删除搜索历史：Other' }));
+  expect(view.queryByRole('button', { name: '搜索历史：Other' })).toBeNull();
+  fireEvent.press(view.getByRole('button', { name: '搜索历史：Design' }));
+  expect(view.getByLabelText('搜索会话和话题').props.value).toBe('Design');
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), '');
+  fireEvent.press(view.getByRole('button', { name: '清空历史' }));
+  expect(cache.remove).toHaveBeenCalledWith(searchHistoryKey({ accountKey: account, spaceId: 's1' }));
+  expect(view.getByText('还没有搜索历史')).toBeTruthy();
+});
+
+test('empty results remain scoped and a returning search page preserves its keyword', () => {
+  const { view, rerender } = screen();
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Missing');
+  expect(view.getByText('没有匹配的已加载内容')).toBeTruthy();
+  mockFocused = false; rerender(); mockFocused = true; rerender();
+  expect(view.getByLabelText('搜索会话和话题').props.value).toBe('Missing');
+  expect(cache.set).not.toHaveBeenCalled();
+  fireEvent.press(view.getByRole('button', { name: '清空搜索关键词' }));
+  expect(view.getByLabelText('搜索会话和话题').props.value).toBe('');
+  expect(cache.set).not.toHaveBeenCalled();
+});
+
+test.each(['account', 'space', 'api', 'blur', 'unmount'] as const)('old callbacks cannot navigate or record after %s', reason => {
+  const { view, runtime, open, rerender } = screen();
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  const oldOpen = view.UNSAFE_getByType(ConversationRow).props.onPress;
+  const oldSubmit = view.getByLabelText('搜索会话和话题').props.onSubmitEditing;
+  if (reason === 'account') act(() => useWorkspace.setState({ accountKey: `${origin}:u2`, bootstrap: { ...bootstrap, auth: { currentUser: { ...bootstrap.auth.currentUser, id: 'u2' } } } }));
+  else if (reason === 'space') act(() => useWorkspace.setState({ bootstrap: { ...bootstrap, space: { id: 's2', name: 'Other synthetic space' } } }));
+  else if (reason === 'api') { runtime.api = { origin: 'https://other.test' } as Runtime['api']; rerender(); }
+  else if (reason === 'blur') { mockFocused = false; rerender(); }
+  else view.unmount();
+  act(() => { oldOpen(); oldSubmit(); });
+  expect(open).not.toHaveBeenCalled(); expect(cache.set).not.toHaveBeenCalled();
+  if (reason === 'account' || reason === 'space' || reason === 'api') expect(view.getByLabelText('搜索会话和话题').props.value).toBe('');
+});
+
+test('permission loss or removed parent blocks old result handlers without exposing cached topic', () => {
+  const { view, open, openTopic } = screen();
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  const oldConversation = view.UNSAFE_getByType(ConversationRow).props.onPress;
+  const oldTopic = view.UNSAFE_getByType(TopicRow).props.onPress;
+  act(() => useWorkspace.setState({ conversations: {} }));
+  act(() => { oldConversation(); oldTopic(); });
+  expect(open).not.toHaveBeenCalled(); expect(openTopic).not.toHaveBeenCalled();
+  expect(view.queryByText('Design Topic')).toBeNull(); expect(cache.set).not.toHaveBeenCalled();
+  act(() => useWorkspace.setState({ conversations: { g1: group }, bootstrap: { ...bootstrap, permissions: { ...bootstrap.permissions, canReadConversations: false } } }));
+  act(oldConversation); expect(open).not.toHaveBeenCalled();
+});
+
+test('no account neither reads history nor accepts typed or submitted values', () => {
+  useWorkspace.getState().reset(); const { view } = screen();
+  expect(view.getByText('登录后可搜索')).toBeTruthy();
+  const input = view.getByLabelText('搜索会话和话题'); expect(input.props.editable).toBe(false);
+  fireEvent.changeText(input, 'Do not persist'); fireEvent(input, 'submitEditing');
+  expect(cache.get).not.toHaveBeenCalled(); expect(cache.set).not.toHaveBeenCalled();
+});
+
+test('history storage failure leaves local search and opening usable without claiming save', () => {
+  jest.mocked(cache.get).mockImplementation(() => { throw new Error('Synthetic IO'); });
+  const { view, open } = screen();
+  expect(view.getByText('本机搜索历史暂时无法读取，仍可筛选已加载的内容。')).toBeTruthy();
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  fireEvent.press(view.getByRole('button', { name: /打开Design Group/ }));
+  expect(open).toHaveBeenCalledWith('g1');
+  expect(view.getByText('本机搜索历史未保存，仍可打开搜索结果。')).toBeTruthy();
+});
+
+test('search page follows the existing dark theme without changing keyboard or cached history', async () => {
+  const runtime = { api: { origin }, listTopics: jest.fn().mockResolvedValue(undefined) } as unknown as Runtime;
+  const view = render(<SafeAreaProvider initialMetrics={metrics}><ThemeProvider mode="dark"><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></ThemeProvider></SafeAreaProvider>);
+  await act(async () => { await Promise.resolve(); });
+  expect(StyleSheet.flatten(view.getByTestId('search-page').props.style).backgroundColor).toBe(resolveTheme('dark').bg);
+  expect(cache.set).not.toHaveBeenCalled();
+  expect(Keyboard.dismiss).toBeDefined();
+});
+
+test('first focused readable entry refreshes authorized topics once without sending the keyword or blocking loaded results', async () => {
+  const { view, listTopics, rerender } = screen();
+  expect(listTopics).toHaveBeenCalledTimes(1); expect(listTopics).toHaveBeenCalledWith();
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  expect(view.getByText('Design Group')).toBeTruthy();
+  mockFocused = false; rerender(); mockFocused = true; rerender();
+  await act(async () => { await Promise.resolve(); });
+  expect(listTopics).toHaveBeenCalledTimes(1);
+  expect(view.getByLabelText('搜索会话和话题').props.value).toBe('Design');
+});
+
+test('a first visit can discover returned topics even if the home topic tab has never loaded them', async () => {
+  useWorkspace.setState({ topics: {} });
+  let finish: () => void = () => undefined;
+  const listTopics = jest.fn(() => new Promise<void>(resolve => { finish = () => { useWorkspace.getState().setTopics([topic]); resolve(); }; }));
+  const runtime = { api: { origin }, listTopics } as unknown as Runtime;
+  const view = render(<SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></SafeAreaProvider>);
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  expect(view.getByText('Design Group')).toBeTruthy(); expect(view.queryByText('Design Topic')).toBeNull();
+  await act(async () => { finish(); });
+  expect(view.getByText('Design Topic')).toBeTruthy(); expect(listTopics).toHaveBeenCalledWith();
+});
+
+test('Strict Mode setup cleanup does not repeat the automatic topic request', async () => {
+  const listTopics = jest.fn().mockResolvedValue(undefined);
+  const runtime = { api: { origin }, listTopics } as unknown as Runtime;
+  const view = render(<React.StrictMode><SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></SafeAreaProvider></React.StrictMode>);
+  await act(async () => { await Promise.resolve(); });
+  expect(listTopics).toHaveBeenCalledTimes(1);
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  expect(view.getByText('Design Group')).toBeTruthy();
+});
+
+test('authorized offline loaded search and history remain usable without a topic network call', () => {
+  const listTopics = jest.fn();
+  const runtime = { api: undefined, listTopics } as unknown as Runtime;
+  const view = render(<SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></SafeAreaProvider>);
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  fireEvent(view.getByLabelText('搜索会话和话题'), 'submitEditing');
+  expect(view.getByText('Design Group')).toBeTruthy(); expect(listTopics).not.toHaveBeenCalled();
+  expect(values.get(searchHistoryKey({ accountKey: account, spaceId: 's1' })!)).toEqual(['Design']);
+});
+
+test('topic refresh failure preserves loaded results and can retry within the same scope', async () => {
+  let reject: (error: unknown) => void = () => undefined;
+  const listTopics = jest.fn().mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; })).mockResolvedValue(undefined);
+  const runtime = { api: { origin }, listTopics } as unknown as Runtime;
+  const view = render(<SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></SafeAreaProvider>);
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  await act(async () => { reject(new Error('Synthetic network')); });
+  expect(view.getByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeTruthy();
+  expect(view.getByText('Design Group')).toBeTruthy(); expect(view.getByText('Design Topic')).toBeTruthy();
+  fireEvent.press(view.getByRole('button', { name: '重试加载话题' }));
+  await act(async () => { await Promise.resolve(); });
+  expect(listTopics).toHaveBeenCalledTimes(2); expect(listTopics).toHaveBeenLastCalledWith();
+  expect(view.queryByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeNull();
+});
+
+test('a failed first topic refresh while blurred is recoverable after returning without automatic retry loops', async () => {
+  let reject: (error: unknown) => void = () => undefined;
+  const listTopics = jest.fn().mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; })).mockResolvedValue(undefined);
+  const runtime = { api: { origin }, listTopics } as unknown as Runtime;
+  const element = () => <SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></SafeAreaProvider>;
+  const view = render(element());
+  fireEvent.changeText(view.getByLabelText('搜索会话和话题'), 'Design');
+  mockFocused = false; view.rerender(element());
+  await act(async () => { reject(new Error('Synthetic first-load network failure')); });
+  mockFocused = true; view.rerender(element());
+  expect(view.getByLabelText('搜索会话和话题').props.value).toBe('Design');
+  expect(view.getByText('Design Group')).toBeTruthy();
+  expect(view.getByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeTruthy();
+  expect(listTopics).toHaveBeenCalledTimes(1);
+  fireEvent.press(view.getByRole('button', { name: '重试加载话题' }));
+  await act(async () => { await Promise.resolve(); });
+  expect(listTopics).toHaveBeenCalledTimes(2); expect(listTopics).toHaveBeenLastCalledWith();
+  expect(view.queryByRole('button', { name: '重试加载话题' })).toBeNull();
+  mockFocused = false; view.rerender(element()); mockFocused = true; view.rerender(element());
+  expect(listTopics).toHaveBeenCalledTimes(2);
+});
+
+test.each(['account', 'space', 'api', 'permission', 'unmount'] as const)('a pending topic failure cannot publish after %s invalidation', async reason => {
+  let reject: (error: unknown) => void = () => undefined;
+  const listTopics = jest.fn().mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; })).mockResolvedValue(undefined);
+  const runtime = { api: { origin }, listTopics } as unknown as Runtime;
+  const element = () => <SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></SafeAreaProvider>;
+  const view = render(element());
+  mockFocused = false; view.rerender(element());
+  if (reason === 'account') act(() => useWorkspace.setState({ accountKey: `${origin}:u2`, bootstrap: { ...bootstrap, auth: { currentUser: { ...bootstrap.auth.currentUser, id: 'u2' } } } }));
+  else if (reason === 'space') act(() => useWorkspace.setState({ bootstrap: { ...bootstrap, space: { id: 's2', name: 'Other synthetic space' } } }));
+  else if (reason === 'api') { runtime.api = { origin: 'https://other.test' } as Runtime['api']; view.rerender(element()); }
+  else if (reason === 'permission') act(() => useWorkspace.setState({ bootstrap: { ...bootstrap, permissions: { ...bootstrap.permissions, canReadConversations: false } } }));
+  else view.unmount();
+  await act(async () => { reject(new Error('Invalidated topic failure')); });
+  if (reason !== 'unmount') {
+    mockFocused = true; view.rerender(element());
+    await act(async () => { await Promise.resolve(); });
+    expect(view.queryByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeNull();
+    expect(view.queryByRole('button', { name: '重试加载话题' })).toBeNull();
+  }
+});
+
+test('late topic refresh failure cannot publish old scope feedback, and an unreadable account never refreshes', async () => {
+  let reject: (error: unknown) => void = () => undefined;
+  const listTopics = jest.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+  const runtime = { api: { origin }, listTopics } as unknown as Runtime;
+  const view = render(<SafeAreaProvider initialMetrics={metrics}><SearchScreen runtime={runtime} open={jest.fn()} openTopic={jest.fn()} onBack={jest.fn()} /></SafeAreaProvider>);
+  act(() => useWorkspace.setState({ accountKey: `${origin}:u2`, bootstrap: { ...bootstrap, auth: { currentUser: { ...bootstrap.auth.currentUser, id: 'u2' } }, permissions: { ...bootstrap.permissions, canReadConversations: false } } }));
+  await act(async () => { reject(new Error('Old scope failure')); });
+  expect(listTopics).toHaveBeenCalledTimes(1);
+  expect(view.queryByText('话题暂时无法更新，仍可搜索已加载的内容。')).toBeNull();
+});

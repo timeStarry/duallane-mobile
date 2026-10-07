@@ -40,12 +40,23 @@ jest.mock('expo-notifications', () => ({
 jest.mock('../src/features/account/screens', () => ({ AccountNavigator: () => null }));
 jest.mock('../src/ui/MediaViewer', () => ({ MediaViewer: () => null }));
 jest.mock('../src/data/media', () => ({ canPreviewAttachment: () => false }));
-function MockConversationsScreen({ open, openTopic }: { open: (id: string) => void; openTopic: (topic: { id: string; conversationId: string }) => void }) {
+function MockConversationsScreen({ open, openTopic, openSearch }: { open: (id: string) => void; openTopic: (topic: { id: string; conversationId: string }) => void; openSearch: () => void }) {
   return <View>
+    <NativeButton title="Open synthetic search" onPress={openSearch} />
     <NativeButton title="Open synthetic chat" onPress={() => open('synthetic-chat')} />
     <NativeButton title="Open synthetic topic" onPress={() => openTopic({ id: 'synthetic-topic', conversationId: 'synthetic-chat' })} />
   </View>;
 }
+function MockSearchScreen({ open, openTopic, onBack }: { open: (id: string) => void; openTopic: (topic: { id: string; conversationId: string }) => void; onBack: () => void }) {
+  const [query, setQuery] = React.useState('');
+  return <View>
+    <TextInput accessibilityLabel="Synthetic search query" value={query} onChangeText={setQuery} />
+    <NativeButton title="Synthetic search chat result" onPress={() => open('synthetic-chat')} />
+    <NativeButton title="Synthetic search topic result" onPress={() => openTopic({ id: 'synthetic-topic', conversationId: 'synthetic-chat' })} />
+    <NativeButton title="Back from synthetic search" onPress={onBack} />
+  </View>;
+}
+jest.mock('../src/features/chat/SearchScreen', () => ({ SearchScreen: MockSearchScreen }));
 function MockChatScreen({ target, focusMessageId, details }: { target: { id: string; conversationId?: string }; focusMessageId?: string; details: () => void }) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NavigationProp<{ Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string } }>>();
@@ -63,6 +74,7 @@ function MockChatScreen({ target, focusMessageId, details }: { target: { id: str
     <TextInput accessibilityLabel="Synthetic draft" value={draft} onChangeText={text => useWorkspace.getState().setDraft('synthetic-chat', text)} />
     <NativeButton title="Open synthetic panel" onPress={() => setPanelOpen(true)} />
     <NativeButton title="Open synthetic details" onPress={details} />
+    <NativeButton title="Back from synthetic chat" onPress={() => navigation.goBack()} />
     <NativeButton title="Replace synthetic chat target" onPress={() => navigation.navigate('Chat', { id: 'replacement-synthetic-chat' })} />
     <NativeButton title="Replace synthetic topic target" onPress={() => navigation.navigate('Topic', { id: 'replacement-synthetic-topic', conversationId: 'synthetic-chat' })} />
     <NativeButton title="Replace synthetic topic parent" onPress={() => navigation.navigate('Topic', { id: target.id, conversationId: 'replacement-synthetic-parent' })} />
@@ -114,6 +126,27 @@ function noticeOwner(view: ReturnType<typeof render>, text: string) {
 
 beforeEach(() => { useWorkspace.getState().reset(); mockNotificationListener = undefined; mockOpen.mockResolvedValue(50); mockOpenTopic.mockResolvedValue(50); });
 afterEach(() => { useWorkspace.getState().reset(); });
+
+test('home search uses a separate stack route and returns from chat or topic to its retained query', async () => {
+  const view = start(true);
+  const state = () => view.UNSAFE_getByType(NavigationContainer).props.ref.current.getRootState();
+  fireEvent.press(view.getByText('Open synthetic search'));
+  await waitFor(() => expect(view.getByLabelText('Synthetic search query')).toBeTruthy());
+  expect(state().routes.at(-1).name).toBe('Search');
+  fireEvent.changeText(view.getByLabelText('Synthetic search query'), 'Synthetic query');
+  for (const result of ['Synthetic search chat result', 'Synthetic search topic result']) {
+    fireEvent.press(view.getByText(result));
+    await waitFor(() => expect(view.getByText('Back from synthetic chat')).toBeTruthy());
+    expect(['Chat', 'Topic']).toContain(state().routes.at(-1).name);
+    fireEvent.press(view.getByText('Back from synthetic chat'));
+    await waitFor(() => expect(view.getByLabelText('Synthetic search query').props.value).toBe('Synthetic query'));
+    expect(state().routes.at(-1).name).toBe('Search');
+  }
+  fireEvent.press(view.getByText('Back from synthetic search'));
+  await waitFor(() => expect(view.getByText('Open synthetic search')).toBeTruthy());
+  expect(state().routes.at(-1).name).toBe('Workspace');
+  expect(mockSend).not.toHaveBeenCalled();
+});
 
 test('authenticated global feedback has its own top and horizontal safe area', () => {
   const view = start(true, error);

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import * as Crypto from 'expo-crypto';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { File } from 'expo-file-system';
 import { saveFileToDevice } from '../src/platform/save-file';
 import { Transfers, clearAccountFiles, uploadStatusSchema, type UploadTask } from '../src/data/transfers';
@@ -42,9 +43,10 @@ jest.mock('expo-file-system', () => {
   return { File:MockFile, Directory:class { uri:string; constructor(parent:{uri:string},name:string){this.uri=`${parent.uri}/${name}`;} get exists(){return mockDirs.has(this.uri);} create(){mockDirs.add(this.uri);} delete(){mockDirs.delete(this.uri);} }, Paths:{ document:{ uri:'file:///document' }, cache:{ uri:'file:///cache' } } };
 });
 jest.mock('expo-document-picker', () => ({ getDocumentAsync:jest.fn() }));
+jest.mock('expo-image-picker', () => ({ launchImageLibraryAsync:jest.fn() }));
 jest.mock('expo-sharing', () => ({ shareAsync:jest.fn().mockResolvedValue(undefined) }));
 jest.mock('../src/platform/save-file', () => ({ saveFileToDevice:jest.fn().mockResolvedValue(true) }));
-jest.mock('expo-crypto', () => ({ randomUUID:() => '11111111-1111-4111-8111-111111111111', CryptoDigestAlgorithm:{ SHA256:'SHA256' }, digest:jest.fn().mockImplementation(async () => new Uint8Array(32).buffer) }));
+jest.mock('expo-crypto', () => ({ randomUUID:jest.fn(() => '11111111-1111-4111-8111-111111111111'), CryptoDigestAlgorithm:{ SHA256:'SHA256' }, digest:jest.fn().mockImplementation(async () => new Uint8Array(32).buffer) }));
 
 const key = 'https://workspace.test:user';
 const id = '22222222-2222-4222-8222-222222222222';
@@ -65,6 +67,8 @@ const status = { uploadId:'up1', mode:'single', partSize:4194304, partCount:1, p
 beforeEach(() => {
   mockDisk.clear(); mockDirs.clear(); mockCache.clear();
   jest.mocked(DocumentPicker.getDocumentAsync).mockReset();
+  jest.mocked(ImagePicker.launchImageLibraryAsync).mockReset();
+  jest.mocked(Crypto.randomUUID).mockReset().mockReturnValue('11111111-1111-4111-8111-111111111111');
   useWorkspace.getState().reset(); useWorkspace.setState({ accountKey:key });
   jest.mocked(Crypto.digest).mockImplementation(async () => new Uint8Array(32).buffer);
 });
@@ -262,6 +266,106 @@ test('account cleanup removes only managed upload files belonging to that accoun
   clearAccountFiles(key);
   expect(mockDisk.has(task.uri)).toBe(false);
   expect(mockDisk.has(other.uri)).toBe(true);
+});
+
+test('target invalidation after reserve retains the quota reservation for a later retry', async () => {
+  saveTask();
+  let current = true;
+  const json = jest.fn(async (path:string, schema:z.ZodType) => {
+    expect(path).toBe('/api/workspace/files/uploads/reserve');
+    current = false;
+    return schema.parse(reserved);
+  });
+  const api = { json, raw:jest.fn() } as unknown as ApiClient;
+  const transfers = new Transfers();
+  expect(await transfers.run(api, key, task, jest.fn(), () => current)).toBeNull();
+  expect(json).toHaveBeenCalledTimes(1);
+  expect(transfers.tasks(key)[0]).toMatchObject({ id, uploadId:'up1', attachmentId:'a1', complete:false });
+  expect(mockDisk.has(task.uri)).toBe(true);
+});
+
+test('cancelling the system image picker creates no upload task', async () => {
+  jest.mocked(ImagePicker.launchImageLibraryAsync).mockResolvedValue({ canceled:true, assets:null });
+  expect(await new Transfers().chooseImages(key,'c1','conversation')).toEqual([]);
+  expect(cache.get(`${key}:uploads`)).toBeUndefined();
+  expect(ImagePicker.launchImageLibraryAsync).toHaveBeenCalledWith({ mediaTypes:['images'], allowsMultipleSelection:true, selectionLimit:9, allowsEditing:false, quality:1, legacy:false });
+});
+
+test('confirmed images become ordered independent private-staging upload tasks and only picker cache copies are deleted', async () => {
+  const first='file:///cache/picked-one.jpg', second='file:///user/original.png';
+  mockDisk.set(first,new Uint8Array([1,2])); mockDisk.set(second,new Uint8Array([3,4,5]));
+  const firstId='44444444-4444-4444-8444-444444444444', secondId='55555555-5555-4555-8555-555555555555';
+  jest.mocked(Crypto.randomUUID).mockReturnValueOnce(firstId).mockReturnValueOnce(secondId);
+  jest.mocked(ImagePicker.launchImageLibraryAsync).mockResolvedValue({ canceled:false, assets:[
+    { uri:first, fileName:'one.jpg', fileSize:2, mimeType:'image/jpeg', type:'image', width:2, height:2 },
+    { uri:second, fileName:'two.png', fileSize:3, mimeType:'image/png', type:'image', width:2, height:2 },
+  ] });
+  const tasks=await new Transfers().chooseImages(key,undefined,'private_staging');
+  expect(tasks.map(task => task.id)).toEqual([firstId,secondId]);
+  expect(tasks.map(task => [task.byteSize,task.mimeType,task.visibility,task.conversationId])).toEqual([[2,'image/jpeg','private_staging',undefined],[3,'image/png','private_staging',undefined]]);
+  expect(mockDisk.has(first)).toBe(false);
+  expect(mockDisk.has(second)).toBe(true);
+  expect(tasks.every(task => mockDisk.has(task.uri))).toBe(true);
+});
+
+test('Android provider image with unknown asset type is accepted when MIME identifies an image', async () => {
+  const picked='file:///cache/unknown-type.heic';
+  mockDisk.set(picked,new Uint8Array([1]));
+  jest.mocked(ImagePicker.launchImageLibraryAsync).mockResolvedValue({ canceled:false, assets:[
+    { uri:picked, fileName:'photo.heic', mimeType:'image/heic', type:null, width:1, height:1 },
+  ] });
+  const tasks=await new Transfers().chooseImages(key,'c1','conversation');
+  expect(tasks).toHaveLength(1);
+  expect(tasks[0]).toMatchObject({ fileName:'photo.heic', mimeType:'image/heic', byteSize:1 });
+});
+
+test('an invalid image result does not keep partial tasks or delete a user source', async () => {
+  const first='file:///cache/first.jpg', invalid='file:///user/video.mp4';
+  mockDisk.set(first,new Uint8Array([1])); mockDisk.set(invalid,new Uint8Array([2]));
+  jest.mocked(ImagePicker.launchImageLibraryAsync).mockResolvedValue({ canceled:false, assets:[
+    { uri:first, fileName:'first.jpg', mimeType:'image/jpeg', type:'image', width:1, height:1 },
+    { uri:invalid, fileName:'video.mp4', mimeType:'video/mp4', type:'video', width:1, height:1 },
+  ] });
+  await expect(new Transfers().chooseImages(key,'c1','conversation')).rejects.toMatchObject({ code:'image.selection_invalid' });
+  expect(new Transfers().tasks(key)).toEqual([]);
+  expect(mockDisk.has(first)).toBe(false);
+  expect(mockDisk.has(invalid)).toBe(true);
+  expect([...mockDisk.keys()].some(uri => uri.includes('/uploads/'))).toBe(false);
+});
+
+test('native picker over-return is rejected before copying or reserving any image', async () => {
+  const assets=Array.from({length:10},(_,index)=>{
+    const uri=`file:///cache/too-many-${index}.jpg`;
+    mockDisk.set(uri,new Uint8Array([index]));
+    return { uri, fileName:`photo-${index}.jpg`, mimeType:'image/jpeg', type:'image' as const, width:1, height:1 };
+  });
+  jest.mocked(ImagePicker.launchImageLibraryAsync).mockResolvedValue({ canceled:false, assets });
+  await expect(new Transfers().chooseImages(key,'c1','conversation')).rejects.toMatchObject({ code:'image.too_many' });
+  expect(new Transfers().tasks(key)).toEqual([]);
+  expect([...mockDisk.keys()].some(uri => uri.includes('/uploads/'))).toBe(false);
+  expect(assets.every(asset => !mockDisk.has(asset.uri))).toBe(true);
+});
+
+test('late picker completion after account change discards app cache without persisting an upload', async () => {
+  let finish!:(value:Awaited<ReturnType<typeof ImagePicker.launchImageLibraryAsync>>)=>void;
+  jest.mocked(ImagePicker.launchImageLibraryAsync).mockImplementation(() => new Promise(resolve => { finish=resolve; }));
+  const choosing=new Transfers().chooseImages(key,'c1','conversation');
+  const picked='file:///cache/late.jpg'; mockDisk.set(picked,new Uint8Array([1]));
+  useWorkspace.setState({ accountKey:'different-account' });
+  finish({ canceled:false, assets:[{ uri:picked, fileName:'late.jpg', mimeType:'image/jpeg', type:'image', width:1, height:1 }] });
+  await expect(choosing).rejects.toThrow('Account changed');
+  expect(mockDisk.has(picked)).toBe(false);
+  expect(new Transfers().tasks(key)).toEqual([]);
+});
+
+test('selected but unstarted image tasks are discarded when their target becomes invalid', async () => {
+  const picked='file:///cache/picked.jpg'; mockDisk.set(picked,new Uint8Array([1]));
+  jest.mocked(ImagePicker.launchImageLibraryAsync).mockResolvedValue({ canceled:false, assets:[{ uri:picked, fileName:'picked.jpg', mimeType:'image/jpeg', type:'image', width:1, height:1 }] });
+  const transfers=new Transfers();
+  const tasks=await transfers.chooseImages(key,'c1','conversation');
+  transfers.discardUnstarted(key,tasks);
+  expect(transfers.tasks(key)).toEqual([]);
+  expect(mockDisk.has(tasks[0]?.uri ?? '')).toBe(false);
 });
 
 test.each(['inactivity','account','permission','reader-cleanup'] as const)('real ApiClient cancels a blocked native download on %s instead of only cancelling the JS reader',async cause=>{

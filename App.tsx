@@ -17,6 +17,7 @@ import { Transfers } from './src/data/transfers';
 import { useWorkspace } from './src/domain/store';
 import { updateDecision } from './src/domain/updates';
 import { ChatScreen, ConversationsScreen, DetailsScreen, FilesScreen, LoginScreen, MembersScreen, UpdatePrompt } from './src/features/screens';
+import { SearchScreen } from './src/features/chat/SearchScreen';
 import { AccountNavigator } from './src/features/account/screens';
 import { installed } from './src/platform/config';
 import { cache } from './src/platform/storage';
@@ -24,7 +25,7 @@ import { notificationTarget } from './src/platform/notifications';
 import { ApiError, errorText } from './src/data/client';
 import { canPreviewAttachment } from './src/data/media';
 
-type RootParams = { Workspace: undefined; Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' }; Media: { id: string; fileName: string; mimeType: string; byteSize: number; status: string; canDownload: boolean; accountKey: string; conversationId?: string; topicId?: string; messageId?: string } };
+type RootParams = { Workspace: undefined; Search: undefined; Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' }; Media: { id: string; fileName: string; mimeType: string; byteSize: number; status: string; canDownload: boolean; accountKey: string; conversationId?: string; topicId?: string; messageId?: string } };
 type TabsParams = { 聊天: undefined; 文件: undefined; 成员: undefined; 我的: undefined };
 const Stack = createNativeStackNavigator<RootParams>();
 const Tabs = createBottomTabNavigator<TabsParams>();
@@ -143,7 +144,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
       tabBar={props => <DualLaneTabBar {...props} />}
       screenOptions={{ headerShown: false }}
     >
-      <Tabs.Screen name="聊天">{() => <ConversationsScreen runtime={runtime} open={id => nav.navigate('Chat', { id })} openTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })} />}</Tabs.Screen>
+      <Tabs.Screen name="聊天">{() => <ConversationsScreen runtime={runtime} openSearch={() => nav.navigate('Search')} open={id => nav.navigate('Chat', { id })} openTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })} />}</Tabs.Screen>
       <Tabs.Screen name="文件">{() => <FilesScreen runtime={runtime} transfers={transfers} />}</Tabs.Screen>
       <Tabs.Screen name="成员">{() => <MembersScreen runtime={runtime} open={id => nav.navigate('Chat', { id })} />}</Tabs.Screen>
       <Tabs.Screen name="我的">{() => <AccountNavigator runtime={runtime} mode={mode} setMode={setMode} />}</Tabs.Screen>
@@ -173,6 +174,9 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
           }}
         >
           <Stack.Screen name="Workspace" options={{ headerShown: false }}>{tabs}</Stack.Screen>
+          <Stack.Screen name="Search" options={{ headerShown: false }}>
+            {({ navigation: nav }) => <SearchScreen runtime={runtime} onBack={() => nav.goBack()} open={id => nav.navigate('Chat', { id })} openTopic={topic => nav.navigate('Topic', { id: topic.id, conversationId: topic.conversationId })} />}
+          </Stack.Screen>
           <Stack.Screen name="Chat" options={{ headerShown: false }}>
             {({ route, navigation: nav }) => (
               <ChatScreen

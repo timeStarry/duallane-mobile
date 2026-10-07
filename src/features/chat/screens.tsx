@@ -47,6 +47,7 @@ import {
 } from '../../ui/components';
 import { useTheme } from '../../ui/theme';
 import { useTopicProjections } from './useTopicProjections';
+import { sendSelectedPhotos } from './photo-send';
 import { recognizeEchoCommand } from '../../domain/echo-workflows';
 import { useEchoWorkflow } from '../echo/useEchoWorkflow';
 import { EchoWorkflowDialog } from '../echo/EchoWorkflowDialog';
@@ -69,27 +70,24 @@ function TranscriptFrame({ id, register, rowLayout, latestRow, isLatest, onLates
   return <View ref={ref} collapsable={false} testID={`chat-message-${id}`} onLayout={event => { rowLayout(id, event.nativeEvent.layout.height); onLatestLayout?.(event.nativeEvent.layout); }}>{children}</View>;
 }
 
-export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Runtime; open: (id: string) => void; openTopic: (topic: Topic) => void }) {
+export function ConversationsScreen({ runtime, open, openTopic, openSearch }: { runtime: Runtime; open: (id: string) => void; openTopic: (topic: Topic) => void; openSearch: () => void }) {
   const conversations = useWorkspace(s => s.conversations);
   const topics = useWorkspace(s => s.topics);
   const connection = useWorkspace(s => s.connection);
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const directory = useWorkspace(s => s.bootstrap?.members);
-  const [query, setQuery] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
   const [list, setList] = useState<'conversations' | 'topics'>('conversations');
   const [error, setError] = useState('');
   const t = useTheme();
   useEffect(() => { if (list === 'topics') void runtime.listTopics().catch(e => setError(errorText(e))); }, [list, runtime]);
-  const items = Object.values(conversations).filter(c => c.displayTitle.toLowerCase().includes(query.toLowerCase())).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
-  const topicItems = Object.values(topics).filter(topic => topic.title.includes(query) || (topic.descriptionPreview ?? '').includes(query));
-  const filterLabel = list === 'topics' ? '筛选已加载的话题' : '筛选已加载的会话';
+  const items = Object.values(conversations).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+  const topicItems = Object.values(topics);
   return (
     <View style={[styles.page, { backgroundColor: t.bg }]}>
       <AppHeader
         title="聊天"
         includeTopInset
-        trailing={<IconButton label="搜索" onPress={() => setSearchOpen(open => !open)}><Search color={t.muted} size={22} /></IconButton>}
+        trailing={<IconButton label="搜索" onPress={openSearch}><Search color={t.muted} size={22} /></IconButton>}
         banner={<ConnectionBanner connection={connection} />}
       />
       <View style={styles.content}>
@@ -99,7 +97,6 @@ export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Run
           options={[{ value: 'conversations', label: '会话' }, { value: 'topics', label: '话题' }]}
           onChange={setList}
         />
-        {searchOpen ? <Input accessibilityLabel={filterLabel} placeholder={filterLabel} value={query} onChangeText={setQuery} /> : null}
         <InlineFeedback text={error} tone="danger" />
       </View>
       {list === 'topics' ? (
@@ -172,6 +169,9 @@ export function ChatScreen({
   const echo = useEchoWorkflow(runtime, target.kind === 'conversation' ? target.id : undefined, focused);
   const echoRoute = useRef({ key, accountKey, focused });
   echoRoute.current = { key, accountKey, focused };
+  const photoSendGeneration = useRef(0);
+  const photoSending = useRef(false);
+  const photoProgressActive = useRef(false);
   const [loading, setLoading] = useState(() => useWorkspace.getState().messages[key] === undefined);
   const [error, setError] = useState('');
   const targetId = target.id;
@@ -242,6 +242,15 @@ export function ChatScreen({
   const latestFrameBudget = useRef<{ observation: typeof observation; activity: typeof activity; revision: number; remaining: number } | undefined>(undefined);
   const [readConfirmation, setReadConfirmation] = useState<{ observation: typeof observation; revision: number }>();
   const [progress, setProgress] = useState('');
+  useEffect(() => {
+    const generation = photoSendGeneration;
+    if (photoProgressActive.current) {
+      photoProgressActive.current = false;
+      photoSending.current = false;
+      setProgress('');
+    }
+    return () => { generation.current++; };
+  }, [accountKey, focused, key]);
   const feedback = error || readError || progress || projections.feedback.text;
   const [feedbackLayout, setFeedbackLayout] = useState<{ text: string; width: number; fontScale: number; height: number }>();
   const [emotes, setEmotes] = useState<Emote[]>([]);
@@ -591,15 +600,15 @@ export function ChatScreen({
     setResolvedFocus(undefined);
     pinToLatest.current = true;
     invalidateReadConfirmation();
-    const uploadTaskId = existing?.pendingUploadTaskId ?? latest.pendingAttachment?.taskId;
+    const uploadTaskId = existing ? existing.pendingUploadTaskId : latest.pendingAttachment?.taskId;
     const task = uploadTaskId ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === uploadTaskId) : undefined;
     const needsUpload = !!uploadTaskId && !existing?.attachments[0];
     void runtime.send(target.kind === 'conversation' ? target.id : target.conversationId, existing?.plainText ?? latest.text, existing, existing?.attachments[0]?.id, {
       topicId: target.kind === 'topic' ? target.id : undefined,
-      replyToMessageId: existing?.replyToMessageId ?? latest.replyToMessageId,
-      mentionIds: latest.mentionIds,
-      mentionSpans: latest.mentionSpans,
-      syncToGroup: target.kind === 'topic' && (existing?.pendingSyncToGroup ?? syncToGroup),
+      replyToMessageId: existing ? existing.replyToMessageId : latest.replyToMessageId,
+      mentionIds: existing ? [] : latest.mentionIds,
+      mentionSpans: existing ? undefined : latest.mentionSpans,
+      syncToGroup: target.kind === 'topic' && (existing ? !!existing.pendingSyncToGroup : syncToGroup),
       uploadTaskId,
       upload: needsUpload ? () => {
         const api = runtime.api;
@@ -609,6 +618,42 @@ export function ChatScreen({
         return transfers.run(api, account, task, n => setProgress(`上传 ${Math.round(n * 100)}%`)).finally(() => setProgress(''));
       } : undefined,
     }).catch(e => setError(errorText(e)));
+  };
+  const sendImages = () => {
+    if (photoSending.current || progress) return;
+    const api = runtime.api;
+    if (!api?.session) { setError('请先登录后再发送图片。'); return; }
+    const generation = photoSendGeneration.current;
+    const stateTarget = target;
+    const capturedSyncToGroup = syncToGroup;
+    const isCurrent = () => {
+      const state = useWorkspace.getState();
+      const route = echoRoute.current;
+      const currentConversation = state.conversations[targetConversationId];
+      const currentTopic = stateTarget.kind === 'topic' ? state.topics[stateTarget.id] : undefined;
+      return photoSendGeneration.current === generation && route.key === key && route.accountKey === accountKey && route.focused
+        && runtime.api === api && !!api.session && !runtime.isForced() && state.accountKey === accountKey && !!state.bootstrap?.permissions.canReadConversations
+        && !!currentConversation?.capabilities.canSendMessage && !!currentConversation.capabilities.canUploadFile
+        && (stateTarget.kind === 'conversation' || (!!currentTopic?.joined && currentTopic.status === 'open' && currentTopic.conversationId === targetConversationId));
+    };
+    if (!isCurrent()) { setError('当前会话暂不能发送图片。'); return; }
+    photoSending.current = true;
+    photoProgressActive.current = true;
+    setError('');
+    setProgress('正在选择图片');
+    void sendSelectedPhotos({ runtime, transfers, api, accountKey, target:stateTarget, syncToGroup:capturedSyncToGroup, isCurrent,
+      onProgress:text => { if (photoSendGeneration.current === generation) setProgress(text); },
+    }).then(result => {
+      if (isCurrent() && result.failed) setError(`${result.failed} 张图片发送失败，可点按失败消息重试。`);
+    }).catch(error => {
+      if (photoSendGeneration.current === generation) setError(errorText(error));
+    }).finally(() => {
+      if (photoSendGeneration.current === generation) {
+        photoSending.current = false;
+        photoProgressActive.current = false;
+        setProgress('');
+      }
+    });
   };
   const unreadId = target.kind === 'topic' ? topic?.lastReadMessageId : conversation?.lastReadMessageId;
   const unreadCount = target.kind === 'topic' ? topic?.unreadCount ?? 0 : conversation?.unreadCount ?? 0;
@@ -958,7 +1003,17 @@ export function ChatScreen({
               />
             ) : null}
             {ime.panel === 'attach' ? (
-              <View style={{ padding: 16 }}>
+              <ScrollView contentContainerStyle={{ padding: 16, gap: t.space.sm }} keyboardShouldPersistTaps="handled">
+                <Button
+                  title="选择图片"
+                  secondary
+                  disabled={!conversation?.capabilities.canUploadFile || !!progress}
+                  onPress={() => {
+                    ime.closePanel();
+                    Keyboard.dismiss();
+                    sendImages();
+                  }}
+                />
                 <Button
                   title="选择文件"
                   secondary
@@ -975,7 +1030,7 @@ export function ChatScreen({
                     }).catch(e => setError(errorText(e)));
                   }}
                 />
-              </View>
+              </ScrollView>
             ) : null}
             {ime.panel === 'mention' ? (
             <ScrollView keyboardShouldPersistTaps="handled">

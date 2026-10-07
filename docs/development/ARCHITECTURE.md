@@ -4,7 +4,8 @@
 
 - React Native + TypeScript，使用 Expo Prebuild/EAS 管理 Android 原生工程。
   当前稳定配套为 Expo 55.0.31、React Native 0.83.10、React 19.2.0，原生运行时
-  `android-4`；SDK 升级见 [运行时 ADR](../adr/2026-10-06-android-font-layout-runtime.md)，
+  `android-5`；系统图片选择器与搜索历史见 [搜索及图片发送 ADR](../adr/2026-10-07-search-and-photo-send.md)，
+  SDK 升级见 [运行时 ADR](../adr/2026-10-06-android-font-layout-runtime.md)，
   前台字体配置事件与共享倍率见 [字体通知 ADR](../adr/2026-10-06-android-font-metrics.md)，
   弹窗原生辅助焦点与票据生命周期见 [辅助焦点 ADR](../adr/2026-10-07-android-accessibility-focus.md)。
 - React Navigation Native Stack + Bottom Tabs；不使用 WebView 套壳或 Web 路由兼容层。
@@ -61,6 +62,13 @@ URI registry。头像没有进程恢复需求，启动清理无活跃归属的�
 
 新增依赖必须说明维护、包体、安全、许可证和 Android 兼容成本。不得引入第二套 UI Kit、
 第二个全局状态库或通用离线同步框架来掩盖领域边界。
+
+首页搜索采用独立 Stack 页面，历史保存在账号与空间隔离的已有 SQLite KV，仅本机使用，
+退出随账号缓存清理。`expo-image-picker` 使用 SDK 55 配套官方模块（MIT、API 26+），
+系统 Photo Picker 单选／多选后复用既有上传任务；不增加相机、麦克风或媒体库读取权限。
+新增模块有原生包体成本，须 APK/AAB 升级至 `android-5`，OTA 不能跨旧运行时调用。
+构建变换所需的 `@babel/runtime` 显式固定为锁文件已有的 7.29.7，避免依赖根目录的隐式
+hoist；它只提供既有 Babel JavaScript helper，不新增 Android 模块或协议。
 
 ## 架构决策记录
 

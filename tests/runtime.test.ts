@@ -176,6 +176,41 @@ test('an allowed card action sends its validated UI input to the server',async()
   expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({actionId:'echo.vote.submit',expectedRevision:3,input:{optionId:'choice-a'}});
 });
 
+test('independent photo send preserves the text, quote and file draft and posts only its image', async()=>{
+  await runtime.start();
+  const draft={text:'unsent words',mentionIds:[],replyToMessageId:'quoted-message',pendingAttachment:{taskId:'separate-file',fileName:'notes.txt',mimeType:'text/plain',byteSize:4}};
+  runtime.patchDraft('c1',draft);
+  const photo={id:'photo-attachment',fileName:'photo.jpg',mimeType:'image/jpeg',byteSize:3,status:'available',capabilities:{canDownload:true}};
+  fetchMock.mockImplementation(async url=>response(String(url).endsWith('/api/workspace/messages')?{message:{...message,id:'sent-photo',plainText:'photo.jpg'}}:bootstrap));
+  await runtime.send('c1','',undefined,undefined,{uploadTaskId:'photo-task',upload:async()=>photo,preserveDraft:true,shouldSend:()=>true});
+  expect(useWorkspace.getState().drafts.c1).toMatchObject(draft);
+  const post=fetchMock.mock.calls.find(([url])=>String(url).endsWith('/api/workspace/messages'));
+  const body=JSON.parse(String(post?.[1]?.body));
+  expect(body.replyToMessageId).toBeNull();
+  expect(body.content.blocks).toEqual([{type:'attachment',attachmentId:'photo-attachment'}]);
+});
+
+test('photo target invalidation after upload prevents a late message POST without consuming the draft', async()=>{
+  await runtime.start();
+  runtime.patchDraft('c1',{text:'keep this',mentionIds:[]});
+  let current=true;
+  const photo={id:'photo-attachment',fileName:'photo.jpg',mimeType:'image/jpeg',byteSize:3,status:'available' as const,capabilities:{canDownload:true}};
+  await expect(runtime.send('c1','',undefined,undefined,{uploadTaskId:'photo-task',upload:async()=>{
+    current=false;
+    return photo;
+  },preserveDraft:true,shouldSend:()=>current})).rejects.toThrow('Cannot send');
+  expect(fetchMock.mock.calls.some(([url])=>String(url).endsWith('/api/workspace/messages'))).toBe(false);
+  expect(useWorkspace.getState().drafts.c1?.text).toBe('keep this');
+  const failed=useWorkspace.getState().messages.c1?.find(item=>item.status==='failed');
+  expect(failed).toMatchObject({pendingUploadTaskId:'photo-task',attachments:[photo],blocks:[{type:'attachment',attachmentId:photo.id}]});
+  current=true;
+  fetchMock.mockImplementation(async url=>response(String(url).endsWith('/api/workspace/messages')?{message:{...message,id:'retried-photo',clientMessageId:failed?.clientMessageId,plainText:'photo.jpg',content:{format:'duallane.message+json;v=1',blocks:[{type:'attachment',attachmentId:photo.id}]},attachments:[photo]}}:bootstrap));
+  await runtime.send('c1','',failed);
+  const posts=fetchMock.mock.calls.filter(([url])=>String(url).endsWith('/api/workspace/messages'));
+  expect(posts).toHaveLength(1);
+  expect(JSON.parse(String(posts[0]?.[1]?.body))).toMatchObject({clientMessageId:failed?.clientMessageId,content:{blocks:[{type:'attachment',attachmentId:photo.id}]}});
+});
+
 // Exact outer frame / unversioned event shape from Go realtime.EventEnvelope and events.Event.
 const echoGoFrame = {
   version:1, type:'event', event:{ id:'echo-live', spaceId:'s1', seq:5, type:'message.created', conversationId:'c1', payload:{
