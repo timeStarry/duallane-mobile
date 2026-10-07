@@ -12,7 +12,7 @@ import { searchHistoryKey } from '../src/data/search-history';
 import { SEARCH_SCOPE_TEXT } from '../src/domain/search';
 import { ThemeProvider } from '../src/ui/theme';
 import { resolveTheme } from '../src/ui/tokens';
-import { ConversationRow, TopicRow } from '../src/ui/chrome';
+import { AppHeader, ConversationRow, TopicRow } from '../src/ui/chrome';
 
 let mockFocused = true;
 const mockSetEnabled = jest.fn();
@@ -319,6 +319,26 @@ test('short-window controls and history share the keyboard-aware scroll surface'
   expect(StyleSheet.flatten(list.props.contentContainerStyle).paddingBottom).toBe(40);
   mockKeyboardVisible = true; rerender();
   expect(StyleSheet.flatten(view.UNSAFE_getByType(FlatList).props.contentContainerStyle).paddingBottom).toBe(16);
+});
+
+test('top safe area stays outside the scroll viewport without being added again by its header', () => {
+  const { view, rerender } = screen();
+  const page = view.getByTestId('search-page');
+  const input = view.getByLabelText('搜索会话和话题');
+  const aware = view.UNSAFE_getByType(KeyboardAwareScrollView);
+  expect(StyleSheet.flatten(page.props.style).paddingTop).toBe(metrics.insets.top);
+  expect(within(aware).queryByTestId('search-page')).toBeNull();
+  expect(view.UNSAFE_getByType(AppHeader).props.includeTopInset).toBe(false);
+  expect(StyleSheet.flatten(view.UNSAFE_getByType(FlatList).props.contentContainerStyle).paddingTop ?? 0).toBe(0);
+  mockKeyboardVisible = true; mockKeyboardHeight = 296;
+  mockKeyboardWindow = { width: 844, height: 390 }; mockFontScale = 2; rerender();
+  expect(StyleSheet.flatten(page.props.style).paddingTop).toBe(metrics.insets.top);
+  expect(StyleSheet.flatten(page.props.style).paddingBottom ?? 0).toBe(0);
+  expect(view.getByLabelText('搜索会话和话题')).toBe(input);
+  expect(view.UNSAFE_getByType(KeyboardAwareScrollView)).toBe(aware);
+  const backStyle = StyleSheet.flatten(view.getByRole('button', { name: '返回' }).props.style);
+  expect(backStyle.minWidth).toBeGreaterThanOrEqual(48);
+  expect(backStyle.minHeight).toBeGreaterThanOrEqual(48);
 });
 
 test('keyboard ownership restores pan on blur and unmount without intercepting system back', () => {

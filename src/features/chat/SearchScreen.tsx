@@ -152,13 +152,13 @@ export function SearchScreen({ runtime, open, openTopic, onBack }: {
   };
 
   return (
-    <View testID="search-page" style={{ flex: 1, backgroundColor: t.bg }}>
+    <View testID="search-page" style={{ flex: 1, paddingTop: insets.top, backgroundColor: t.bg }}>
       <FlatList ref={list} data={results} keyExtractor={item => item.kind === 'conversation' ? `conversation:${item.conversation.id}` : `topic:${item.topic.id}`}
         onLayout={assureInputVisible}
         renderScrollComponent={renderScrollComponent} removeClippedSubviews={false}
         style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: (focused && keyboardVisible ? 0 : insets.bottom) + t.space.lg }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
         ListHeaderComponent={<View>
-      <AppHeader title="搜索" includeTopInset leading={<IconButton label="返回" onPress={() => {
+      <AppHeader title="搜索" includeTopInset={false} leading={<IconButton label="返回" onPress={() => {
         const state = useWorkspace.getState();
         if (active.current === activity && activity.live && activity.focused && state.accountKey === accountKey && runtime.api === api) { Keyboard.dismiss(); onBack(); }
       }}><ChevronLeft size={24} color={t.text} /></IconButton>} />
