@@ -8,12 +8,15 @@ import {
   useKeyboardState,
 } from 'react-native-keyboard-controller';
 import { applyMentionSuggestions, clampImeHeight, composerDock, type ComposerPanel } from './composerDock';
+import { compactComposerLayout } from './compactComposerLayout';
+import { useFontScale } from '../platform/font-scale';
 
-export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery = '') {
+export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery = '', topInset = 0) {
   const { setEnabled } = useKeyboardController();
   const keyboardVisible = useKeyboardState(state => state.isVisible);
   const imeBottom = useKeyboardState(state => state.height);
   const { height: screenHeight } = useWindowDimensions();
+  const fontScale = useFontScale();
   const [panel, setPanel] = useState<ComposerPanel>('none');
   const mentionDismissed = useRef(false);
   const lastQuery = useRef(mentionQuery);
@@ -61,6 +64,7 @@ export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery =
     lastImeHeight: lastImeHeight.current,
     navBarInset,
   });
+  const layout = compactComposerLayout({ screenHeight, topInset, fontScale, ...dock });
 
   const openPanel = (next: ComposerPanel) => {
     // An explicit emoji/attachment choice takes precedence over the current
@@ -72,7 +76,12 @@ export function useChatIme(navBarInset: number, mentionCount = 0, mentionQuery =
 
   return {
     panel,
-    dock,
+    keyboardVisible,
+    dock: { ...dock, panelHeight: layout.panelHeight },
+    compact: layout.compact,
+    availableContentHeight: layout.availableContentHeight,
+    minimumComposerHeight: layout.minimumComposerHeight,
+    insufficientSpace: layout.insufficientSpace,
     openPanel,
     closePanel: () => {
       if (panel === 'mention') mentionDismissed.current = true;

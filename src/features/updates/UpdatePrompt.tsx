@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Linking, Text, View } from 'react-native';
+import { Linking, View } from 'react-native';
+import { Text } from '../../ui/Text';
 import { z } from 'zod';
 import { Runtime } from '../../data/runtime';
 import { useWorkspace } from '../../domain/store';

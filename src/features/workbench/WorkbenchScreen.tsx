@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ScrollView, Text, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
+import { Text } from '../../ui/Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { syntheticConversations, syntheticFiles, syntheticMessages, syntheticTopics } from '../../fixtures/synthetic';
 import {

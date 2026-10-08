@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ScrollView, Text, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
+import { Text } from '../../ui/Text';
 import { z } from 'zod';
 import { useWorkspace } from '../../domain/store';
 import { attachmentSchema } from '../../domain/contracts';

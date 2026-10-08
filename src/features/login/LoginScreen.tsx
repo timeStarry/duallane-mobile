@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Image, Pressable, ScrollView, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, View } from 'react-native';
+import { Text } from '../../ui/Text';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
 import { config, loginTarget } from '../../platform/config';

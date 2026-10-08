@@ -1,23 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
+import { AppState, FlatList, Keyboard, Pressable, ScrollView, View, useWindowDimensions, type LayoutRectangle, type ViewToken } from 'react-native';
+import { Text } from '../../ui/Text';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { z } from 'zod';
 import { useWorkspace } from '../../domain/store';
 import { attachmentSchema, parseMessage, targetKey, type Attachment, type ChatTarget, type Draft, type Emote, type EmoteLibrary, type Message, type Topic } from '../../domain/contracts';
-import { activeMentionQuery, mentionCandidates } from '../../domain/compose';
+import { activeMentionQuery, appendDraftMention, editDraftText, insertDraftMention, mentionCandidates } from '../../domain/compose';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
 import { rememberEmotes } from '../../data/media';
 import { Transfers } from '../../data/transfers';
 import { conversationIdentity } from '../../ui/chrome';
-import { groupHiddenWorkspaceMessages } from '../../domain/hidden-messages';
+import { connectionCategory } from '../../ui/connection';
+import { groupHiddenWorkspaceMessages, type WorkspaceMessageDisplayItem } from '../../domain/hidden-messages';
 import { formatMessageDayLabel, getMessageDayKey, getMessageGroupPositions, workspaceUnreadIndex } from '../../domain/message-grouping';
 import { composerEmotePacks } from '../../domain/emote-catalog';
-import { hasOlderMessages, isPinnedToLatest, newestFirstTranscript, shouldLoadOlderHistory, transcriptMode } from '../../domain/transcript-scroll';
+import { hasOlderMessages, isMeasuredTailVisible, isPinnedToLatest, newestFirstTranscript, scrollResponderToEnd, shouldLoadOlderHistory, transcriptMode } from '../../domain/transcript-scroll';
 import { shouldDirectSendWorkspaceEmote } from '../../domain/emote-send';
 import { CatalogEmoteGrid } from '../../ui/CatalogEmoteGrid';
 import { useChatIme } from '../../ui/useChatIme';
+import { useFontScale } from '../../platform/font-scale';
+import { useTranscriptAnchor } from './useTranscriptAnchor';
 import {
   AppHeader,
   Button,
@@ -42,10 +46,28 @@ import {
   styles,
 } from '../../ui/components';
 import { useTheme } from '../../ui/theme';
+import { useTopicProjections } from './useTopicProjections';
+import { recognizeEchoCommand } from '../../domain/echo-workflows';
+import { useEchoWorkflow } from '../echo/useEchoWorkflow';
+import { EchoWorkflowDialog } from '../echo/EchoWorkflowDialog';
 import { AtSign, Bell, BellOff, ChevronLeft, Info, Search } from 'lucide-react-native';
 
 const emptyMessages: Message[] = [];
 const emptyDraft: Draft = { text: '', mentionIds: [] };
+const latestViewabilityConfig = { itemVisiblePercentThreshold: 1 };
+const transcriptPositionMaintenance = { minIndexForVisible: 0 };
+const composerSpaceSettleMs = 600;
+
+function TranscriptFrame({ id, register, rowLayout, latestRow, isLatest, onLatestLayout, children }: {
+  id: string; register: (id: string, row: View | null) => void; rowLayout: (id: string, height: number) => void;
+  latestRow: React.RefObject<View | null>; isLatest: boolean; onLatestLayout?: (layout: LayoutRectangle) => void; children: React.ReactNode;
+}) {
+  const ref = useCallback((row: View | null) => {
+    register(id, row);
+    if (isLatest) latestRow.current = row;
+  }, [id, isLatest, latestRow, register]);
+  return <View ref={ref} collapsable={false} testID={`chat-message-${id}`} onLayout={event => { rowLayout(id, event.nativeEvent.layout.height); onLatestLayout?.(event.nativeEvent.layout); }}>{children}</View>;
+}
 
 export function ConversationsScreen({ runtime, open, openTopic }: { runtime: Runtime; open: (id: string) => void; openTopic: (topic: Topic) => void }) {
   const conversations = useWorkspace(s => s.conversations);
@@ -137,47 +159,157 @@ export function ChatScreen({
   const messages = useWorkspace(s => s.messages[key] ?? emptyMessages);
   const draft = useWorkspace(s => s.drafts[key] ?? emptyDraft);
   const connection = useWorkspace(s => s.connection);
+  const accountKey = useWorkspace(s => s.accountKey);
   const bootstrapMembers = useWorkspace(s => s.bootstrap?.members ?? []);
   const members = conversation?.members.length ? conversation.members : bootstrapMembers;
   const mentionQuery = activeMentionQuery(draft.text);
   const suggestions = mentionQuery !== null ? mentionCandidates(mentionQuery, members) : [];
   const focused = useIsFocused();
-  const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '');
+  const dimensions = useWindowDimensions();
+  const fontScale = useFontScale();
+  const ime = useChatIme(insets.bottom, suggestions.length, mentionQuery ?? '', insets.top);
+  const projections = useTopicProjections(runtime, target, focused);
+  const echo = useEchoWorkflow(runtime, target.kind === 'conversation' ? target.id : undefined, focused);
+  const echoRoute = useRef({ key, accountKey, focused });
+  echoRoute.current = { key, accountKey, focused };
   const [loading, setLoading] = useState(() => useWorkspace.getState().messages[key] === undefined);
   const [error, setError] = useState('');
-  const [hasOlder, setHasOlder] = useState(() => hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
+  const targetId = target.id;
+  const targetKind = target.kind;
+  const targetConversationId = target.kind === 'topic' ? target.conversationId : target.id;
+  const api = runtime.api;
+  const readScope = useMemo(() => ({
+    accountKey, key, api, runtime, active: false, authorization: 0, olderInvocation: 0,
+    readable: (state: ReturnType<typeof useWorkspace.getState>) => !!state.bootstrap?.permissions.canReadConversations
+      && !!state.conversations[targetConversationId]
+      && (targetKind !== 'topic' || (!!state.topics[targetId]?.joined && state.topics[targetId]?.conversationId === targetConversationId)),
+  }), [accountKey, api, key, runtime, targetConversationId, targetId, targetKind]);
+  const currentReadScope = useRef(readScope);
+  currentReadScope.current = readScope;
+  type ReadFailure = { scope: typeof readScope; authorization: number; revision: number; before?: string; text: string };
+  const [readErrors, setReadErrors] = useState<{ initial?: ReadFailure; older?: ReadFailure }>({});
+  const readError = [readErrors.initial, readErrors.older].find(failure => failure?.scope === readScope
+    && failure.authorization === readScope.authorization && runtime.api === readScope.api)?.text;
+  useEffect(() => {
+    readScope.active = true;
+    setReadErrors({});
+    // Consume each accepted receipt, even when several pages settle in one render.
+    // Cache/WS/optimistic writes never publish this process-local HTTP proof.
+    const unsubscribe = useWorkspace.subscribe((state, previous) => {
+      if (state.accountKey !== accountKey || (readScope.readable(previous) && !readScope.readable(state))) {
+        readScope.authorization++;
+        setReadErrors({});
+        return;
+      }
+      const receipt = state.messageReads[key];
+      if (!receipt || receipt === previous.messageReads[key] || receipt.source !== readScope.api
+        || runtime.api !== readScope.api || currentReadScope.current !== readScope || !readScope.readable(state)) return;
+      setReadErrors(errors => {
+        const recovered = (failure?: ReadFailure) => failure?.scope === readScope
+          && failure.authorization === readScope.authorization && receipt.revision > failure.revision && receipt.before === failure.before;
+        const initial = recovered(errors.initial) ? undefined : errors.initial;
+        const older = recovered(errors.older) ? undefined : errors.older;
+        return initial === errors.initial && older === errors.older ? errors : { initial, older };
+      });
+    });
+    return () => { readScope.active = false; unsubscribe(); };
+  }, [accountKey, key, readScope, runtime]);
+  const [pagination, setPagination] = useState(() => {
+    const hasOlder = hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0);
+    return { hasOlder, mode: transcriptMode(hasOlder) };
+  });
+  const lastId = messages.at(-1)?.id;
+  const lastStatus = messages.at(-1)?.status;
+  const { hasOlder, mode } = pagination;
+  const [foreground, setForeground] = useState(AppState.currentState === 'active');
+  // Visibility belongs to the mounted list: unchanged visible keys do not emit another callback.
+  const geometry = useMemo(() => ({
+    accountKey, key, mode, visibleIds: new Set<string>(), offsetY: 0,
+    contentHeight: undefined as number | undefined, layoutHeight: undefined as number | undefined,
+    latestId: undefined as string | undefined, needsForegroundGeometry: false, needsForegroundTail: false,
+  }), [accountKey, key, mode]);
+  const observation = useMemo(() => ({
+    geometry, lastId, focusMessageId, confirmed: false, nativeTailVisible: false,
+    rowLayout: undefined as LayoutRectangle | undefined,
+    revision: 0, layoutRevision: 0, correctedRevision: -1, correctionCount: 0, measuredScrollRevision: -1,
+  }), [geometry, lastId, focusMessageId]);
+  const currentObservation = useRef(observation);
+  currentObservation.current = observation;
+  const activity = useMemo(() => ({ active: focused && foreground }), [focused, foreground]);
+  const currentActivity = useRef(activity);
+  currentActivity.current = activity;
+  const [latestLayout, setLatestLayout] = useState<{ observation: typeof observation; revision: number }>();
+  const latestFrameBudget = useRef<{ observation: typeof observation; activity: typeof activity; revision: number; remaining: number } | undefined>(undefined);
+  const [readConfirmation, setReadConfirmation] = useState<{ observation: typeof observation; revision: number }>();
   const [progress, setProgress] = useState('');
+  const feedback = error || readError || progress || projections.feedback.text;
+  const [feedbackLayout, setFeedbackLayout] = useState<{ text: string; width: number; fontScale: number; height: number }>();
   const [emotes, setEmotes] = useState<Emote[]>([]);
   const [library, setLibrary] = useState<EmoteLibrary | null>(null);
   const chatSettings = useWorkspace(s => s.chatSettings);
   const [syncToGroup, setSyncToGroup] = useState(false);
   const list = useRef<FlatList>(null);
-  const pinToLatest = useRef(true);
+  const latestRow = useRef<View>(null);
+  const measurementAttempt = useRef<{ observation: typeof observation; activity: typeof activity; revision: number } | undefined>(undefined);
+  const pinToLatest = useRef(!focusMessageId);
+  const [readingHistory, setReadingHistory] = useState(!!focusMessageId);
+  const anchor = useTranscriptAnchor({ accountKey, bucketKey: key, conversationId: target.kind === 'topic' ? target.conversationId : target.id,
+    topicId: target.kind === 'topic' ? target.id : undefined, mode, runtime, messages, focused, foreground, focusMessageId, list, pinToLatest });
+  const readQueue = useRef(Promise.resolve());
+  const readMarker = useRef<{ accountKey: string; key: string; messageId: string } | undefined>(undefined);
   const draggingTranscript = useRef(false);
+  const userScroll = useRef(false);
+  const userGesture = useRef<{ activity: typeof activity; geometry: typeof geometry; api: Runtime['api'] } | undefined>(undefined);
   const historyReady = useRef(false);
   const [newMessages, setNewMessages] = useState(false);
-  const [resolvedFocusId, setResolvedFocusId] = useState<string>();
-  const targetId = target.id;
-  const targetKind = target.kind;
+  const focusInvocation = useRef(0);
+  const [focusRequest, setFocusRequest] = useState<{ key: string; accountKey: string; messageId: string; invocation: number }>();
+  const [resolvedFocus, setResolvedFocus] = useState<typeof focusRequest>();
   useEffect(() => {
     let active = true;
+    const scope = currentReadScope.current;
+    const authorization = scope.authorization;
+    const readable = scope.readable(useWorkspace.getState());
+    const current = () => active && scope.active && currentReadScope.current === scope && runtime.api === scope.api
+      && useWorkspace.getState().accountKey === accountKey && scope.authorization === authorization
+      && (!readable || scope.readable(useWorkspace.getState()));
     setLoading(useWorkspace.getState().messages[key] === undefined);
+    const cachedHasOlder = hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0);
+    setPagination({ hasOlder: cachedHasOlder, mode: transcriptMode(cachedHasOlder) });
     void (async () => {
       try {
         const count = targetKind === 'topic' ? await runtime.openTopic(targetId) : await runtime.open(targetId);
-        if (active) setHasOlder(hasOlderMessages(count ?? 0));
-      } catch (e) { if (active) setError(errorText(e)); }
+        if (current()) {
+          const hasOlder = hasOlderMessages(count ?? 0);
+          setPagination(previous => ({ hasOlder, mode: historyReady.current ? previous.mode : transcriptMode(hasOlder) }));
+        }
+      } catch (e) {
+        if (current()) {
+          const failure = { scope, authorization, revision: useWorkspace.getState().messageReads[key]?.revision ?? 0, text: errorText(e) };
+          setReadErrors(errors => ({ ...errors, initial: failure }));
+        }
+      }
       finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
-  }, [runtime, targetId, targetKind, key]);
+  }, [accountKey, runtime, targetId, targetKind, key]);
   useEffect(() => {
-    pinToLatest.current = true;
+    pinToLatest.current = !focusMessageId;
+    setReadingHistory(!!focusMessageId);
+    setReadConfirmation(undefined);
     draggingTranscript.current = false;
+    userScroll.current = false;
+    userGesture.current = undefined;
     historyReady.current = false;
-    setNewMessages(false);
-    setHasOlder(hasOlderMessages(useWorkspace.getState().messages[key]?.length ?? 0));
-  }, [key]);
+    setNewMessages(!!focusMessageId);
+    setResolvedFocus(undefined);
+    const invocation = ++focusInvocation.current;
+    setFocusRequest(focusMessageId ? { key, accountKey, messageId: focusMessageId, invocation } : undefined);
+  }, [accountKey, focusMessageId, key]);
+  useEffect(() => {
+    const listener = AppState.addEventListener('change', state => setForeground(state === 'active'));
+    return () => listener.remove();
+  }, []);
   useEffect(() => {
     void Promise.all([runtime.emotes(), runtime.emoteLibrary()]).then(([list, nextLibrary]) => {
       const collected = [...list.items, ...nextLibrary.emotes, ...nextLibrary.collections.flatMap(collection => collection.items)];
@@ -193,52 +325,272 @@ export function ChatScreen({
   }, [runtime]);
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const identity = conversation ? conversationIdentity(conversation, selfId, members) : undefined;
-  const lastId = messages.at(-1)?.id;
-  const mode = transcriptMode(hasOlder);
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  const scrollToLatest = useCallback((animated: boolean) => {
-    pinToLatest.current = true;
-    setNewMessages(false);
-    if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated });
-    else list.current?.scrollToEnd({ animated });
+  const invalidateReadConfirmation = useCallback(() => {
+    const current = currentObservation.current;
+    current.revision += 1;
+    current.confirmed = false;
+    current.nativeTailVisible = false;
+    setReadConfirmation(undefined);
   }, []);
-  const applyUserOffset = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const pinned = isPinnedToLatest({
-      mode: modeRef.current,
-      offsetY: contentOffset.y,
-      contentHeight: contentSize.height,
-      layoutHeight: layoutMeasurement.height,
-    });
-    pinToLatest.current = pinned;
-    setNewMessages(show => {
-      const next = !pinned;
-      return show === next ? show : next;
-    });
-  };
-  const pinIfNeeded = () => {
-    if (!pinToLatest.current) return;
+  const requireForegroundProof = useCallback(() => {
+    currentObservation.current.geometry.needsForegroundGeometry = true;
+    currentObservation.current.geometry.needsForegroundTail = true;
+    invalidateReadConfirmation();
+  }, [invalidateReadConfirmation]);
+  const reconcileLatest = useCallback(() => {
+    const current = currentObservation.current;
+    const measuredGeometry = current.geometry;
+    if (useWorkspace.getState().accountKey !== measuredGeometry.accountKey) return;
+    const measured = measuredGeometry.contentHeight !== undefined && measuredGeometry.layoutHeight !== undefined && measuredGeometry.layoutHeight > 0;
+    const pinned = measured && isPinnedToLatest(measuredGeometry);
+    const foregroundProof = !measuredGeometry.needsForegroundGeometry && !measuredGeometry.needsForegroundTail;
+    current.confirmed = currentActivity.current.active && foregroundProof && !!current.lastId && pinToLatest.current
+      && (current.nativeTailVisible || (pinned && measuredGeometry.visibleIds.has(current.lastId)));
+    setReadConfirmation(previous => current.confirmed
+      ? previous?.observation === current && previous.revision === current.revision ? previous : { observation: current, revision: current.revision }
+      : undefined);
+    if (current.confirmed) setNewMessages(false);
+    else if (measured && !pinned) setNewMessages(true);
+  }, []);
+  const measureLatest = useCallback((explicit = false) => {
+    const current = currentObservation.current;
+    const active = currentActivity.current;
+    // RN's public scroll-ref union omits NativeMethods on one member; verify it at runtime.
+    const viewport = list.current?.getNativeScrollRef() as { measureInWindow?: View['measureInWindow'] } | null | undefined;
+    const row = latestRow.current;
+    const tailId = current.lastId;
+    const api = runtime.api;
+    if (!active.active || !pinToLatest.current || draggingTranscript.current || !tailId || !viewport || !row
+      || typeof viewport.measureInWindow !== 'function' || typeof row.measureInWindow !== 'function') return;
+    const revision = current.revision;
+    const previous = measurementAttempt.current;
+    if (!explicit && previous?.observation === current && previous.activity === active && previous.revision === revision) return;
+    measurementAttempt.current = { observation: current, activity: active, revision };
+    const valid = () => currentObservation.current === current && currentActivity.current === active && active.active
+      && current.revision === revision && latestRow.current === row && pinToLatest.current && !draggingTranscript.current
+      && runtime.api === api && useWorkspace.getState().accountKey === current.geometry.accountKey
+      && !!useWorkspace.getState().bootstrap?.permissions.canReadConversations && !!useWorkspace.getState().conversations[targetConversationId]
+      && (targetKind !== 'topic' || !!useWorkspace.getState().topics[targetId]?.joined)
+      && useWorkspace.getState().messages[current.geometry.key]?.at(-1)?.id === current.lastId;
+    try {
+      viewport.measureInWindow((x, y, width, height) => {
+        if (!valid()) return;
+        try {
+          row.measureInWindow((tailX, tailY, tailWidth, tailHeight) => {
+            if (!valid() || !isMeasuredTailVisible({ x, y, width, height }, { x: tailX, y: tailY, width: tailWidth, height: tailHeight })) return;
+            current.geometry.needsForegroundGeometry = false;
+            current.geometry.needsForegroundTail = false;
+            current.geometry.visibleIds.add(tailId);
+            current.nativeTailVisible = true;
+            reconcileLatest();
+          });
+        } catch { /* An unmounted native row cannot confirm a read. */ }
+      });
+    } catch { /* An unavailable native viewport cannot confirm a read. */ }
+  }, [reconcileLatest, runtime, targetConversationId, targetId, targetKind]);
+  const scrollToLatest = useCallback((animated: boolean) => {
+    focusInvocation.current += 1;
+    setFocusRequest(undefined);
+    setResolvedFocus(undefined);
+    pinToLatest.current = true;
+    setReadingHistory(false);
+    anchor.reset();
+    draggingTranscript.current = false;
+    userScroll.current = false;
+    userGesture.current = undefined;
+    invalidateReadConfirmation();
+    currentObservation.current.correctedRevision = -1;
+    currentObservation.current.correctionCount = 0;
+    currentObservation.current.measuredScrollRevision = -1;
+    if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated });
+    else scrollResponderToEnd(list.current?.getScrollResponder(), animated);
+    const measuredGeometry = currentObservation.current.geometry;
+    // A measured, fully fitting transcript cannot move, so native may emit no scroll event.
+    if (measuredGeometry.mode === 'complete' && measuredGeometry.contentHeight !== undefined && measuredGeometry.layoutHeight !== undefined && measuredGeometry.contentHeight <= measuredGeometry.layoutHeight) reconcileLatest();
+    measureLatest(true);
+  }, [anchor, invalidateReadConfirmation, measureLatest, reconcileLatest]);
+  const pinIfNeeded = useCallback(() => {
+    if (currentObservation.current !== observation || currentActivity.current !== activity || !activity.active || AppState.currentState !== 'active' || useWorkspace.getState().accountKey !== accountKey || !pinToLatest.current || draggingTranscript.current || userScroll.current) return;
+    userScroll.current = false;
     if (modeRef.current === 'history') list.current?.scrollToOffset({ offset: 0, animated: false });
-    else list.current?.scrollToEnd({ animated: false });
+    else scrollResponderToEnd(list.current?.getScrollResponder(), false);
+  }, [accountKey, activity, observation]);
+  const isCurrentObservation = () => currentObservation.current === observation && currentActivity.current === activity && useWorkspace.getState().accountKey === accountKey;
+  const observeOffset = (event: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }, fromUser: boolean) => {
+    if (!isCurrentObservation()) return;
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const revokedNativeProof = observation.nativeTailVisible;
+    const sizeChanged = geometry.contentHeight !== contentSize.height || geometry.layoutHeight !== layoutMeasurement.height;
+    const changed = sizeChanged || geometry.offsetY !== contentOffset.y;
+    if (sizeChanged) {
+      observation.layoutRevision += 1;
+      setLatestLayout({ observation, revision: observation.layoutRevision });
+    }
+    if (changed) invalidateReadConfirmation();
+    if (!activity.active && changed) requireForegroundProof();
+    geometry.offsetY = contentOffset.y;
+    geometry.contentHeight = contentSize.height;
+    geometry.layoutHeight = layoutMeasurement.height;
+    if (activity.active) geometry.needsForegroundGeometry = false;
+    if (fromUser) { pinToLatest.current = isPinnedToLatest(geometry); setReadingHistory(!pinToLatest.current); }
+    anchor.offset(contentOffset.y, fromUser);
+    reconcileLatest();
+    // Native can restore/clamp an offset after the layout-triggered command. A
+    // second changed offset gets one final correction; identical frames do not.
+    if (!fromUser && activity.active && pinToLatest.current && !draggingTranscript.current && !isPinnedToLatest({ ...geometry, threshold: 1 })
+      && (observation.correctedRevision !== observation.layoutRevision || (changed && observation.correctionCount < 2))) {
+      if (observation.correctedRevision !== observation.layoutRevision) observation.correctionCount = 0;
+      observation.correctedRevision = observation.layoutRevision;
+      observation.correctionCount++;
+      pinIfNeeded();
+      // A late estimated offset can disagree with the native tail. An already
+      // settled scrollToEnd need not emit another event to resolve that conflict.
+      if (!observation.confirmed) measureLatest();
+    }
+    // A later event may revoke a successful correction's proof. Recheck that
+    // evidence once; failed measurements do not cause retries on every frame.
+    if (changed && revokedNativeProof && !fromUser && !observation.confirmed) measureLatest();
+    if (activity.active && pinToLatest.current && !draggingTranscript.current && isPinnedToLatest({ ...geometry, threshold: 1 })
+      && !observation.confirmed && observation.measuredScrollRevision !== observation.layoutRevision) {
+      observation.measuredScrollRevision = observation.layoutRevision;
+      measureLatest();
+    }
   };
   useEffect(() => {
+    if (geometry.latestId !== lastId) {
+      geometry.latestId = lastId;
+      if (!activity.active) requireForegroundProof();
+    }
+    if (!activity.active) {
+      draggingTranscript.current = false;
+      userScroll.current = false;
+      userGesture.current = undefined;
+      return;
+    }
     if (!lastId) return;
+    observation.correctedRevision = -1;
+    observation.correctionCount = 0;
+    observation.measuredScrollRevision = -1;
+    // Unchanged native geometry may emit no event on return. Reuse observed facts,
+    // never the following scroll command, to confirm a still-visible latest item.
+    reconcileLatest();
     if (pinToLatest.current) pinIfNeeded();
     else setNewMessages(true);
-    if (pinToLatest.current && focused && AppState.currentState === 'active') {
-      const last = useWorkspace.getState().messages[key]?.at(-1);
-      if (last && !last.status) void runtime.markRead(target.id, last.id, target.kind === 'topic').catch(() => undefined);
-    }
-  }, [focused, key, lastId, runtime, target.id, target.kind]);
+    if (!observation.confirmed) measureLatest();
+  }, [accountKey, activity, geometry, key, lastId, measureLatest, mode, observation, pinIfNeeded, reconcileLatest, requireForegroundProof]);
+  useEffect(() => {
+    if (!activity.active || !lastId || observation.confirmed || !pinToLatest.current) return;
+    const api = runtime.api;
+    const previous = latestFrameBudget.current;
+    const budget = previous?.observation === observation && previous.activity === activity && previous.revision === observation.layoutRevision
+      ? previous : { observation, activity, revision: observation.layoutRevision, remaining: 2 };
+    latestFrameBudget.current = budget;
+    if (!budget.remaining) return;
+    let cancelled = false, frame: number | undefined;
+    const retry = () => {
+      frame = requestAnimationFrame(() => {
+        const state = useWorkspace.getState();
+        if (cancelled || currentActivity.current !== activity || currentObservation.current !== observation || AppState.currentState !== 'active' || runtime.api !== api
+          || latestFrameBudget.current !== budget || budget.revision !== observation.layoutRevision || !budget.remaining
+          || state.accountKey !== observation.geometry.accountKey || !state.bootstrap?.permissions.canReadConversations
+          || !state.conversations[targetConversationId] || state.messages[observation.geometry.key]?.at(-1)?.id !== lastId
+          || (targetKind === 'topic' && (!state.topics[targetId]?.joined || state.topics[targetId]?.conversationId !== targetConversationId))
+          || !pinToLatest.current || draggingTranscript.current || userScroll.current || observation.confirmed) return;
+        // Refresh can clamp offsets after an immediate command, before the
+        // window/card layout settles. Retry twice per activity/tail/layout;
+        // only the following native measurement can confirm visibility/read.
+        // A revoked proof wakes the remaining budget; it cannot renew it.
+        budget.remaining--;
+        pinIfNeeded();
+        measureLatest(true);
+        if (budget.remaining > 0 && !observation.confirmed) retry();
+      });
+    };
+    retry();
+    return () => { cancelled = true; if (frame !== undefined) cancelAnimationFrame(frame); };
+  }, [activity, lastId, latestLayout, measureLatest, observation, pinIfNeeded, readConfirmation, runtime, targetConversationId, targetId, targetKind]);
+  const loadOlder = () => {
+    const authorization = readScope.authorization;
+    const invocation = ++readScope.olderInvocation;
+    const current = () => readScope.active && currentObservation.current.geometry === geometry && useWorkspace.getState().accountKey === accountKey
+      && currentReadScope.current === readScope && runtime.api === readScope.api && readScope.authorization === authorization
+      && readScope.olderInvocation === invocation
+      && readScope.readable(useWorkspace.getState());
+    if (!hasOlder || !current()) return;
+    const first = useWorkspace.getState().messages[key]?.[0]?.id;
+    void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first))
+      .then(count => {
+        // Finishing pagination must not reverse/remount the reader's existing window.
+        if (current()) setPagination(previous => ({ ...previous, hasOlder: hasOlderMessages(count) }));
+      })
+      .catch(error => {
+        if (current()) {
+          const failure = { scope: readScope, authorization, revision: useWorkspace.getState().messageReads[key]?.revision ?? 0, before: first, text: errorText(error) };
+          setReadErrors(errors => ({ ...errors, older: failure }));
+        }
+      });
+  };
+  const canRead = !!conversation && (target.kind !== 'topic' || !!topic?.joined);
+  const online = ['connected', 'http_sync'].includes(connectionCategory(connection) ?? '');
+  useEffect(() => {
+    if (!lastId || lastStatus || !canRead || !focused || !foreground || !online || readConfirmation?.observation !== observation || !observation.confirmed || !pinToLatest.current) return;
+    let cancelled = false;
+    // Serialize markers so an older response cannot overwrite a newer read cursor.
+    readQueue.current = readQueue.current.then(async () => {
+      const state = useWorkspace.getState();
+      if (cancelled || currentObservation.current !== observation || currentActivity.current !== activity || readConfirmation.revision !== observation.revision || !observation.confirmed || !pinToLatest.current || AppState.currentState !== 'active' || state.accountKey !== accountKey || state.messages[key]?.at(-1)?.id !== lastId) return;
+      const previous = readMarker.current;
+      if (previous?.accountKey === accountKey && previous.key === key && previous.messageId === lastId) return;
+      const marker = { accountKey, key, messageId: lastId };
+      readMarker.current = marker;
+      try { await runtime.markRead(target.id, lastId, target.kind === 'topic'); }
+      catch { if (readMarker.current === marker) readMarker.current = undefined; }
+    });
+    return () => { cancelled = true; };
+  }, [accountKey, activity, canRead, focused, foreground, key, lastId, lastStatus, observation, online, readConfirmation, runtime, target.id, target.kind]);
   const reply = draft.replyToMessageId ? messages.find(item => item.id === draft.replyToMessageId) : undefined;
   const canSend = target.kind === 'topic' ? !!topic?.joined && topic.status === 'open' : !!conversation?.capabilities.canSendMessage;
+  const compactControls = ime.compact && canSend;
+  const feedbackHeight = !feedback ? 0 : feedbackLayout?.text === feedback && feedbackLayout.width === dimensions.width && feedbackLayout.fontScale === fontScale
+    ? feedbackLayout.height : 24 + t.type.bodyLine * fontScale;
+  useEffect(() => {
+    if (focused && foreground && ime.compact && (!canSend || (feedbackHeight > 0 && ime.availableContentHeight < ime.minimumComposerHeight + feedbackHeight))) {
+      Keyboard.dismiss();
+    }
+  }, [canSend, feedbackHeight, focused, foreground, ime.availableContentHeight, ime.compact, ime.minimumComposerHeight]);
+  useEffect(() => {
+    if (!focused || !foreground || !canSend || !ime.keyboardVisible || !ime.insufficientSpace) return;
+    // Rotation delivers window size and IME height separately. Classify only a
+    // settled shortage, so an old height cannot dismiss the newly rotated IME.
+    const timer = setTimeout(() => {
+      Keyboard.dismiss();
+      setError('当前可用高度不足，请转为竖屏后继续输入。');
+    }, composerSpaceSettleMs);
+    return () => clearTimeout(timer);
+  }, [accountKey, canSend, dimensions.height, dimensions.width, fontScale, focused, foreground, ime.availableContentHeight, ime.insufficientSpace, ime.keyboardVisible, ime.minimumComposerHeight, key]);
   const send = (existing?: Message) => {
     const latest = existing ? draft : useWorkspace.getState().drafts[key] ?? draft;
     if (!existing && !latest.text.trim() && !latest.pendingAttachment) return;
     setError('');
+    const echoCommand = !existing && target.kind === 'conversation' ? recognizeEchoCommand(conversation, latest.text) : null;
+    if (echoCommand) {
+      if (latest.pendingAttachment) { setError('Echo 命令不支持附件，请先移除附件。'); return; }
+      if (!echo.available) { setError('Echo 交互当前不可用，请稍后重试。'); return; }
+      const api = runtime.api;
+      void echo.start(echoCommand).then(accepted => {
+        const state = useWorkspace.getState();
+        const route = echoRoute.current;
+        if (accepted && route.key === key && route.accountKey === accountKey && route.focused && runtime.api === api && state.accountKey === accountKey && state.bootstrap?.permissions.canReadConversations && state.conversations[key]?.capabilities.canSendMessage && state.drafts[key] === latest) runtime.patchDraft(key, { text: '', mentionIds: [], mentionSpans: [], replyToMessageId: undefined });
+      });
+      return;
+    }
+    focusInvocation.current += 1;
+    setFocusRequest(undefined);
+    setResolvedFocus(undefined);
     pinToLatest.current = true;
-    setNewMessages(false);
+    invalidateReadConfirmation();
     const uploadTaskId = existing?.pendingUploadTaskId ?? latest.pendingAttachment?.taskId;
     const task = uploadTaskId ? transfers.tasks(useWorkspace.getState().accountKey).find(item => item.id === uploadTaskId) : undefined;
     const needsUpload = !!uploadTaskId && !existing?.attachments[0];
@@ -246,6 +598,7 @@ export function ChatScreen({
       topicId: target.kind === 'topic' ? target.id : undefined,
       replyToMessageId: existing?.replyToMessageId ?? latest.replyToMessageId,
       mentionIds: latest.mentionIds,
+      mentionSpans: latest.mentionSpans,
       syncToGroup: target.kind === 'topic' && (existing?.pendingSyncToGroup ?? syncToGroup),
       uploadTaskId,
       upload: needsUpload ? () => {
@@ -264,40 +617,78 @@ export function ChatScreen({
   const displayItems = useMemo(() => groupHiddenWorkspaceMessages(messages), [messages]);
   const transcriptItems = useMemo(() => newestFirstTranscript(displayItems), [displayItems]);
   const listItems = mode === 'history' ? transcriptItems : displayItems;
+  const replyToMessage = (message: Message) => {
+    const current = useWorkspace.getState().drafts[key] ?? draft;
+    const next = { ...current, replyToMessageId: message.id };
+    runtime.patchDraft(key, conversation && useWorkspace.getState().chatSettings?.replyAutoMention && message.authorId && message.authorName
+      ? appendDraftMention(next, { id: message.authorId, displayName: message.authorName })
+      : next);
+  };
+  const locateMessage = (messageId: string) => {
+    pinToLatest.current = false;
+    setReadingHistory(true);
+    anchor.reset();
+    invalidateReadConfirmation();
+    draggingTranscript.current = false;
+    userScroll.current = false;
+    setNewMessages(true);
+    setError('');
+    setResolvedFocus(undefined);
+    setFocusRequest({ key, accountKey, messageId, invocation: ++focusInvocation.current });
+  };
   useEffect(() => {
-    if (!focusMessageId || loading) return;
+    if (!focusRequest || focusRequest.key !== key || focusRequest.accountKey !== accountKey || loading) return;
     let cancelled = false;
+    const { messageId, invocation } = focusRequest;
+    const current = () => !cancelled && invocation === focusInvocation.current && useWorkspace.getState().accountKey === accountKey;
     const locate = async () => {
-      if (!useWorkspace.getState().messages[key]?.some(message => message.id === focusMessageId)) {
+      if (!useWorkspace.getState().messages[key]?.some(message => message.id === messageId)) {
         const api = runtime.api;
-        if (!api) return;
+        if (!api) { if (current()) setError('原消息不可用'); return; }
         const path = target.kind === 'topic'
-          ? `/api/workspace/topics/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(focusMessageId)}&limit=50`
-          : `/api/workspace/conversations/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(focusMessageId)}&limit=50`;
-        const response = await api.json(path, z.object({ messages: z.array(z.unknown()) }));
-        if (cancelled) return;
-        const found = response.messages.map(parseMessage).filter((message): message is Message => !!message && (target.kind === 'topic' ? message.topicId === target.id : message.conversationId === target.id && !message.topicId));
-        useWorkspace.getState().setMessages(key, found, true);
+          ? `/api/workspace/topics/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(messageId)}&limit=50`
+          : `/api/workspace/conversations/${encodeURIComponent(target.id)}/messages?around=${encodeURIComponent(messageId)}&limit=50`;
+        let loaded = false;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const previous = useWorkspace.getState().messages[key];
+          const response = await api.json(path, z.object({ messages: z.array(z.unknown()) }));
+          const state = useWorkspace.getState();
+          if (!current() || runtime.api !== api || !state.bootstrap?.permissions.canReadConversations || !state.conversations[targetConversationId] || (target.kind === 'topic' && !state.topics[target.id]?.joined)) return;
+          // A delayed history page must not restore content changed by a canonical event.
+          if (state.messages[key] !== previous) {
+            if (state.messages[key]?.some(message => message.id === messageId)) { loaded = true; break; }
+            continue;
+          }
+          const found = response.messages.map(parseMessage).filter((message): message is Message => !!message && message.conversationId === targetConversationId && (target.kind === 'topic' ? message.topicId === target.id : !message.topicId));
+          if (!found.some(message => message.id === messageId)) { setError('原消息不可用'); return; }
+          useWorkspace.getState().setMessages(key, found, true);
+          loaded = true;
+          break;
+        }
+        if (!loaded) { setError('消息正在同步，请重试定位。'); return; }
       }
-      if (!cancelled) setResolvedFocusId(focusMessageId);
+      if (!current()) return;
+      const message = useWorkspace.getState().messages[key]?.find(item => item.id === messageId);
+      if (!message || message.hiddenByCurrentUser) { setError(message ? '原消息已隐藏，请先恢复后再定位。' : '原消息不可用'); return; }
+      setResolvedFocus(focusRequest);
     };
-    void locate().catch(error => { if (!cancelled) setError(errorText(error)); });
+    void locate().catch(() => { if (current()) setError('原消息不可用'); });
     return () => { cancelled = true; };
-  }, [focusMessageId, key, loading, runtime, target.id, target.kind]);
+  }, [accountKey, focusRequest, key, loading, runtime, target.id, target.kind, targetConversationId]);
   useEffect(() => {
-    if (!resolvedFocusId) return;
-    const index = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === resolvedFocusId);
+    if (!resolvedFocus || resolvedFocus.key !== key || resolvedFocus.invocation !== focusInvocation.current) return;
+    const index = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === resolvedFocus.messageId);
     if (index < 0) return;
     const frame = requestAnimationFrame(() => {
-      pinToLatest.current = false;
+      if (resolvedFocus.invocation !== focusInvocation.current) return;
       list.current?.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
-      setResolvedFocusId(undefined);
+      setResolvedFocus(undefined);
     });
     return () => cancelAnimationFrame(frame);
-  }, [listItems, resolvedFocusId]);
+  }, [key, listItems, resolvedFocus]);
   return (
-    <View style={[styles.page, { backgroundColor: t.bg }]}>
-      <AppHeader
+    <View style={[styles.page, { backgroundColor: t.bg, paddingTop: compactControls ? insets.top : 0 }]}>
+      {!compactControls ? <AppHeader
         includeTopInset
         title={topic?.title ?? conversation?.displayTitle ?? '会话'}
         subtitle={target.kind === 'topic' ? (topic?.joined ? `话题 · ${conversation?.displayTitle ?? ''}` : '未加入，只能查看摘要') : conversation?.type === 'group' ? `${conversation.members.length} 位成员` : undefined}
@@ -313,8 +704,14 @@ export function ChatScreen({
           </IconButton>
         )}
         banner={<ConnectionBanner connection={connection} />}
-      />
-      <InlineFeedback text={error || progress} tone={error ? 'danger' : 'info'} />
+      /> : null}
+      <View onLayout={event => {
+        const height = event.nativeEvent.layout.height;
+        setFeedbackLayout(previous => previous?.text === feedback && previous.width === dimensions.width && previous.fontScale === fontScale && previous.height === height
+          ? previous : { text: feedback, width: dimensions.width, fontScale, height });
+      }}>
+        <InlineFeedback text={feedback} tone={error || readError ? 'danger' : progress ? 'info' : projections.feedback.tone} />
+      </View>
       {loading && <Loading />}
       {target.kind === 'topic' && topic && !topic.joined ? (
         <View>
@@ -322,44 +719,134 @@ export function ChatScreen({
           {topic.canJoin ? <Button title="加入讨论" onPress={() => void runtime.joinTopic(topic.id).then(() => runtime.openTopic(topic.id)).catch(e => setError(errorText(e)))} /> : null}
         </View>
       ) : (
+        <View style={{ flex: 1 }}>
         <FlatList
-          key={`${key}:${mode}`}
+          key={`${accountKey}:${key}:${mode}`}
           ref={list}
+          style={{ flex: 1 }}
           inverted={mode === 'history'}
+          maintainVisibleContentPosition={readingHistory ? transcriptPositionMaintenance : undefined}
           data={listItems}
           keyExtractor={item => item.kind === 'hidden' ? `hidden:${item.sourceIndex}` : item.message.id}
           keyboardShouldPersistTaps="handled"
           onScrollBeginDrag={() => {
+            if (!isCurrentObservation() || !activity.active || AppState.currentState !== 'active') return;
+            focusInvocation.current += 1;
+            setFocusRequest(undefined);
+            setResolvedFocus(undefined);
             draggingTranscript.current = true;
+            userScroll.current = true;
+            userGesture.current = { activity, geometry, api: runtime.api };
             historyReady.current = true;
+            anchor.beginUserScroll();
+            invalidateReadConfirmation();
           }}
           onScrollEndDrag={e => {
+            if (!isCurrentObservation() || !activity.active || AppState.currentState !== 'active' || !draggingTranscript.current || !userScroll.current
+              || userGesture.current?.activity !== activity || userGesture.current.geometry !== geometry || userGesture.current.api !== runtime.api) return;
             draggingTranscript.current = false;
-            applyUserOffset(e);
+            observeOffset(e, true);
+            // Android always supplies both velocities. A stationary release may
+            // have no momentum callback; unknown velocity cannot prove it stopped.
+            if (e.nativeEvent.velocity?.x === 0 && e.nativeEvent.velocity.y === 0) {
+              userScroll.current = false;
+              userGesture.current = undefined;
+              anchor.endUserScroll();
+            }
           }}
           onMomentumScrollEnd={e => {
+            if (!isCurrentObservation()) return;
             draggingTranscript.current = false;
-            applyUserOffset(e);
+            const fromUser = activity.active && AppState.currentState === 'active' && userScroll.current && userGesture.current?.activity === activity && userGesture.current.geometry === geometry && userGesture.current.api === runtime.api;
+            observeOffset(e, fromUser);
+            userScroll.current = false;
+            userGesture.current = undefined;
+            if (fromUser) anchor.endUserScroll();
+          }}
+          onMomentumScrollBegin={() => {
+            if (!isCurrentObservation() || !activity.active || AppState.currentState !== 'active' || !userScroll.current || userGesture.current?.activity !== activity
+              || userGesture.current.geometry !== geometry || userGesture.current.api !== runtime.api) return;
+            draggingTranscript.current = true;
+            anchor.beginUserScroll();
           }}
           onScroll={e => {
-            if (!draggingTranscript.current) return;
-            applyUserOffset(e);
+            const fromUser = activity.active && AppState.currentState === 'active' && userScroll.current && userGesture.current?.activity === activity
+              && userGesture.current.geometry === geometry && userGesture.current.api === runtime.api;
+            observeOffset(e, fromUser);
           }}
           scrollEventThrottle={100}
-          onLayout={pinIfNeeded}
-          onContentSizeChange={pinIfNeeded}
+          onLayout={e => {
+            if (!isCurrentObservation()) return;
+            if (geometry.layoutHeight !== e.nativeEvent.layout.height) {
+              observation.layoutRevision += 1;
+              setLatestLayout({ observation, revision: observation.layoutRevision });
+              invalidateReadConfirmation();
+              if (!activity.active) requireForegroundProof();
+            }
+            geometry.layoutHeight = e.nativeEvent.layout.height;
+            anchor.changed();
+            reconcileLatest();
+            pinIfNeeded();
+            if (!observation.confirmed) measureLatest();
+          }}
+          onContentSizeChange={(_width, height) => {
+            if (!isCurrentObservation()) return;
+            if (geometry.contentHeight !== height) {
+              observation.layoutRevision += 1;
+              setLatestLayout({ observation, revision: observation.layoutRevision });
+              invalidateReadConfirmation();
+              if (!activity.active) requireForegroundProof();
+            }
+            geometry.contentHeight = height;
+            anchor.changed();
+            reconcileLatest();
+            pinIfNeeded();
+            if (!observation.confirmed) measureLatest();
+          }}
+          viewabilityConfig={latestViewabilityConfig}
+          onViewableItemsChanged={({ viewableItems }: { viewableItems: ViewToken<WorkspaceMessageDisplayItem<Message>>[] }) => {
+            if (!isCurrentObservation()) return;
+            const visibleIds = new Set(viewableItems.flatMap(({ item, isViewable }) => !isViewable ? [] : item.kind === 'message'
+              ? [item.message.id]
+              : item.messages.map(message => message.id)));
+            if (visibleIds.size !== geometry.visibleIds.size || [...visibleIds].some(id => !geometry.visibleIds.has(id))) {
+              invalidateReadConfirmation();
+              if (!activity.active) requireForegroundProof();
+            }
+            geometry.visibleIds = visibleIds;
+            anchor.visible(visibleIds);
+            if (activity.active) geometry.needsForegroundTail = false;
+            reconcileLatest();
+            if (!observation.confirmed) measureLatest();
+          }}
           onEndReached={() => {
-            if (!shouldLoadOlderHistory({ historyReady: historyReady.current, hasOlder, messageCount: messages.length })) return;
-            const first = messages[0]?.id;
-            void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e)));
+            if (mode === 'history' && shouldLoadOlderHistory({ historyReady: historyReady.current, hasOlder, messageCount: messages.length })) loadOlder();
           }}
           onEndReachedThreshold={0.2}
           onScrollToIndexFailed={event => list.current?.scrollToOffset({ offset: Math.max(0, event.averageItemLength * event.index), animated: false })}
-          ListFooterComponent={mode === 'history' && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={() => { const first = messages[0]?.id; void (target.kind === 'topic' ? runtime.topicMessages(target.id, first) : runtime.messages(target.id, first)).then(count => setHasOlder(hasOlderMessages(count))).catch(e => setError(errorText(e))); }} /> : null}
+          ListHeaderComponent={mode === 'complete' && hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={loadOlder} /> : null}
+          ListFooterComponent={mode === 'history' && hasOlder && messages.length > 0 ? <Button title="加载更早消息" secondary onPress={loadOlder} /> : null}
           ListEmptyComponent={!loading ? <EmptyState title="还没有消息" /> : null}
           renderItem={({ item }) => {
+            const isLatest = item.kind === 'hidden' ? item.messages.some(message => message.id === lastId) : item.message.id === lastId;
+            const onLatestLayout = isLatest ? (layout: LayoutRectangle) => {
+              if (!isCurrentObservation()) return;
+              const previous = observation.rowLayout;
+              if (previous && previous.x === layout.x && previous.y === layout.y && previous.width === layout.width && previous.height === layout.height) return;
+              observation.rowLayout = layout;
+              observation.layoutRevision += 1;
+              setLatestLayout({ observation, revision: observation.layoutRevision });
+              invalidateReadConfirmation();
+              if (!activity.active) requireForegroundProof();
+              else {
+                geometry.needsForegroundGeometry = true;
+                pinIfNeeded();
+                measureLatest();
+              }
+            } : undefined;
             if (item.kind === 'hidden') {
               return (
+                <TranscriptFrame id={item.messages[0]!.id} register={anchor.register} rowLayout={anchor.rowLayout} latestRow={latestRow} isLatest={isLatest} onLatestLayout={onLatestLayout}>
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`恢复${item.messages.length}条已隐藏消息`}
@@ -370,12 +857,14 @@ export function ChatScreen({
                 >
                   <Text style={{ color: t.muted, fontSize: t.type.meta }}>{item.messages.length} 条已隐藏，点按恢复</Text>
                 </Pressable>
+                </TranscriptFrame>
               );
             }
             const sourceIndex = item.sourceIndex;
             const previousDay = sourceIndex > 0 ? getMessageDayKey(messages[sourceIndex - 1]?.createdAt) : '';
             const dayKey = getMessageDayKey(item.message.createdAt);
             return (
+              <TranscriptFrame id={item.message.id} register={anchor.register} rowLayout={anchor.rowLayout} latestRow={latestRow} isLatest={isLatest} onLatestLayout={onLatestLayout}>
               <MessageRow
                 message={item.message}
                 groupPosition={groupPositions[sourceIndex]}
@@ -383,33 +872,56 @@ export function ChatScreen({
                 dayLabel={dayKey && dayKey !== previousDay ? formatMessageDayLabel(item.message.createdAt) : undefined}
                 runtime={runtime}
                 retry={() => send(item.message)}
-                onReply={targetMessage => runtime.patchDraft(key, { replyToMessageId: targetMessage.id, mentionIds: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorId ? Array.from(new Set([...draft.mentionIds, targetMessage.authorId])) : draft.mentionIds, text: conversation && useWorkspace.getState().chatSettings?.replyAutoMention && targetMessage.authorName && !draft.text.includes(`@${targetMessage.authorName}`) ? `${draft.text}${draft.text ? ' ' : ''}@${targetMessage.authorName} ` : draft.text })}
+                onReply={replyToMessage}
                 onOpenTopic={onOpenTopic}
-                locate={id => {
-                  const at = listItems.findIndex(entry => entry.kind === 'message' && entry.message.id === id);
-                  if (at >= 0) list.current?.scrollToIndex({ index: at, animated: true });
-                }}
+                locate={locateMessage}
+                onToggleProjection={projections.canToggle(item.message) ? () => { setError(''); void projections.toggle(item.message.id); } : undefined}
+                isProjected={projections.isProjected(item.message.id)}
+                projectionBusy={projections.isBusy(item.message.id)}
                 onPreview={onPreview}
                 download={file => {
                   const api = runtime.api;
                   if (api) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(e => setError(errorText(e)));
                 }}
               />
+              </TranscriptFrame>
             );
           }}
         />
+        {newMessages && (
+          <View testID="transcript-latest-overlay" pointerEvents="box-none" style={{ position: 'absolute', bottom: t.space.sm, left: t.space.md, right: t.space.md, alignItems: 'flex-end' }}>
+            <Button title="回到最新" secondary onPress={() => scrollToLatest(true)} />
+          </View>
+        )}
+        </View>
       )}
-      {newMessages && <Button title="回到最新" secondary onPress={() => scrollToLatest(true)} />}
       {canSend ? (
         <View style={{ paddingBottom: ime.dock.dockBottom }}>
-          {target.kind === 'topic' && topic?.allowSyncToGroup ? (
-            <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: 40, justifyContent: 'center' }}>
+          {echo.available && !compactControls ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: t.space.sm, paddingHorizontal: 16, paddingTop: t.space.sm }}>
+            <Button title="提交需求" secondary disabled={echo.busy} onPress={() => { void echo.start('/need'); }} />
+            <Button title="反馈问题" secondary disabled={echo.busy} onPress={() => { void echo.start('/feedback'); }} />
+            {echo.canResume ? <Button title="继续 Echo 流程" secondary disabled={echo.busy} onPress={() => { void echo.resume(); }} /> : null}
+          </View> : null}
+          {!compactControls && draft.mentionSpans === undefined && draft.mentionIds.length > 0 ? (
+            <View style={{ paddingHorizontal: 16 }}><Label muted>旧草稿中的提及请重新选择成员</Label></View>
+          ) : null}
+          {!compactControls && target.kind === 'topic' && topic?.allowSyncToGroup ? (
+            <Pressable accessibilityRole="button" onPress={() => setSyncToGroup(value => !value)} style={{ paddingHorizontal: 16, minHeight: t.hit, justifyContent: 'center' }}>
               <Label muted>{syncToGroup ? '将同步到群聊' : '默认只发到话题，点按改为同步到群'}</Label>
             </Pressable>
           ) : null}
           <Composer
+            onFocus={() => setError('')}
+            compact={compactControls}
+            leading={compactControls ? <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.xs }}>
+              <IconButton label="返回" onPress={() => navigation.goBack()}><ChevronLeft color={t.text} size={24} /></IconButton>
+              {target.kind === 'topic' && topic?.allowSyncToGroup ? <Pressable accessibilityRole="button" accessibilityLabel={`${topic.title}，${syncToGroup ? '将同步到群聊' : '只发到话题'}，点按切换`} onPress={() => setSyncToGroup(value => !value)} style={{ minHeight: t.hit, justifyContent: 'center', width: dimensions.width < 480 ? 48 : 120 }}>
+                <Text numberOfLines={1} style={{ color: t.text, fontSize: t.type.meta }}>{topic.title}</Text>
+              </Pressable> : <Text accessibilityRole="header" numberOfLines={1} style={{ color: t.text, fontSize: t.type.meta, width: dimensions.width < 480 ? 44 : 120 }}>{topic?.title ?? conversation?.displayTitle ?? '会话'}</Text>}
+            </View> : undefined}
+            trailing={compactControls ? <IconButton label="会话详情" onPress={details}><Info color={t.shared} size={22} /></IconButton> : undefined}
             value={draft.text}
-            onChangeText={text => runtime.patchDraft(key, { text })}
+            onChangeText={text => runtime.patchDraft(key, editDraftText(useWorkspace.getState().drafts[key] ?? draft, text))}
             onSend={() => send()}
             sendDisabled={!draft.text.trim() && !draft.pendingAttachment}
             attachDisabled={!conversation?.capabilities.canUploadFile || !!progress}
@@ -435,13 +947,13 @@ export function ChatScreen({
                   const token = item.token ?? item.value ?? `[${packId}:${item.id}]`;
                   const enabled = useWorkspace.getState().chatSettings?.clickImageEmoteToSend ?? false;
                   if (shouldDirectSendWorkspaceEmote(item, packId, enabled)) {
-                    runtime.patchDraft(key, { text: token, mentionIds: draft.mentionIds });
+                    runtime.patchDraft(key, editDraftText(useWorkspace.getState().drafts[key] ?? draft, token));
                     send();
                     ime.closePanel();
                     return;
                   }
-                  const next = `${useWorkspace.getState().drafts[key]?.text ?? draft.text}${token}`;
-                  runtime.patchDraft(key, { text: next, mentionIds: draft.mentionIds });
+                  const current = useWorkspace.getState().drafts[key] ?? draft;
+                  runtime.patchDraft(key, editDraftText(current, `${current.text}${token}`));
                 }}
               />
             ) : null}
@@ -473,8 +985,7 @@ export function ChatScreen({
                 accessibilityRole="button"
                 accessibilityLabel={`提及${member.displayName}`}
                 onPress={() => {
-                  const prefix = draft.text.replace(/@([^\s@]*)$/, '');
-                  runtime.patchDraft(key, { text: `${prefix}@${member.displayName} `, mentionIds: Array.from(new Set([...draft.mentionIds, member.id])) });
+                  runtime.patchDraft(key, insertDraftMention(useWorkspace.getState().drafts[key] ?? draft, member));
                   ime.closePanel();
                 }}
                 style={{ minHeight: t.hit, paddingHorizontal: 16, justifyContent: 'center' }}
@@ -487,6 +998,7 @@ export function ChatScreen({
           </View>
         </View>
       ) : <EmptyState title={target.kind === 'topic' ? '当前话题不可发送' : '当前会话不可发送消息'} />}
+      <EchoWorkflowDialog controller={echo} />
     </View>
   );
 }

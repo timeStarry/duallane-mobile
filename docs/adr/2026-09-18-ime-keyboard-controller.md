@@ -13,6 +13,10 @@ redesign 树使用 Manifest `adjustPan` 且无 `KeyboardAvoidingView`（相对 P
 - 禁止 `KeyboardAvoidingView`、禁止 Chat `ADJUST_RESIZE`、禁止静态 `KeyboardController.setEnabled`。
 - 引入 `react-native-keyboard-controller` 与 Reanimated 4 以读取 IME inset。`react-native-worklets` 钉在 Expo 54 的 `0.5.1`（须为直接依赖，pnpm 才能被 Gradle `require.resolve` 找到）。本 ADR 不追求减包；体积变化记入后续 APK 对照。
 
+2026-10-06 配套版本后续升级为 SDK 55 的 KeyboardController 1.20.7、Reanimated 4.2.1
+与直接依赖 worklets 0.7.4；以上 IME 所有权不变。原因与原生验证见
+[热字体运行时 ADR](2026-10-06-android-font-layout-runtime.md)，包体证据见 R5。
+
 ## 回滚
 
 Chat cleanup 关闭模块即可回到 Manifest pan。卸依赖需新 APK。

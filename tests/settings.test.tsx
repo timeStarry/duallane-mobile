@@ -86,6 +86,7 @@ test('profile save sends nickname and keeps the input after a failure', async ()
   fireEvent.changeText(view.getByLabelText('显示名'), '新名字');
   fireEvent.press(view.getByRole('button', { name: '保存' }));
   await waitFor(() => expect(runtime.updateProfile).toHaveBeenCalledWith({ nickname: '新名字', searchDiscoverable: true }));
+  await waitFor(() => expect(view.getByText(/无法连接到服务器/)).toBeTruthy());
   expect(view.getByLabelText('显示名').props.value).toBe('新名字');
 });
 
@@ -98,11 +99,11 @@ test('chat preference autosave ignores a stale slower response', async () => {
     .mockResolvedValueOnce({ ...settings, clickImageEmoteToSend: true, replyAutoMention: true });
   const view = render(wrap(<ChatPreferencesScreen runtime={runtime} />));
   await waitFor(() => expect(view.getByLabelText('点击图片表情直接发送')).toBeTruthy());
-  fireEvent(view.getByLabelText('点击图片表情直接发送'), 'valueChange', true);
-  fireEvent(view.getByLabelText('回复时自动提及原作者'), 'valueChange', true);
+  fireEvent.press(view.getByRole('switch', { name: '点击图片表情直接发送' }));
+  fireEvent.press(view.getByRole('switch', { name: '回复时自动提及原作者' }));
   await waitFor(() => expect(runtime.saveChatSettings).toHaveBeenCalledTimes(2));
   finishFirst({ ...settings, clickImageEmoteToSend: true, replyAutoMention: false });
-  await waitFor(() => expect(view.getByLabelText('回复时自动提及原作者').props.value).toBe(true));
+  await waitFor(() => expect(view.getByRole('switch', { name: '回复时自动提及原作者', checked: true })).toBeTruthy());
 });
 
 test('composer keeps send reachable and does not send on IME confirm', () => {

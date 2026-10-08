@@ -121,10 +121,18 @@ export const cardResolutionSchema = z.object({
   revision: z.number().optional(),
   actions: z.array(z.string()).default([]),
 }).passthrough();
+export const mentionSpanSchema = z.object({
+  userId: id,
+  label: z.string().min(1),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+}).refine(span => span.end > span.start);
+export type MentionSpan = z.infer<typeof mentionSpanSchema>;
 export const draftSchema = z.object({
   text: z.string().default(''),
   replyToMessageId: z.string().optional(),
   mentionIds: z.array(z.string()).default([]),
+  mentionSpans: z.array(mentionSpanSchema).optional(),
   pendingAttachment: z.object({ taskId: z.string(), fileName: z.string(), mimeType: z.string(), byteSize: z.number() }).optional(),
 });
 export type Draft = z.infer<typeof draftSchema>;
@@ -184,10 +192,11 @@ export function parseMessage(input: unknown): Message | null {
   // Read the safe summary independently: an unknown block/format must not hide it.
   const summary = z.object({ plainText: z.string().max(100000) }).safeParse(rawContent);
   const fallback = !content.success || (base.version !== undefined && base.version !== 1) || !['user','bot','system'].includes(base.kind);
-  // Current HTTP DTO has no envelope version: only realtime event envelopes require it.
+  // Current HTTP DTO has no envelope version; the realtime transport frame carries its major.
   return { ...base, blocks: !fallback && content.success ? content.data.blocks : [], attachments: fallback ? [] : base.attachments, plainText: base.plainText || (summary.success ? summary.data.plainText : '') || (fallback ? '此消息暂不支持，请更新应用后查看' : ''), fallback };
 }
-export const eventSchema = z.object({ version: z.literal(1), id, spaceId: id, seq: z.number().int().nonnegative(), type: z.string(), conversationId: z.string().nullish(), payload: z.record(z.unknown()) });
+// Go events.Event has no version; tolerate the prior inner major only when it is supported.
+export const eventSchema = z.object({ version: z.literal(1).optional(), id, spaceId: id, seq: z.number().int().nonnegative(), type: z.string(), conversationId: z.string().nullish(), targetId: z.string().nullish(), payload: z.record(z.unknown()) });
 export const readySchema = z.object({ type: z.literal('ready'), version: z.literal(1), currentSeq: z.number().int().nonnegative(), replayCount: z.number().int().nonnegative(), hasMore: z.boolean().default(false) });
 export type WorkspaceEvent = z.infer<typeof eventSchema>;
 export type Bootstrap = z.infer<typeof bootstrapSchema>;

@@ -1,4 +1,4 @@
 <resources>
   <string name="app_name">DualLane</string>
-  <string name="expo_runtime_version">android-1</string>
+  <string name="expo_runtime_version">android-4</string>
 </resources>

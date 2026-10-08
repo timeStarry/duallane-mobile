@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Keyboard, Pressable, View } from 'react-native';
+import { Text } from './Text';
 import { Copy, EllipsisVertical, EyeOff, MessageSquare, Pin, Smile, SmilePlus, Undo2 } from 'lucide-react-native';
 import type { Attachment, Message } from '../domain/contracts';
 import { messageActions } from '../domain/message-actions';
@@ -15,7 +16,8 @@ const emptyMembers: Array<{ id: string; displayName: string }> = [];
 import { Avatar } from './chrome';
 import { Button, Dialog, InlineFeedback, Label, ObjectActionSheet } from './primitives';
 import { MessageContent, ReactionGlyph } from './MessageContent';
-import { catalogUnicodeGlyph } from '../domain/emote-catalog';
+import { CatalogEmoteGrid } from './CatalogEmoteGrid';
+import { catalogReactionKey, catalogUnicodeGlyph, reactionEmotePacks } from '../domain/emote-catalog';
 import { useTheme } from './theme';
 
 const quickReactions = ['emoji:thumbs-up', 'emoji:heart', 'emoji:smile'];
@@ -27,6 +29,7 @@ function actionIcon(id: string, color: string) {
   if (id === 'recall') return <Undo2 size={18} color={color} />;
   if (id === 'pin') return <Pin size={18} color={color} />;
   if (id === 'favorite_emote') return <SmilePlus size={18} color={color} />;
+  if (id === 'react') return <Smile size={18} color={color} />;
   return null;
 }
 
@@ -56,6 +59,9 @@ export function MessageRow({
   onOpenTopic,
   onPreview,
   locate,
+  onToggleProjection,
+  isProjected,
+  projectionBusy,
 }: {
   message: Message;
   retry: () => void;
@@ -69,27 +75,70 @@ export function MessageRow({
   onOpenTopic?: (topicId: string) => void;
   onPreview?: (file: Attachment) => void;
   locate?: (id: string) => void;
+  onToggleProjection?: () => void;
+  isProjected?: boolean;
+  projectionBusy?: boolean;
 }) {
   const t = useTheme();
   const userId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
+  const accountKey = useWorkspace(s => s.accountKey);
   const conversation = useWorkspace(s => s.conversations[message.conversationId]);
+  const topic = useWorkspace(s => message.topicId ? s.topics[message.topicId] : undefined);
+  const chatSettings = useWorkspace(s => s.chatSettings);
   const directory = useWorkspace(s => s.bootstrap?.members);
   const authorName = visibleAuthorName(
     message,
     conversation?.members.length ? conversation.members : directory ?? emptyMembers,
     conversation?.type === 'direct' && (message.kind === 'bot' || message.authorKind === 'bot') ? conversation.displayTitle : '',
   );
-  const own = message.authorId === userId;
+  const own = !!userId && message.authorId === userId;
   const system = message.kind === 'system' || message.authorKind === 'system';
   const [sheet, setSheet] = useState(false);
   const [cluster, setCluster] = useState(false);
   const [reactOpen, setReactOpen] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [reactionPack, setReactionPack] = useState('emoji');
   const [confirmRecall, setConfirmRecall] = useState(false);
   const [actionError, setActionError] = useState('');
-  const react = (emoteKey: string, remove: boolean) => {
-    if (!runtime) return;
+  const actionInvocation = useRef(0);
+  const actionScope = useRef({ active: true });
+  const interactionIdentity = useRef({ accountKey, userId });
+  const identityMatches = interactionIdentity.current.accountKey === accountKey && interactionIdentity.current.userId === userId;
+  useEffect(() => {
+    const scope = { active: true };
+    actionScope.current = scope;
     setActionError('');
-    void runtime.react(message.id, emoteKey, remove).catch(error => setActionError(errorText(error)));
+    setCatalogOpen(false);
+    setCluster(false);
+    setReactOpen(false);
+    return () => { scope.active = false; };
+  }, [message.id, runtime, userId, accountKey]);
+  const canAccessMessage = identityMatches && (!message.topicId || !!conversation && !!topic?.joined && topic.conversationId === message.conversationId);
+  const canWrite = canAccessMessage && !!conversation?.capabilities.canSendMessage && (!message.topicId
+    || conversation.type === 'group' && topic?.status === 'open');
+  const canReact = identityMatches && !!runtime && !system && !message.status && !message.recalledAt && !message.deletedAt
+    && (message.topicId ? canWrite : conversation ? canWrite : true);
+  useEffect(() => {
+    if (!canReact) { setCatalogOpen(false); setReactOpen(false); }
+  }, [canReact]);
+  const runAction = async (operation: () => Promise<unknown>) => {
+    const invocation = ++actionInvocation.current;
+    const scope = actionScope.current;
+    setActionError('');
+    try {
+      await operation();
+    } catch (error) {
+      const state = useWorkspace.getState();
+      if (scope.active && invocation === actionInvocation.current && state.accountKey === accountKey && state.bootstrap?.auth.currentUser.id === userId) setActionError(errorText(error));
+    }
+  };
+  const react = (emoteKey: string, remove: boolean) => {
+    if (!runtime || !canReact) return;
+    void runAction(() => runtime.react(message.id, emoteKey, remove));
+  };
+  const toggleReaction = (emoteKey: string) => {
+    const remove = message.reactions.some(reaction => reaction.emoteKey === emoteKey && reaction.reactedByCurrentUser);
+    react(emoteKey, remove);
   };
   const grouped = groupPosition ? groupPosition === 'middle' || groupPosition === 'end' : previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
   const position = groupPosition ?? (grouped ? 'end' : 'single');
@@ -103,11 +152,25 @@ export function MessageRow({
       ? { borderTopLeftRadius: outer, borderTopRightRadius: top, borderBottomLeftRadius: outer, borderBottomRightRadius: bottom }
       : { borderTopLeftRadius: top, borderTopRightRadius: outer, borderBottomLeftRadius: bottom, borderBottomRightRadius: outer };
   const reply = message.replyToMessageId ? useWorkspace.getState().messages[message.topicId ? `topic:${message.topicId}` : message.conversationId]?.find(item => item.id === message.replyToMessageId) : undefined;
-  const actions = messageActions(message, { own, group: conversation?.type === 'group', canSend: !!conversation?.capabilities.canSendMessage || !!message.topicId });
-  const favoriteAttachment = message.status !== 'sending' && message.status !== 'failed' && !message.recalledAt && !message.deletedAt
+  const actions = !canAccessMessage
+    ? [{ id: 'copy', title: '复制' }] : messageActions(message, { own, group: conversation?.type === 'group', canSend: canWrite });
+  const replyIndex = !onReply ? actions.findIndex(action => action.id === 'reply') : -1;
+  if (replyIndex >= 0) actions.splice(replyIndex, 1);
+  if (canReact) actions.push({ id: 'react', title: '添加表情回复' });
+  if (onToggleProjection && message.topicId && canWrite && topic?.allowSyncToGroup && !message.status && !message.recalledAt && !message.deletedAt) {
+    actions.push({ id: 'projection', title: isProjected ? '取消同步到群聊' : '同步到群聊' });
+  }
+  const openCluster = () => { Keyboard.dismiss(); setCluster(true); setReactOpen(false); };
+  const openSheet = () => { Keyboard.dismiss(); setCluster(false); setReactOpen(false); setSheet(true); };
+  const openCatalog = () => { Keyboard.dismiss(); setCatalogOpen(true); setCluster(false); setReactOpen(false); };
+  const accessibilityActions = actions.filter(action => action.id === 'copy' || action.id === 'reply')
+    .map(action => ({ name: action.id, label: action.title }));
+  if (actions.length) accessibilityActions.push({ name: 'more', label: '更多消息操作' });
+  const favoriteAttachment = canAccessMessage && message.status !== 'sending' && message.status !== 'failed' && !message.recalledAt && !message.deletedAt
     ? message.attachments.find(file => file.status === 'available' && file.mimeType.startsWith('image/') && file.capabilities.canDownload)
     : undefined;
   if (runtime && favoriteAttachment) actions.push({ id: 'favorite_emote', title: '收藏为表情' });
+  const canRecall = actions.some(action => action.id === 'recall');
   const recallText = recalledNotice(message);
   if (recallText) {
     return (
@@ -136,7 +199,7 @@ export function MessageRow({
               {grouped ? null : (
                 <Text accessibilityLabel={messageAccessibilityLabel(message, authorName, false)} style={{ color: t.muted, fontSize: t.type.timestamp, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${authorName} · Bot` : authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
               )}
-              <View style={{ maxWidth: '100%', padding: 12, backgroundColor: own ? t.sharedSoft : t.surface, alignSelf: own ? 'flex-end' : 'flex-start', ...radiusStyle }}>
+              <Pressable accessible={false} delayLongPress={450} onLongPress={openCluster} style={{ maxWidth: '100%', padding: 12, backgroundColor: own ? t.sharedSoft : t.surface, alignSelf: own ? 'flex-end' : 'flex-start', ...radiusStyle }}>
           {message.replyToMessageId ? (
             <Pressable accessibilityRole="button" accessibilityLabel="定位原消息" onPress={() => locate?.(message.replyToMessageId!)}>
               <Label muted>{reply && !reply.hiddenByCurrentUser ? (reply.recalledAt ? '已撤回的消息' : `${reply.authorName}: ${reply.plainText}`) : '原消息不可用'}</Label>
@@ -150,8 +213,10 @@ export function MessageRow({
                   key={reaction.emoteKey}
                   accessibilityRole="button"
                   accessibilityLabel={`${reaction.emoteKey} ${reaction.count}${reaction.reactedByCurrentUser ? '，已选择' : ''}`}
+                  accessibilityState={{ disabled: !canReact }}
+                  disabled={!canReact}
                   onPress={() => react(reaction.emoteKey, reaction.reactedByCurrentUser)}
-                  style={{ paddingHorizontal: 8, minHeight: 32, borderRadius: 16, backgroundColor: reaction.reactedByCurrentUser ? t.sharedSoft : t.soft, justifyContent: 'center' }}
+                  style={{ paddingHorizontal: 8, minWidth: t.hit, minHeight: t.hit, borderRadius: 16, backgroundColor: reaction.reactedByCurrentUser ? t.sharedSoft : t.soft, justifyContent: 'center' }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <ReactionGlyph emoteKey={reaction.emoteKey} />
@@ -169,13 +234,23 @@ export function MessageRow({
               <Button title="重试发送" secondary onPress={retry} />
             </>
           )}
-              </View>
+              </Pressable>
             </View>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`消息操作，${messageAccessibilityLabel(message, authorName)}`}
               accessibilityHint="点按查看更多消息操作"
-              onPress={() => { setCluster(open => !open); setReactOpen(false); }}
+              accessibilityActions={accessibilityActions}
+              onAccessibilityAction={event => {
+                const action = event.nativeEvent.actionName;
+                if (action === 'copy' && actions.some(item => item.id === 'copy')) void runAction(() => copyText(message.plainText));
+                if (action === 'reply' && actions.some(item => item.id === 'reply')) onReply?.(message);
+                if (action === 'more' && actions.length) openSheet();
+              }}
+              onPress={() => {
+                if (cluster) { setCluster(false); setReactOpen(false); }
+                else openCluster();
+              }}
               style={({ pressed }) => ({ minWidth: t.hit, minHeight: t.hit, borderRadius: t.radius.control, alignItems: 'center', justifyContent: 'center', opacity: pressed ? t.pressedOpacity : 1 })}
             >
               <EllipsisVertical size={18} color={t.muted} />
@@ -190,7 +265,7 @@ export function MessageRow({
                 accessibilityRole="button"
                 accessibilityLabel={action.title}
                 onPress={() => {
-                  if (action.id === 'copy') void copyText(message.plainText);
+                  if (action.id === 'copy') void runAction(() => copyText(message.plainText));
                   if (action.id === 'reply') onReply?.(message);
                   setCluster(false);
                 }}
@@ -199,27 +274,29 @@ export function MessageRow({
                 {actionIcon(action.id, t.text)}
               </Pressable>
             ))}
-            <Pressable accessibilityRole="button" accessibilityLabel="反应" onPress={() => setReactOpen(open => !open)} style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: 24, backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }}>
+            {canReact ? <Pressable accessibilityRole="button" accessibilityLabel="反应" onPress={() => setReactOpen(open => !open)} style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: 24, backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }}>
               <Smile size={18} color={t.text} />
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="更多" onPress={() => { setCluster(false); setSheet(true); }} style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: 24, backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }}>
+            </Pressable> : null}
+            <Pressable accessibilityRole="button" accessibilityLabel="更多" onPress={openSheet} style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: 24, backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }}>
               <EllipsisVertical size={18} color={t.text} />
             </Pressable>
           </View>
         ) : null}
-        {reactOpen && runtime ? (
-          <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+        {reactOpen && canReact ? (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
             {quickReactions.map(emoteKey => (
               <Pressable
                 key={emoteKey}
                 accessibilityRole="button"
                 accessibilityLabel={`反应 ${catalogUnicodeGlyph(emoteKey) ?? emoteKey}`}
-                onPress={() => { react(emoteKey, false); setReactOpen(false); setCluster(false); }}
-                style={{ minWidth: 36, minHeight: 36, alignItems: 'center', justifyContent: 'center' }}
+                accessibilityState={{ selected: message.reactions.some(reaction => reaction.emoteKey === emoteKey && reaction.reactedByCurrentUser) }}
+                onPress={() => { toggleReaction(emoteKey); setReactOpen(false); setCluster(false); }}
+                style={{ minWidth: t.hit, minHeight: t.hit, borderRadius: t.radius.control, backgroundColor: message.reactions.some(reaction => reaction.emoteKey === emoteKey && reaction.reactedByCurrentUser) ? t.sharedSoft : undefined, alignItems: 'center', justifyContent: 'center' }}
               >
                 <ReactionGlyph emoteKey={emoteKey} />
               </Pressable>
             ))}
+            <Button title="更多表情" secondary onPress={openCatalog} />
           </View>
         ) : null}
         <InlineFeedback text={actionError} tone="danger" />
@@ -233,27 +310,44 @@ export function MessageRow({
           id: action.id,
           title: action.title,
           danger: action.danger,
+          disabled: action.id === 'projection' && projectionBusy,
           icon: actionIcon(action.id, action.danger ? t.danger : t.text),
           onPress: () => {
-            if (action.id === 'copy') void copyText(message.plainText);
+            if (action.id === 'copy') void runAction(() => copyText(message.plainText));
             if (action.id === 'reply') onReply?.(message);
             if (action.id === 'recall') setConfirmRecall(true);
-            if (action.id === 'hide' && runtime) void runtime.hide(message.id, !message.hiddenByCurrentUser);
-            if (action.id === 'pin' && runtime) void runtime.pin(message.conversationId, message.id, !!message.pin);
+            if (action.id === 'react' && canReact) openCatalog();
+            if (action.id === 'projection' && !projectionBusy) onToggleProjection?.();
+            if (action.id === 'hide' && runtime) void runAction(() => runtime.hide(message.id, !message.hiddenByCurrentUser));
+            if (action.id === 'pin' && runtime) void runAction(() => runtime.pin(message.conversationId, message.id, !!message.pin));
             if (action.id === 'favorite_emote' && runtime && favoriteAttachment) {
-              setActionError('');
-              void runtime.favoriteMessageEmote(message.id, favoriteAttachment.id).catch(error => setActionError(errorText(error)));
+              void runAction(() => runtime.favoriteMessageEmote(message.id, favoriteAttachment.id));
             }
           },
         }))}
       />
+      <Dialog visible={catalogOpen && canReact} title="选择消息表情回复" onRequestClose={() => setCatalogOpen(false)} actions={[{ title: '取消', variant: 'secondary', onPress: () => setCatalogOpen(false) }]}>
+        <CatalogEmoteGrid
+          packs={reactionEmotePacks(chatSettings?.enabledPackIds)}
+          selectedPackId={reactionPack}
+          selectedItemKeys={message.reactions.filter(reaction => reaction.reactedByCurrentUser).map(reaction => reaction.emoteKey)}
+          onSelectPack={setReactionPack}
+          onPick={(item, packId) => {
+            const emoteKey = catalogReactionKey(packId, item.id);
+            if (!emoteKey) return;
+            toggleReaction(emoteKey);
+            setCatalogOpen(false);
+          }}
+        />
+        <Label muted>表情回复支持可用的内置表情；收藏和自定义合集可在输入框发送。</Label>
+      </Dialog>
       <Dialog
-        visible={confirmRecall}
+        visible={confirmRecall && canRecall}
         title="撤回这条消息？"
         onRequestClose={() => setConfirmRecall(false)}
         actions={[
           { title: '取消', onPress: () => setConfirmRecall(false), variant: 'secondary' },
-          { title: '撤回', variant: 'danger', onPress: () => { setConfirmRecall(false); if (runtime) void runtime.recall(message.id); } },
+          { title: '撤回', variant: 'danger', onPress: () => { setConfirmRecall(false); if (runtime && canRecall) void runAction(() => runtime.recall(message.id)); } },
         ]}
       >
         <Label>撤回后所有人看到的是撤回说明，不能恢复原文。</Label>

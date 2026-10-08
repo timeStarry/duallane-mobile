@@ -1,5 +1,6 @@
 import React from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
+import { Text } from './Text';
 import type { CatalogPack, CatalogPackItem } from '../domain/emote-catalog';
 import { catalogImage } from '../domain/emote-catalog';
 import { EmoteImage } from './MessageContent';
@@ -8,11 +9,13 @@ import { useTheme } from './theme';
 export function CatalogEmoteGrid({
   packs,
   selectedPackId,
+  selectedItemKeys,
   onSelectPack,
   onPick,
 }: {
   packs: CatalogPack[];
   selectedPackId: string;
+  selectedItemKeys?: string[];
   onSelectPack: (id: string) => void;
   onPick: (item: CatalogPackItem, packId: string) => void;
 }) {
@@ -39,6 +42,7 @@ export function CatalogEmoteGrid({
       </ScrollView>
       <ScrollView style={{ maxHeight: 220 }} contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: t.space.sm }}>
         {(pack?.items ?? []).map(item => {
+          const selected = selectedItemKeys?.includes(`${pack?.id}:${item.id}`) ?? false;
           const src = item.src ?? catalogImage(item.token ?? `${pack?.id}:${item.id}`)?.src;
           const token = item.token ?? (item.kind === 'unicode' ? item.value ?? item.id : `[${pack?.id}:${item.id}]`);
           return (
@@ -46,8 +50,9 @@ export function CatalogEmoteGrid({
               key={`${pack?.id}:${item.id}`}
               accessibilityRole="button"
               accessibilityLabel={item.label}
+              accessibilityState={selectedItemKeys ? { selected } : undefined}
               onPress={() => onPick(item, pack?.id ?? selectedPackId)}
-              style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}
+              style={{ width: 48, height: 48, borderRadius: t.radius.control, backgroundColor: selected ? t.sharedSoft : undefined, alignItems: 'center', justifyContent: 'center' }}
             >
               {src ? <EmoteImage uri={src} token={token} size={32} /> : <Text style={{ fontSize: 24 }}>{item.value ?? item.label}</Text>}
             </Pressable>

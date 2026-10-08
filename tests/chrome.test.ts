@@ -4,6 +4,7 @@ import { conversationIdentity } from '../src/ui/chrome';
 jest.mock('expo-file-system', () => ({ File: class {}, Paths: { cache: '' } }));
 jest.mock('expo-crypto', () => ({ digestStringAsync: jest.fn(), CryptoDigestAlgorithm: { SHA256: 'SHA-256' } }));
 jest.mock('expo/fetch', () => ({ fetch: jest.fn() }));
+jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { extra: { environment: 'test', apiOrigin: '', channel: 'internal' } } } }));
 
 test('group conversations use the workspace emoji avatar instead of a title letter', () => {
   const conversation = conversationSchema.parse({

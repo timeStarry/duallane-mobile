@@ -7,6 +7,7 @@ import { cache, credentials } from '../src/platform/storage';
 import { releaseSchema } from '../src/domain/updates';
 import { config } from '../src/platform/config';
 import { showMessageNotification } from '../src/platform/notifications';
+import { ReplayTracker } from '../src/domain/replay';
 import type { WorkspaceEvent } from '../src/domain/contracts';
 
 jest.mock('expo/fetch',()=>({fetch:jest.fn()}));
@@ -25,7 +26,10 @@ const bootstrap={auth:{currentUser:{id:'u1',displayName:'Test'}},space:{id:'s1',
 const message={id:'m1',conversationId:'c1',authorId:'u1',authorName:'Test',kind:'user',createdAt:'2026-01-01T00:00:00Z',plainText:'old',content:{format:'duallane.message+json;v=1',blocks:[{type:'text',text:'old'}]}};
 function deferred<T>(){let resolve!:(v:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};}
 function response(body:unknown,status=200){return {ok:status<400,status,json:async()=>body} as Awaited<ReturnType<typeof fetch>>;}
-function serve(){fetchMock.mockImplementation(async url=>response(url.endsWith('/release-policy')?policy:url.endsWith('/refresh')?session:url.endsWith('/bootstrap')?bootstrap:url.includes('/messages?')?{messages:[{...message,plainText:'edited'}]}:{authorizationUrl:`${new URL(url).origin}/api/auth/mobile/github/authorize?flow=test`}));}
+function serve(){fetchMock.mockImplementation(async url=>{
+  if(typeof url!=='string')throw new Error('Expected a string API URL');
+  return response(url.endsWith('/release-policy')?policy:url.endsWith('/refresh')?session:url.endsWith('/bootstrap')?bootstrap:url.includes('/messages?')?{messages:[{...message,plainText:'edited'}]}:{authorizationUrl:`${new URL(url).origin}/api/auth/mobile/github/authorize?flow=test`});
+});}
 let runtime:Runtime;
 beforeEach(()=>{config.apiOrigin='';jest.spyOn(console,'warn').mockImplementation(()=>undefined);jest.spyOn(AppState,'addEventListener').mockReturnValue({remove:jest.fn()});useWorkspace.getState().reset();jest.mocked(cache.get).mockReturnValue(null);read.mockResolvedValue(saved);serve();runtime=new Runtime();jest.spyOn(runtime,'connect').mockImplementation(()=>undefined);});
 afterEach(()=>{runtime.dispose();jest.restoreAllMocks();jest.useRealTimers();});
@@ -49,15 +53,15 @@ test('Strict Mode cleanup and setup share one refresh and restore the AppState l
   const pending=deferred<typeof saved>();read.mockImplementationOnce(()=>pending.promise);
   const listener=jest.spyOn(AppState,'addEventListener');
   const a=runtime.start();runtime.dispose();const b=runtime.start();expect(b).toBe(a);pending.resolve(saved);await b;
-  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/refresh'))).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([url])=>typeof url==='string'&&url.endsWith('/refresh'))).toHaveLength(1);
   expect(listener).toHaveBeenCalledTimes(2);expect(useWorkspace.getState().ready).toBe(true);
 });
 
 test('reconnect refetches loaded messages before advancing to a fresh snapshot',async()=>{
   await runtime.start();useWorkspace.getState().upsertMessage(parseMessage(message)!);
   await runtime.resume();expect(useWorkspace.getState().messages.c1?.[0]?.plainText).toBe('edited');
-  expect(fetchMock.mock.calls.some(([url])=>url.includes('/c1/messages?'))).toBe(true);
-  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/refresh'))).toHaveLength(1);
+  expect(fetchMock.mock.calls.some(([url])=>typeof url==='string'&&url.includes('/c1/messages?'))).toBe(true);
+  expect(fetchMock.mock.calls.filter(([url])=>typeof url==='string'&&url.endsWith('/refresh'))).toHaveLength(1);
 });
 
 test('a transient reconnect failure schedules another attempt without user intervention',async()=>{
@@ -68,7 +72,10 @@ test('a transient reconnect failure schedules another attempt without user inter
 
 test('disabled Workspace clears retained content instead of restoring cached authorization',async()=>{
   await runtime.start();useWorkspace.getState().upsertMessage(parseMessage(message)!);
-  fetchMock.mockImplementation(async url=>url.endsWith('/bootstrap')?response({error:{code:'workspace.disabled'}},503):response(url.endsWith('/refresh')?session:policy));
+  fetchMock.mockImplementation(async url=>{
+    if(typeof url!=='string')throw new Error('Expected a string API URL');
+    return url.endsWith('/bootstrap')?response({error:{code:'workspace.disabled'}},503):response(url.endsWith('/refresh')?session:policy);
+  });
   await runtime.resume();expect(useWorkspace.getState().ready).toBe(false);expect(useWorkspace.getState().messages).toEqual({});expect(credentials.clear).toHaveBeenCalled();
 });
 
@@ -167,4 +174,62 @@ test('an allowed card action sends its validated UI input to the server',async()
   await runtime.cardAction('card-1','echo.vote.submit',['echo.vote.submit'],3,{optionId:'choice-a'});
   const post=fetchMock.mock.calls.find(([url])=>String(url).endsWith('/cards/card-1/actions'));
   expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({actionId:'echo.vote.submit',expectedRevision:3,input:{optionId:'choice-a'}});
+});
+
+// Exact outer frame / unversioned event shape from Go realtime.EventEnvelope and events.Event.
+const echoGoFrame = {
+  version:1, type:'event', event:{ id:'echo-live', spaceId:'s1', seq:5, type:'message.created', conversationId:'c1', payload:{
+    message:{ ...message, id:'echo-status-1', authorId:'usr_system_echo', authorName:'回声', authorKind:'bot', kind:'bot',
+      plainText:'回声需求 REQ-2026-0001 状态已更新', content:{ format:'duallane.message+json;v=1', plainText:'回声需求状态已更新', blocks:[
+        { type:'card', cardId:'card_echo_status', cardType:'echo.request-status', schemaVersion:1, fallbackText:'回声需求状态已更新' },
+      ] } },
+  } },
+};
+
+async function receiveGoFrame(tracker:ReplayTracker, frame:unknown) {
+  const accepted = tracker.accept(frame);
+  expect(accepted.sync).not.toBe(true);
+  if (accepted.event) await (runtime as unknown as {applyEvent:(event:WorkspaceEvent,replay:boolean)=>Promise<void>}).applyEvent(accepted.event,!!accepted.replay);
+}
+
+test('a real Go live bot-card frame updates messages and notifies a background member once',async()=>{
+  await runtime.start();
+  (runtime as unknown as {foreground:boolean}).foreground=false;
+  const tracker=new ReplayTracker(4);
+  tracker.accept({version:1,type:'ready',currentSeq:4,replayCount:0});
+  await receiveGoFrame(tracker,echoGoFrame);
+  await receiveGoFrame(tracker,echoGoFrame);
+  expect(useWorkspace.getState().messages.c1?.[0]).toMatchObject({id:'echo-status-1',kind:'bot',fallback:false});
+  expect(showMessageNotification).toHaveBeenCalledTimes(1);
+  expect(showMessageNotification).toHaveBeenCalledWith(expect.objectContaining({userId:'u1',conversationId:'c1',messageId:'echo-status-1'}));
+});
+
+test('a real Go replay bot-card frame restores content without a notification',async()=>{
+  await runtime.start();
+  (runtime as unknown as {foreground:boolean}).foreground=false;
+  const tracker=new ReplayTracker(4);
+  tracker.accept({version:1,type:'ready',currentSeq:5,replayCount:1});
+  await receiveGoFrame(tracker,echoGoFrame);
+  expect(useWorkspace.getState().messages.c1?.[0]?.id).toBe('echo-status-1');
+  expect(showMessageNotification).not.toHaveBeenCalled();
+});
+
+test.each(['mentions','muted'] as const)('a real Go bot-card frame respects %s notification preference',async notificationLevel=>{
+  await runtime.start();
+  (runtime as unknown as {foreground:boolean}).foreground=false;
+  useWorkspace.setState(s=>({conversations:{...s.conversations,c1:{...s.conversations.c1!,notificationLevel}}}));
+  const tracker=new ReplayTracker(4);
+  tracker.accept({version:1,type:'ready',currentSeq:4,replayCount:0});
+  await receiveGoFrame(tracker,echoGoFrame);
+  expect(useWorkspace.getState().messages.c1?.[0]?.id).toBe('echo-status-1');
+  expect(showMessageNotification).not.toHaveBeenCalled();
+});
+
+test('a real Go live card does not notify the foreground member',async()=>{
+  await runtime.start();
+  (runtime as unknown as {foreground:boolean}).foreground=true;
+  const tracker=new ReplayTracker(4);
+  tracker.accept({version:1,type:'ready',currentSeq:4,replayCount:0});
+  await receiveGoFrame(tracker,echoGoFrame);
+  expect(showMessageNotification).not.toHaveBeenCalled();
 });

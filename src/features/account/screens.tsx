@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Linking, ScrollView, Text, View } from 'react-native';
+import { Image, Linking, ScrollView, View, useWindowDimensions } from 'react-native';
+import { Text } from '../../ui/Text';
 import * as Updates from 'expo-updates';
 import type { NavigationAction } from '@react-navigation/native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useWorkspace } from '../../domain/store';
 import type { ChatSettings, ChatSettingsPatch } from '../../domain/contracts';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
+import { avatarErrorText, chooseAvatar, type AvatarSelection } from '../../data/avatar';
 import { cache } from '../../platform/storage';
 import { enableNotifications } from '../../platform/notifications';
 import { installed } from '../../platform/config';
@@ -17,7 +19,6 @@ import {
   Avatar,
   Button,
   Dialog,
-  EmptyState,
   InlineFeedback,
   Input,
   Label,
@@ -31,6 +32,7 @@ import {
 import { Bell, Info, LogOut, MessageSquare, Palette, RefreshCw, Smile, UserRound } from 'lucide-react-native';
 import { catalogPacks } from '../../domain/emote-catalog';
 import { useTheme, type AppearanceMode } from '../../ui/theme';
+import { StackHeader } from '../../ui/StackHeader';
 import { WorkbenchScreen } from '../workbench/WorkbenchScreen';
 
 export type AccountParams = {
@@ -60,6 +62,7 @@ export function AccountNavigator({
   return (
     <Stack.Navigator
       screenOptions={{
+        header: props => <StackHeader {...props} />,
         headerStyle: { backgroundColor: t.surface },
         headerTintColor: t.text,
         headerShadowVisible: false,
@@ -101,7 +104,7 @@ function AccountHomeScreen({ runtime, open }: { runtime: Runtime; open: (name: E
         <SettingGroup title="空间">
           <SettingRow icon={<MessageSquare size={20} color={t.text} />} title="空间信息" detail={bootstrap?.space.name} onPress={() => open('Space')} />
           <SettingRow icon={<Info size={20} color={t.text} />} title="关于与更新" detail={`版本 ${installed.appVersion}`} onPress={() => open('About')} />
-          <SettingRow icon={<RefreshCw size={20} color={t.text} />} title="重新连接" detail="不修复实时通道，只重新拉取会话" onPress={() => void runtime.resume()} />
+          <SettingRow icon={<RefreshCw size={20} color={t.text} />} title="重新连接" detail="恢复连接并同步最新会话" onPress={() => void runtime.resume()} />
           {__DEV__ ? <SettingRow title="组件工作台" detail="仅开发构建" onPress={() => open('Workbench')} /> : null}
         </SettingGroup>
         <SettingGroup title="危险" danger>
@@ -125,7 +128,9 @@ function AccountHomeScreen({ runtime, open }: { runtime: Runtime; open: (name: E
 
 export function ProfileScreen({ runtime }: { runtime: Runtime }) {
   const t = useTheme();
+  const { height } = useWindowDimensions();
   const navigation = useNavigation();
+  const accountKey = useWorkspace(s => s.accountKey);
   const user = useWorkspace(s => s.bootstrap?.auth.currentUser);
   const savedNickname = user?.nickname ?? '';
   const savedDiscoverable = user?.searchDiscoverable ?? true;
@@ -134,22 +139,142 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [leave, setLeave] = useState(false);
+  const profileIdentity = useRef({ accountKey, userId: user?.id });
+  const canonicalInputs = useRef({ nickname: savedNickname, discoverable: savedDiscoverable });
+  const submittedProfile = useRef<{ nickname: string; discoverable: boolean; completed: boolean } | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarFeedback, setAvatarFeedback] = useState('');
+  const [avatarTone, setAvatarTone] = useState<'success' | 'danger'>('success');
+  const [avatarPreview, setAvatarPreview] = useState<AvatarSelection | null>(null);
+  const [avatarPreviewReady, setAvatarPreviewReady] = useState(false);
+  const [restoreAvatar, setRestoreAvatar] = useState(false);
+  const avatarGeneration = useRef(0);
+  const avatarWorking = useRef(false);
+  const selectedAvatar = useRef<{ file: AvatarSelection; current: () => boolean; ready: boolean } | null>(null);
+  const restoreScope = useRef<(() => boolean) | null>(null);
+  const avatarTrigger = useRef<View>(null);
+  const restoreAvatarTrigger = useRef<View>(null);
+  const cancelPreviewFocus = useRef<(() => void) | null>(null);
+  const cancelRestoreFocus = useRef<(() => void) | null>(null);
+  const avatarFocusGeneration = useRef(0);
+  const previewReturnFocus = useRef<(() => boolean) | undefined>(undefined);
+  const restoreReturnFocus = useRef<(() => boolean) | undefined>(undefined);
+  const clearSelection = useCallback(() => {
+    selectedAvatar.current?.file.dispose();
+    selectedAvatar.current = null;
+    setAvatarPreview(null);
+    setAvatarPreviewReady(false);
+  }, []);
+  const invalidateAvatar = useCallback(() => {
+    cancelPreviewFocus.current?.();
+    cancelRestoreFocus.current?.();
+    avatarGeneration.current += 1;
+    avatarFocusGeneration.current += 1;
+    setAvatarBusy(false); setAvatarFeedback(''); setRestoreAvatar(false);
+    avatarWorking.current = false;
+    restoreScope.current = null;
+    clearSelection();
+  }, [clearSelection]);
+  useFocusEffect(useCallback(() => {
+    invalidateAvatar();
+    return invalidateAvatar;
+  }, [invalidateAvatar]));
+  useEffect(() => {
+    invalidateAvatar();
+    return invalidateAvatar;
+  }, [runtime, runtime.api, accountKey, user?.id, invalidateAvatar]);
+  const avatarCurrent = () => {
+    try {
+      const generation = avatarGeneration.current, session = runtime.avatarScope();
+      return () => generation === avatarGeneration.current && navigation.isFocused() && session();
+    } catch { return () => false; }
+  };
+  const selectAvatar = async () => {
+    if (avatarWorking.current) return;
+    const current = avatarCurrent();
+    if (!current()) return;
+    cancelPreviewFocus.current?.();
+    cancelRestoreFocus.current?.();
+    const focusGeneration = ++avatarFocusGeneration.current;
+    previewReturnFocus.current = () => focusGeneration === avatarFocusGeneration.current && current();
+    avatarWorking.current = true; setAvatarBusy(true); setAvatarFeedback(''); clearSelection();
+    try {
+      const file = await chooseAvatar(accountKey, current);
+      if (!current()) { file?.dispose(); return; }
+      if (file) { selectedAvatar.current = { file, current, ready: false }; setAvatarPreview(file); }
+    } catch (error) {
+      if (current()) { setAvatarFeedback(avatarErrorText(error)); setAvatarTone('danger'); }
+    } finally { if (current()) { avatarWorking.current = false; setAvatarBusy(false); } }
+  };
+  const saveAvatar = async (selected: typeof selectedAvatar.current) => {
+    if (!selected || selected !== selectedAvatar.current || avatarWorking.current) return;
+    if (!selected.current()) { clearSelection(); return; }
+    if (!selected.ready) return;
+    avatarWorking.current = true; setAvatarBusy(true); setAvatarFeedback('');
+    setAvatarPreview(null); setAvatarPreviewReady(false);
+    try {
+      await runtime.updateAvatar(selected.file, selected.current);
+      if (selected.current()) { setAvatarFeedback('头像已保存'); setAvatarTone('success'); }
+    } catch (error) {
+      if (selected.current()) { setAvatarFeedback(avatarErrorText(error)); setAvatarTone('danger'); }
+    } finally {
+      selected.file.dispose();
+      if (selected.current()) { selectedAvatar.current = null; avatarWorking.current = false; setAvatarBusy(false); }
+    }
+  };
+  const restoreGithubAvatar = async () => {
+    const current = restoreScope.current;
+    setRestoreAvatar(false);
+    if (!current?.() || avatarWorking.current) return;
+    avatarWorking.current = true; setAvatarBusy(true); setAvatarFeedback('');
+    try {
+      await runtime.clearAvatar(current);
+      if (current()) { setAvatarFeedback('已恢复 GitHub 头像'); setAvatarTone('success'); }
+    } catch (error) {
+      if (current()) { setAvatarFeedback(avatarErrorText(error)); setAvatarTone('danger'); }
+    } finally { if (current()) { avatarWorking.current = false; setAvatarBusy(false); } }
+  };
   const pendingLeave = useRef<NavigationAction | null>(null);
+  useEffect(() => {
+    const previous = canonicalInputs.current, submission = submittedProfile.current;
+    canonicalInputs.current = { nickname: savedNickname, discoverable: savedDiscoverable };
+    if (profileIdentity.current.accountKey !== accountKey || profileIdentity.current.userId !== user?.id) {
+      profileIdentity.current = { accountKey, userId: user?.id };
+      submittedProfile.current = null;
+      setNickname(savedNickname); setDiscoverable(savedDiscoverable); setSaving(false); setError(''); setLeave(false);
+      pendingLeave.current = null;
+      return;
+    }
+    // A canonical update follows pristine fields independently. An in-flight save
+    // must not mistake a newer edit back to the old canonical value for a pristine field.
+    setNickname(value => submission && value !== submission.nickname ? value : value === previous.nickname ? savedNickname : value);
+    setDiscoverable(value => submission && value !== submission.discoverable ? value : value === previous.discoverable ? savedDiscoverable : value);
+    if (!saving && submission?.completed) submittedProfile.current = null;
+  }, [accountKey, user?.id, savedNickname, savedDiscoverable, saving]);
   const dirty = nickname !== savedNickname || discoverable !== savedDiscoverable;
   const save = async () => {
     if (!dirty || saving) return;
+    const submission = { nickname, discoverable, completed: false };
+    const generation = avatarGeneration.current, api = runtime.api, userId = user?.id;
+    const current = () => generation === avatarGeneration.current && navigation.isFocused() && runtime.api === api
+      && useWorkspace.getState().accountKey === accountKey && useWorkspace.getState().bootstrap?.auth.currentUser.id === userId;
+    submittedProfile.current = submission;
     setSaving(true);
     setError('');
     try {
-      await runtime.updateProfile({
+      const canonical = await runtime.updateProfile({
         nickname: nickname.trim() ? nickname.trim().slice(0, 32) : null,
         searchDiscoverable: discoverable,
       });
+      if (!current()) throw new Error('Stale session');
+      setNickname(value => value === submission.nickname ? canonical.nickname ?? '' : value);
+      setDiscoverable(value => value === submission.discoverable ? canonical.searchDiscoverable ?? true : value);
     } catch (e) {
-      setError(errorText(e));
+      if (current()) setError(errorText(e));
       throw e;
     } finally {
-      setSaving(false);
+      submission.completed = true;
+      if (submittedProfile.current === submission) setSaving(false);
     }
   };
   useEffect(() => {
@@ -165,6 +290,10 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
     });
     return sub;
   }, [dirty, saving, navigation]);
+  const previewSelection = selectedAvatar.current;
+  const closePreview = () => {
+    if (previewSelection && selectedAvatar.current === previewSelection && !avatarWorking.current) clearSelection();
+  };
   return (
     <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={styles.content}>
       <AvatarBlock name={user?.displayName ?? '当前账号'} id={user?.id ?? 'self'} uri={user?.avatarUrl} />
@@ -173,7 +302,7 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
       <Input accessibilityLabel="显示名" value={nickname} onChangeText={text => setNickname(text.slice(0, 32))} placeholder={user?.displayName || '显示名'} />
       <SwitchRow
         title="允许被成员查找"
-        detail="这是个人可见性，不能改成对方的公共名字。"
+        detail="开启后，空间成员可通过公开昵称或 GitHub 登录名找到你。关闭不影响已有会话和联系人。"
         value={discoverable}
         onValueChange={setDiscoverable}
       />
@@ -182,7 +311,68 @@ export function ProfileScreen({ runtime }: { runtime: Runtime }) {
         <Button title="取消" secondary disabled={saving || !dirty} onPress={() => { setNickname(savedNickname); setDiscoverable(savedDiscoverable); setError(''); }} />
       </View>
       <InlineFeedback text={error} tone="danger" />
-      <EmptyState title="更换头像稍后接入" detail="自定义头像会按授权地址加载。上传仍走独立接口，本页不会假装已经保存头像。" />
+      <Label>头像</Label>
+      <Label muted>选择 JPEG、PNG 或 WebP 图片，非空且不超过 5 MiB。确认后会校正图片方向并按中心裁剪成方形；头像与显示名独立保存。</Label>
+      <View style={styles.actions}>
+        <Button ref={avatarTrigger} title={avatarBusy ? '头像处理中…' : '更换头像'} disabled={avatarBusy || !user} onPress={() => void selectAvatar()} />
+        <Button ref={restoreAvatarTrigger} title="恢复 GitHub 头像" secondary disabled={avatarBusy || !user} onPress={() => {
+          const current = avatarCurrent();
+          if (current()) {
+            cancelPreviewFocus.current?.();
+            cancelRestoreFocus.current?.();
+            const focusGeneration = ++avatarFocusGeneration.current;
+            restoreReturnFocus.current = () => focusGeneration === avatarFocusGeneration.current && current();
+            restoreScope.current = current; setRestoreAvatar(true);
+          }
+        }} />
+      </View>
+      <InlineFeedback text={avatarFeedback} tone={avatarTone} />
+      <Dialog
+        visible={!!avatarPreview}
+        title="确认更换头像？"
+        returnFocusRef={avatarTrigger}
+        canReturnFocus={previewReturnFocus.current}
+        cancelReturnFocusRef={cancelPreviewFocus}
+        onRequestClose={closePreview}
+        actions={[
+          { title: '取消上传', variant: 'secondary', onPress: closePreview },
+        ]}
+      >
+        <ScrollView style={{ flexGrow: 0, flexShrink: 1, maxHeight: height * 0.4 }} contentContainerStyle={{ gap: t.space.md }} keyboardShouldPersistTaps="handled">
+          {avatarPreview ? <Image
+            key={avatarPreview.uri}
+            accessibilityLabel="所选头像中心裁剪预览"
+            source={{ uri: avatarPreview.uri }}
+            resizeMode="cover"
+            style={{ width: 160, height: 160, alignSelf: 'center', borderRadius: t.radius.control }}
+            onLoad={() => {
+              if (!previewSelection || selectedAvatar.current !== previewSelection || !previewSelection.current() || avatarWorking.current) return;
+              previewSelection.ready = true; setAvatarPreviewReady(true);
+            }}
+            onError={() => {
+              if (!previewSelection || selectedAvatar.current !== previewSelection || !previewSelection.current() || avatarWorking.current) return;
+              clearSelection(); setAvatarFeedback('这张图片无法读取，请选择其他图片'); setAvatarTone('danger');
+            }}
+          /> : null}
+          {!avatarPreviewReady ? <Label muted>正在加载预览…</Label> : null}
+          <Label>预览按中心裁剪，保存后由服务器处理。不会保存尚未提交的显示名或查找可见性。</Label>
+        </ScrollView>
+        <Button title="确认上传" disabled={!avatarPreviewReady || avatarBusy} onPress={() => void saveAvatar(previewSelection)} />
+      </Dialog>
+      <Dialog
+        visible={restoreAvatar}
+        title="恢复 GitHub 头像？"
+        returnFocusRef={restoreAvatarTrigger}
+        canReturnFocus={restoreReturnFocus.current}
+        cancelReturnFocusRef={cancelRestoreFocus}
+        onRequestClose={() => { setRestoreAvatar(false); restoreScope.current = null; }}
+        actions={[
+          { title: '确认恢复', variant: 'danger', onPress: () => void restoreGithubAvatar() },
+          { title: '保留当前头像', variant: 'secondary', onPress: () => { setRestoreAvatar(false); restoreScope.current = null; } },
+        ]}
+      >
+        <Label>将移除自定义头像并恢复 GitHub 头像，不改变显示名或查找可见性。</Label>
+      </Dialog>
       <Dialog
         visible={leave}
         title="保存对资料的修改？"
@@ -400,7 +590,7 @@ function NotificationsScreen() {
   const [notice, setNotice] = useState('');
   return (
     <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={styles.content}>
-      <Label>新消息通知由应用在前台 WebSocket 收到事件后发出本地通知。普通后台可能延迟，进程结束后不保证即时送达。</Label>
+      <Label>开启系统通知并允许会话提醒后，应用在后台收到新消息时显示通知；前台不弹系统通知。普通后台可能延迟，进程结束后不保证即时送达。</Label>
       <Button
         title="开启消息通知"
         onPress={() => void enableNotifications().then(granted => setNotice(granted ? '系统已允许通知' : '系统未允许通知，可在系统设置中修改'))}

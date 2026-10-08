@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { DetailsScreen } from '../src/features/chat/screens';
 import { conversationSchema, type Topic } from '../src/domain/contracts';
 import { useWorkspace } from '../src/domain/store';
@@ -8,7 +9,9 @@ import type { Runtime } from '../src/data/runtime';
 jest.mock('@react-navigation/native', () => ({ useIsFocused: () => true }));
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { extra: { environment: 'test', apiOrigin: '', channel: 'internal' } }, nativeAppVersion: '0.2.0', nativeBuildVersion: '2' } }));
 jest.mock('expo/fetch', () => ({ fetch: jest.fn() }));
+jest.mock('../src/platform/storage', () => ({ cache: { get: jest.fn(), set: jest.fn(), remove: jest.fn() } }));
 
+const metrics = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 24, right: 0, bottom: 24, left: 0 } };
 const file = { id: 'f1', fileName: 'sample.png', mimeType: 'image/png', byteSize: 12, status: 'available', capabilities: { canDownload: true } };
 const topic: Topic = {
   id: 't1', conversationId: 'g1', title: '测试话题', description: null, descriptionPreview: null,
@@ -29,7 +32,7 @@ test('group details expose authorized pins, topics, and conversation files with 
   const onOpenPinnedMessage = jest.fn();
   const onOpenFile = jest.fn();
   const onDownloadFile = jest.fn();
-  const view = render(<DetailsScreen id="g1" runtime={runtime} onOpenTopic={onOpenTopic} onOpenPinnedMessage={onOpenPinnedMessage} onOpenFile={onOpenFile} onDownloadFile={onDownloadFile} />);
+  const view = render(<SafeAreaProvider initialMetrics={metrics}><DetailsScreen id="g1" runtime={runtime} onOpenTopic={onOpenTopic} onOpenPinnedMessage={onOpenPinnedMessage} onOpenFile={onOpenFile} onDownloadFile={onDownloadFile} /></SafeAreaProvider>);
 
   await waitFor(() => expect(view.getByText('Synthetic pin')).toBeTruthy());
   expect(view.getByText('测试话题')).toBeTruthy();
