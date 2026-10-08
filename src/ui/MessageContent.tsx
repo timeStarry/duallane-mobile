@@ -21,6 +21,15 @@ type MediaActions = {
   onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 };
 
+function imageAttachment(message: Message, block: Block): Attachment | undefined {
+  if (block.type !== 'attachment') return;
+  return message.attachments.find(file => file.id === block.attachmentId && isPreviewableImage(file));
+}
+
+export function hasMessageImageAttachments(message: Message): boolean {
+  return !message.fallback && message.blocks.some(block => !!imageAttachment(message, block));
+}
+
 export function standaloneMessageMedia(message: Message): StandaloneMedia | null {
   if (message.fallback || !message.blocks.length) return null;
   if (message.blocks.length === 1 && !message.attachments.length) {
@@ -51,6 +60,7 @@ export function MessageContent({
   onPreview,
   onPreviewEmote,
   mediaWidth,
+  own = false,
   onLongPress,
   accessibilityActions,
   onAccessibilityAction,
@@ -62,9 +72,11 @@ export function MessageContent({
   onPreview?: (file: Attachment) => void;
   onPreviewEmote?: (shortcode: string) => void;
   mediaWidth?: number;
+  own?: boolean;
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
 } & MediaActions) {
+  const t = useTheme();
   const settings = useWorkspace(s => s.chatSettings);
   const accountKey = useWorkspace(s => s.accountKey);
   const { width, height } = useWindowDimensions();
@@ -93,11 +105,29 @@ export function MessageContent({
       </View>
     );
   }
+  const renderBlock = (block: Block, index: number) => (
+    <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} cardContext={{ conversationId: message.conversationId, topicId: message.topicId }} mediaContext={mediaContext} maxMediaWidth={maxMediaWidth} windowHeight={height} mediaActions={mediaActions} />
+  );
+  if (!hasMessageImageAttachments(message)) return <View style={{ gap: 6 }}>{message.blocks.map(renderBlock)}</View>;
+
+  const segments: Array<{ image: boolean; blocks: Array<{ block: Block; index: number }> }> = [];
+  message.blocks.forEach((block, index) => {
+    const image = !!imageAttachment(message, block);
+    const previous = segments[segments.length - 1];
+    if (!image && previous && !previous.image) previous.blocks.push({ block, index });
+    else segments.push({ image, blocks: [{ block, index }] });
+  });
   return (
-    <View style={{ gap: 6 }}>
-      {message.blocks.map((block, index) => (
-        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} cardContext={{ conversationId: message.conversationId, topicId: message.topicId }} mediaContext={mediaContext} maxMediaWidth={maxMediaWidth} windowHeight={height} mediaActions={mediaActions} />
-      ))}
+    <View style={{ gap: 6, maxWidth: maxMediaWidth, alignItems: own ? 'flex-end' : 'flex-start' }}>
+      {segments.map(segment => {
+        const firstIndex = segment.blocks[0]!.index;
+        if (segment.image) return <React.Fragment key={`${message.id}:${firstIndex}`}>{segment.blocks.map(({ block, index }) => renderBlock(block, index))}</React.Fragment>;
+        return (
+          <View key={`${message.id}:${firstIndex}`} testID={`message-text-segment-${message.id}-${firstIndex}`} style={{ maxWidth: '100%', padding: 12, gap: 6, borderRadius: t.radius.bubble, backgroundColor: own ? t.sharedSoft : t.surface }}>
+            {segment.blocks.map(({ block, index }) => renderBlock(block, index))}
+          </View>
+        );
+      })}
     </View>
   );
 }

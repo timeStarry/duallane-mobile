@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { attachmentPreviewUri, canPreviewAttachment } from '../src/data/media';
@@ -192,4 +192,119 @@ test('a preview failure returns to the authorized file action and a revoked scop
   await act(async () => useWorkspace.getState().reset());
   expect(active.queryByTestId('synthetic-media')).toBeNull();
   expect(active.queryByRole('button', { name: `预览图片 ${image.fileName}` })).toBeNull();
+});
+
+test.each([true, false])('a caption and image share one message while only the caption has a bubble (own=%s)', async own => {
+  mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
+  const caption = '普通文件附言发送的合成图片';
+  const message: Message = { ...photo, authorId: own ? syntheticSelf.id : 'synthetic-other', authorAvatarUrl: undefined, plainText: caption, blocks: [{ type: 'text', text: caption }, ...photo.blocks] };
+  const onPreview = jest.fn(); const onReply = jest.fn();
+  const view = row(message, { onPreview, onReply });
+  await waitFor(() => expect(view.getByRole('button', { name: `预览图片 ${image.fileName}` })).toBeTruthy());
+  const body = view.getByTestId(`message-body-${message.id}`);
+  expect(StyleSheet.flatten(body.props.style)).toMatchObject({ padding: 0 });
+  expect(StyleSheet.flatten(body.props.style).backgroundColor).toBeUndefined();
+  const textSegment = view.getByTestId(`message-text-segment-${message.id}-0`);
+  expect(within(textSegment).getByText(caption)).toBeTruthy();
+  expect(within(textSegment).queryByTestId('synthetic-media')).toBeNull();
+  expect(StyleSheet.flatten(textSegment.props.style)).toMatchObject({ padding: 12, borderRadius: resolveTheme('light').radius.bubble, backgroundColor: own ? resolveTheme('light').sharedSoft : resolveTheme('light').surface });
+  const preview = view.getByRole('button', { name: `预览图片 ${image.fileName}` });
+  const imageStyle = StyleSheet.flatten(within(preview).getByTestId('synthetic-media').props.style);
+  expect(imageStyle.width).toBeCloseTo((320 - 32) * 0.96 - (own ? 0 : 36));
+  expect(StyleSheet.flatten(preview.props.style).backgroundColor).toBeUndefined();
+  expect(StyleSheet.flatten(preview.props.style).padding).toBeUndefined();
+  expect(view.getAllByTestId(`message-body-${message.id}`)).toHaveLength(1);
+  expect(view.getAllByRole('text', { name: /^消息操作，/ })).toHaveLength(1);
+  fireEvent(body, 'longPress');
+  expect(view.getByRole('button', { name: '更多' })).toBeTruthy();
+  fireEvent(preview, 'longPress');
+  expect(onPreview).not.toHaveBeenCalled();
+  fireEvent.press(preview);
+  expect(onPreview).toHaveBeenCalledWith(image);
+  fireEvent(preview, 'accessibilityAction', { nativeEvent: { actionName: 'reply' } });
+  expect(onReply).toHaveBeenCalledWith(message);
+  fireEvent(preview, 'accessibilityAction', { nativeEvent: { actionName: 'more' } });
+  expect(view.getByRole('button', { name: '仅自己隐藏' })).toBeTruthy();
+});
+
+test('alternating images and text retain their original order, grouped text bubbles and small inline emotes', async () => {
+  const secondImage = { ...image, id: 'synthetic-second-image', fileName: 'synthetic-landscape.png' };
+  const message: Message = {
+    ...photo, attachments: [image, secondImage],
+    blocks: [
+      { type: 'text', text: '图片之前' }, { type: 'mention', userId: 'synthetic-other', label: '另一成员' },
+      { type: 'text', text: '同一段文字' }, photo.blocks[0]!,
+      { type: 'text', text: `图片之间 ${token}` }, { type: 'emoji', shortcode: 'emoji:smile' },
+      { type: 'attachment', attachmentId: secondImage.id }, { type: 'text', text: '图片之后' },
+    ],
+  };
+  const view = row(message);
+  await waitFor(() => expect(view.getByRole('button', { name: `预览图片 ${secondImage.fileName}` })).toBeTruthy());
+  const firstSegment = view.getByTestId(`message-text-segment-${message.id}-0`);
+  expect(within(firstSegment).getByText('图片之前')).toBeTruthy();
+  expect(within(firstSegment).getByText('@另一成员')).toBeTruthy();
+  expect(within(firstSegment).getByText('同一段文字')).toBeTruthy();
+  const middleSegment = view.getByTestId(`message-text-segment-${message.id}-4`);
+  expect(within(middleSegment).getByText('图片之间 ')).toBeTruthy();
+  expect(within(middleSegment).getByText('😄')).toBeTruthy();
+  expect(StyleSheet.flatten(within(middleSegment).getByTestId('synthetic-media').props.style)).toMatchObject({ width: 28, height: 28 });
+  expect(within(view.getByTestId(`message-text-segment-${message.id}-7`)).getByText('图片之后')).toBeTruthy();
+  const mediaOrder = view.getAllByRole('button', { name: /^预览图片 / }).map(item => item.props.accessibilityLabel);
+  expect(mediaOrder).toEqual([`预览图片 ${image.fileName}`, `预览图片 ${secondImage.fileName}`]);
+  expect(view.queryByRole('button', { name: '预览自定义表情' })).toBeNull();
+  expect(view.queryAllByTestId(new RegExp(`^message-text-segment-${message.id}-`))).toHaveLength(3);
+  expect(view.getAllByRole('text', { name: /^消息操作，/ })).toHaveLength(1);
+});
+
+test('a mixed message keeps its separate reply, reaction, sending and failed retry controls', async () => {
+  const locate = jest.fn(); const retry = jest.fn();
+  const message: Message = { ...photo, plainText: '合成附言', blocks: [{ type: 'text', text: '合成附言' }, ...photo.blocks], replyToMessageId: 'synthetic-original', reactions: [{ emoteKey: 'emoji:heart', count: 2, reactedByCurrentUser: false }], status: 'sending' };
+  const element = (item: Message) => <SafeAreaProvider initialMetrics={metrics}><MessageRow message={item} retry={retry} download={jest.fn()} locate={locate} /></SafeAreaProvider>;
+  useWorkspace.getState().setMessages(message.conversationId, [message]);
+  const view = render(element(message));
+  await waitFor(() => expect(view.getByRole('button', { name: `预览图片 ${image.fileName}` })).toBeTruthy());
+  const reply = view.getByRole('button', { name: '定位原消息' });
+  expect(StyleSheet.flatten(reply.props.style)).toMatchObject({ padding: 8, borderRadius: resolveTheme('light').radius.control, backgroundColor: resolveTheme('light').soft });
+  fireEvent.press(reply);
+  expect(locate).toHaveBeenCalledWith('synthetic-original');
+  expect(view.getByText('发送中…')).toBeTruthy();
+  expect(view.getByRole('button', { name: 'emoji:heart 2' })).toBeDisabled();
+  view.rerender(element({ ...message, status: 'failed', error: '合成附言发送失败' }));
+  expect(view.queryByText('发送中…')).toBeNull();
+  expect(view.getByText('合成附言发送失败')).toBeTruthy();
+  fireEvent.press(view.getByRole('button', { name: '重试发送' }));
+  expect(retry).toHaveBeenCalledTimes(1);
+  expect(view.getAllByRole('text', { name: /^消息操作，/ })).toHaveLength(1);
+});
+
+test('a non-image file and caption keep the regular shared text bubble', () => {
+  const file: Attachment = { ...image, id: 'synthetic-document', fileName: 'synthetic-document.txt', mimeType: 'text/plain' };
+  const message: Message = { ...original, attachments: [file], blocks: [{ type: 'text', text: '普通文件附言' }, { type: 'attachment', attachmentId: file.id }] };
+  const view = row(message);
+  expect(StyleSheet.flatten(view.getByTestId(`message-body-${message.id}`).props.style)).toMatchObject({ padding: 12, borderRadius: resolveTheme('light').radius.bubble, backgroundColor: resolveTheme('light').sharedSoft });
+  expect(view.getByText('普通文件附言')).toBeTruthy();
+  expect(view.getByRole('button', { name: `保存文件${file.fileName}到设备` })).toBeEnabled();
+  expect(view.queryByTestId('synthetic-media')).toBeNull();
+  expect(view.queryAllByTestId(/^message-text-segment-/)).toHaveLength(0);
+  expect(attachmentPreviewUri).not.toHaveBeenCalled();
+});
+
+test('fallback and denied mixed attachments never load or expose an image preview', async () => {
+  const message: Message = { ...photo, plainText: '安全降级附言', blocks: [{ type: 'text', text: '安全降级附言' }, ...photo.blocks] };
+  const fallback = row({ ...message, fallback: true });
+  expect(fallback.getByText('安全降级附言')).toBeTruthy();
+  expect(fallback.getByText('部分内容暂不支持，可在“我的”检查更新。')).toBeTruthy();
+  expect(StyleSheet.flatten(fallback.getByTestId(`message-body-${message.id}`).props.style)).toMatchObject({ padding: 12, backgroundColor: resolveTheme('light').sharedSoft });
+  expect(fallback.queryByRole('button', { name: /^预览图片 / })).toBeNull();
+  expect(fallback.queryByTestId('synthetic-media')).toBeNull();
+  expect(attachmentPreviewUri).not.toHaveBeenCalled();
+  fallback.unmount();
+  jest.mocked(canPreviewAttachment).mockReturnValue(false);
+  const deniedImage = { ...image, capabilities: { canDownload: false } };
+  const denied = row({ ...message, attachments: [deniedImage] });
+  await waitFor(() => expect(denied.getByRole('button', { name: `保存文件${image.fileName}到设备` })).toBeDisabled());
+  expect(within(denied.getByTestId(`message-text-segment-${message.id}-0`)).getByText('安全降级附言')).toBeTruthy();
+  expect(denied.queryByRole('button', { name: /^预览图片 / })).toBeNull();
+  expect(denied.queryByTestId('synthetic-media')).toBeNull();
+  expect(attachmentPreviewUri).not.toHaveBeenCalled();
 });

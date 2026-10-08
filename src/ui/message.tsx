@@ -15,7 +15,7 @@ import { errorText } from '../data/client';
 const emptyMembers: Array<{ id: string; displayName: string }> = [];
 import { Avatar } from './chrome';
 import { Button, Dialog, InlineFeedback, Label, ObjectActionSheet } from './primitives';
-import { MessageContent, ReactionGlyph, standaloneMessageMedia } from './MessageContent';
+import { hasMessageImageAttachments, MessageContent, ReactionGlyph, standaloneMessageMedia } from './MessageContent';
 import { CatalogEmoteGrid } from './CatalogEmoteGrid';
 import { catalogReactionKey, catalogUnicodeGlyph, reactionEmotePacks } from '../domain/emote-catalog';
 import { useTheme } from './theme';
@@ -144,7 +144,7 @@ export function MessageRow({
     react(emoteKey, remove);
   };
   const grouped = groupPosition ? groupPosition === 'middle' || groupPosition === 'end' : previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
-  const bareMedia = !!standaloneMessageMedia(message);
+  const bareMedia = !!standaloneMessageMedia(message) || hasMessageImageAttachments(message);
   const contentWidth = Math.max(1, Math.min(480, (width - t.space.lg * 2) * 0.96 - (own ? 0 : t.list.chatAvatar + 4)));
   const reply = message.replyToMessageId ? useWorkspace.getState().messages[message.topicId ? `topic:${message.topicId}` : message.conversationId]?.find(item => item.id === message.replyToMessageId) : undefined;
   const actions = !canAccessMessage
@@ -206,7 +206,7 @@ export function MessageRow({
               <Label muted>{reply && !reply.hiddenByCurrentUser ? (reply.recalledAt ? '已撤回的消息' : `${reply.authorName}: ${reply.plainText}`) : '原消息不可用'}</Label>
             </Pressable>
           ) : null}
-          <MessageContent message={message} download={download} onPreview={onPreview} onPreviewEmote={onPreviewEmote} mediaWidth={Math.max(1, contentWidth - (bareMedia ? 0 : 24))} onLongPress={openCluster} accessibilityActions={accessibilityActions} onAccessibilityAction={onAccessibilityAction} onOpenTopic={onOpenTopic} runtime={runtime} />
+          <MessageContent message={message} download={download} onPreview={onPreview} onPreviewEmote={onPreviewEmote} mediaWidth={contentWidth} own={own} onLongPress={openCluster} accessibilityActions={accessibilityActions} onAccessibilityAction={onAccessibilityAction} onOpenTopic={onOpenTopic} runtime={runtime} />
           {message.reactions?.length ? (
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
               {message.reactions.map(reaction => (
