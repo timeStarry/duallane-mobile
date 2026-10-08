@@ -17,6 +17,9 @@ const messages: Record<string, string> = {
   'request.cancelled': '操作已取消',
   'request.network': '无法连接到服务器，请检查网络后重试',
   'response.invalid': '服务器返回了无法识别的数据',
+  'image.selection_invalid': '请选择有效图片后重试',
+  'image.too_many': '一次最多发送 9 张图片，请重新选择',
+  'image.unavailable': '所选图片无法读取，请重新选择',
 };
 const classified = new Set(['request.timeout', 'request.network', 'response.invalid', 'request.failed', 'mobile.not_configured']);
 

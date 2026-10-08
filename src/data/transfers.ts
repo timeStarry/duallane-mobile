@@ -1,4 +1,5 @@
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
 import * as Sharing from 'expo-sharing';
@@ -7,7 +8,7 @@ import { attachmentSchema, type Attachment } from '../domain/contracts';
 import { useWorkspace } from '../domain/store';
 import { cache } from '../platform/storage';
 import { saveFileToDevice } from '../platform/save-file';
-import type { ApiClient } from './client';
+import { ApiError, type ApiClient } from './client';
 
 const bytesSchema = z.number().int().nonnegative().safe();
 const uploadVisibility = z.enum(['space', 'conversation', 'private_staging']);
@@ -120,8 +121,73 @@ export class Transfers {
       if (source.uri.startsWith(`${Paths.cache.uri.replace(/\/$/, '')}/`)) removeFile(source);
     }
   }
+  async chooseImages(key:string, conversationId?:string, visibility?:z.infer<typeof uploadVisibility>, isCurrent:()=>boolean = () => true):Promise<UploadTask[]> {
+    if (visibility === 'private_staging' && conversationId) throw new Error('Topic upload cannot use a conversation scope');
+    if (visibility === 'conversation' && !conversationId) throw new Error('Conversation upload requires a conversation');
+    const assertAccount = this.guard(key);
+    const assertCurrent = () => { assertAccount(); if (!isCurrent()) throw new Error('Target changed'); };
+    assertCurrent();
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes:['images'], allowsMultipleSelection:true, selectionLimit:9, allowsEditing:false, quality:1, legacy:false });
+    if (result.canceled) return [];
+    const assets = Array.isArray(result.assets) ? result.assets : [];
+    const pickerFiles = assets.map(asset => {
+      try { return typeof asset?.uri === 'string' && asset.uri ? new File(asset.uri) : null; }
+      catch { return null; }
+    });
+    const createdFiles:File[] = [];
+    const tasks:UploadTask[] = [];
+    try {
+      assertCurrent();
+      if (assets.length > 9) throw new ApiError('image.too_many', 0);
+      if (assets.length < 1 || pickerFiles.some(file => !file)) throw new ApiError('image.selection_invalid', 0);
+      const dir = new Directory(Paths.document, 'uploads');
+      dir.create({ intermediates:true, idempotent:true });
+      for (let index = 0; index < assets.length; index++) {
+        const asset = assets[index];
+        const source = pickerFiles[index];
+        if (!asset || !source) throw new ApiError('image.selection_invalid', 0);
+        const mimeType = asset.mimeType;
+        if ((asset.type != null && asset.type !== 'image') || typeof mimeType !== 'string' || !/^image\/[a-z0-9.+-]+$/i.test(mimeType)) throw new ApiError('image.selection_invalid', 0);
+        assertCurrent();
+        const id = Crypto.randomUUID();
+        const file = new File(dir, id);
+        createdFiles.push(file);
+        try { source.copy(file); }
+        catch { throw new ApiError('image.unavailable', 0); }
+        if (!file.size || !Number.isSafeInteger(file.size)) throw new ApiError('image.unavailable', 0);
+        const fileName = asset.fileName?.split(/[\\/]/).at(-1)?.trim() || `image-${index + 1}`;
+        const task = taskSchema.parse({ id, uri:file.uri, fileName, mimeType, byteSize:file.size, conversationId, visibility });
+        assertCurrent();
+        this.save(key, task);
+        tasks.push(task);
+      }
+      return tasks;
+    } catch (error) {
+      for (const file of createdFiles) removeFile(file);
+      if (tasks.length) {
+        const retained = this.tasks(key).filter(task => !tasks.some(created => created.id === task.id));
+        if (retained.length) cache.set(`${key}:uploads`, retained);
+        else cache.remove(`${key}:uploads`);
+      }
+      throw error;
+    } finally {
+      // Expo returns an app-cache selection copy; never delete a user-owned URI.
+      for (const source of pickerFiles) if (source?.uri.startsWith(`${Paths.cache.uri.replace(/\/$/, '')}/`)) removeFile(source);
+    }
+  }
+  discardUnstarted(key:string, selected:UploadTask[]):void {
+    if (!selected.length) return;
+    const ids = new Set(selected.map(task => task.id));
+    const retained:UploadTask[] = [];
+    for (const task of this.tasks(key)) {
+      if (!ids.has(task.id) || task.uploadId || task.complete || activeTasks.has(task.id)) { retained.push(task); continue; }
+      removeFile(managedFile(task));
+    }
+    if (retained.length) cache.set(`${key}:uploads`, retained);
+    else cache.remove(`${key}:uploads`);
+  }
   pause(id:string) { this.paused.add(id); }
-  async run(api:ApiClient, key:string, input:UploadTask, progress:(n:number)=>void):Promise<Attachment|null> {
+  async run(api:ApiClient, key:string, input:UploadTask, progress:(n:number)=>void, shouldContinue:()=>boolean = () => true):Promise<Attachment|null> {
     const assertAccount = this.guard(key);
     assertAccount();
     if (activeTasks.has(input.id)) return null;
@@ -129,18 +195,21 @@ export class Transfers {
     let task = this.tasks(key).find(t => t.id === input.id);
     if (!task) throw new Error('Upload unavailable');
     if (task.complete) return null;
+    if (!shouldContinue()) return null;
     const file = managedFile(task);
     activeTasks.add(task.id);
     this.paused.delete(task.id);
-    const cancelled = () => { assertAccount(); return this.paused.has(input.id); };
+    const cancelled = () => { assertAccount(); return this.paused.has(input.id) || !shouldContinue(); };
     try {
       if (!task.uploadId) {
+        if (cancelled()) return null;
         if (!file.exists || file.size !== task.byteSize) throw new Error('File unavailable');
         const visibility = task.visibility ?? (task.conversationId ? 'conversation' : 'space');
         const r = await api.json('/api/workspace/files/uploads/reserve', reservation, { fileName:task.fileName, mimeType:task.mimeType, byteSize:task.byteSize, visibility, ...(task.conversationId ? { conversationId:task.conversationId } : {}) });
         assertAccount();
         task = { ...task, uploadId:r.id, attachmentId:r.attachment.id, fileName:r.attachment.fileName, mimeType:r.attachment.mimeType };
         this.save(key, task);
+        if (cancelled()) return null;
       }
       const prefix = `/api/workspace/files/uploads/${encodeURIComponent(task.uploadId!)}`;
       const status = await api.json(prefix, uploadStatusSchema);

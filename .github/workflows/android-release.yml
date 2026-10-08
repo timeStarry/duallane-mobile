@@ -92,7 +92,7 @@ jobs:
           DUALLANE_ANDROID_KEY_PASSWORD: ${{ secrets.DUALLANE_ANDROID_KEY_PASSWORD }}
         working-directory: android
         run: |
-          ./gradlew --no-daemon assembleRelease bundleRelease
+          ./gradlew --no-daemon --max-workers=2 assembleRelease bundleRelease
 
       - name: Upload Android packages
         uses: actions/upload-artifact@v4

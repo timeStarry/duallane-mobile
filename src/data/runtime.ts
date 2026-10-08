@@ -302,18 +302,18 @@ export class Runtime {
       throw error;
     }
   }
-  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];mentionSpans?:MentionSpan[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;}){
+  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];mentionSpans?:MentionSpan[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;preserveDraft?:boolean;shouldSend?:()=>boolean;}){
     const s=useWorkspace.getState();const topicId=options?.topicId??existing?.topicId;const conversationId=existing?.conversationId??id;
     const bucket=topicId?`topic:${topicId}`:conversationId;
     const topic=topicId?s.topics[topicId]:undefined;
     const canSend=topicId?!!topic&&topic.conversationId===conversationId&&topic.joined&&topic.status==='open':!!s.conversations[conversationId]?.capabilities.canSendMessage;
-    if(!s.bootstrap||!this.canReadBucket(bucket)||!canSend||this.forced())throw new Error('Cannot send');
+    if(!s.bootstrap||!this.canReadBucket(bucket)||!canSend||this.forced()||options?.shouldSend?.()===false)throw new Error('Cannot send');
     const api=this.requireApi(),epoch=this.epoch,account=s.accountKey;
     // Membership can be revoked without changing the login epoch while an upload or command is pending.
     const readable=()=>this.current(epoch)&&this.api===api&&useWorkspace.getState().accountKey===account&&this.canReadBucket(bucket)&&(!topicId||useWorkspace.getState().topics[topicId]?.conversationId===conversationId);
     const canStillSend=()=>{
       const state=useWorkspace.getState(),currentTopic=topicId?state.topics[topicId]:undefined;
-      return readable()&&!this.forced()&&(topicId?currentTopic?.status==='open':!!state.conversations[conversationId]?.capabilities.canSendMessage);
+      return readable()&&!this.forced()&&options?.shouldSend?.()!==false&&(topicId?currentTopic?.status==='open':!!state.conversations[conversationId]?.capabilities.canSendMessage);
     };
     const clientMessageId=existing?.clientMessageId??Crypto.randomUUID();if(this.inFlight.has(clientMessageId))return;
     const members=s.conversations[conversationId]?.members??s.bootstrap.members;
@@ -326,18 +326,18 @@ export class Runtime {
     if(!blocks.length&&!options?.upload&&!uploadTaskId)return;
     let pending:Message=existing??{id:clientMessageId,conversationId,topicId,authorId:s.bootstrap.auth.currentUser.id,authorName:s.bootstrap.auth.currentUser.displayName,kind:'user',clientMessageId,createdAt:new Date().toISOString(),plainText:text,replyToMessageId:replyTo,hiddenByCurrentUser:false,attachments:[],reactions:[],blocks,fallback:false};
     pending={...pending,pendingUploadTaskId:uploadTaskId,pendingSyncToGroup:topicId?syncToGroup:undefined};
-    this.inFlight.add(clientMessageId);s.upsertMessage({...pending,status:'sending'},bucket);if(!existing)this.patchDraft(bucket,{text:'',mentionIds:[],mentionSpans:[],replyToMessageId:undefined,pendingAttachment:undefined});
+    this.inFlight.add(clientMessageId);s.upsertMessage({...pending,status:'sending'},bucket);if(!existing&&!options?.preserveDraft)this.patchDraft(bucket,{text:'',mentionIds:[],mentionSpans:[],replyToMessageId:undefined,pendingAttachment:undefined});
     try{
       if(uploadTaskId&&!fileId&&!options?.upload)throw new Error('Upload unavailable');
       if(options?.upload&&!fileId){
         const file=await options.upload();
         if(!readable())return;
-        if(!canStillSend())throw new Error('Cannot send');
         if(!file)throw new Error('Upload paused');
         fileId=file.id;
         blocks=existing?.blocks.length?[...existing.blocks.filter(block=>block.type!=='attachment'),{type:'attachment',attachmentId:file.id}]:composeBlocks(text,members,mentionIds,file.id,options?.mentionSpans);
         pending={...pending,attachments:[file],blocks,plainText:text||file.fileName};
         useWorkspace.getState().upsertMessage({...pending,status:'sending'},bucket);
+        if(!canStillSend())throw new Error('Cannot send');
       }
       if(!readable())return;
       if(!canStillSend())throw new Error('Cannot send');

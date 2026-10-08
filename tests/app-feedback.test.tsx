@@ -1,7 +1,7 @@
 import React from 'react';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Button as NativeButton, Text, TextInput, View, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
-import { NavigationContainer, useNavigation, useRoute, type NavigationProp } from '@react-navigation/native';
+import { NavigationContainer, useIsFocused, useNavigation, useRoute, type NavigationProp } from '@react-navigation/native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets, type Metrics } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import App from '../App';
@@ -10,6 +10,7 @@ import { useWorkspace } from '../src/domain/store';
 import { bootstrapSchema, topicSchema } from '../src/domain/contracts';
 import { Runtime } from '../src/data/runtime';
 import { ApiError } from '../src/data/client';
+import { Notice } from '../src/ui/primitives';
 
 const mockStart = jest.fn().mockResolvedValue(undefined);
 const mockDispose = jest.fn();
@@ -40,12 +41,26 @@ jest.mock('expo-notifications', () => ({
 jest.mock('../src/features/account/screens', () => ({ AccountNavigator: () => null }));
 jest.mock('../src/ui/MediaViewer', () => ({ MediaViewer: () => null }));
 jest.mock('../src/data/media', () => ({ canPreviewAttachment: () => false }));
-function MockConversationsScreen({ open, openTopic }: { open: (id: string) => void; openTopic: (topic: { id: string; conversationId: string }) => void }) {
+function MockConversationsScreen({ open, openTopic, openSearch }: { open: (id: string) => void; openTopic: (topic: { id: string; conversationId: string }) => void; openSearch: () => void }) {
   return <View>
+    <NativeButton title="Open synthetic search" onPress={openSearch} />
     <NativeButton title="Open synthetic chat" onPress={() => open('synthetic-chat')} />
     <NativeButton title="Open synthetic topic" onPress={() => openTopic({ id: 'synthetic-topic', conversationId: 'synthetic-chat' })} />
   </View>;
 }
+function MockSearchScreen({ open, openTopic, onBack }: { open: (id: string) => void; openTopic: (topic: { id: string; conversationId: string }) => void; onBack: () => void }) {
+  const [query, setQuery] = React.useState('');
+  const globalError = useWorkspace(state => state.error);
+  const focused = useIsFocused();
+  return <View>
+    <TextInput accessibilityLabel="Synthetic search query" value={query} onChangeText={setQuery} />
+    <Notice text={focused ? globalError : ''} />
+    <NativeButton title="Synthetic search chat result" onPress={() => open('synthetic-chat')} />
+    <NativeButton title="Synthetic search topic result" onPress={() => openTopic({ id: 'synthetic-topic', conversationId: 'synthetic-chat' })} />
+    <NativeButton title="Back from synthetic search" onPress={onBack} />
+  </View>;
+}
+jest.mock('../src/features/chat/SearchScreen', () => ({ SearchScreen: MockSearchScreen }));
 function MockChatScreen({ target, focusMessageId, details }: { target: { id: string; conversationId?: string }; focusMessageId?: string; details: () => void }) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NavigationProp<{ Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string } }>>();
@@ -63,6 +78,7 @@ function MockChatScreen({ target, focusMessageId, details }: { target: { id: str
     <TextInput accessibilityLabel="Synthetic draft" value={draft} onChangeText={text => useWorkspace.getState().setDraft('synthetic-chat', text)} />
     <NativeButton title="Open synthetic panel" onPress={() => setPanelOpen(true)} />
     <NativeButton title="Open synthetic details" onPress={details} />
+    <NativeButton title="Back from synthetic chat" onPress={() => navigation.goBack()} />
     <NativeButton title="Replace synthetic chat target" onPress={() => navigation.navigate('Chat', { id: 'replacement-synthetic-chat' })} />
     <NativeButton title="Replace synthetic topic target" onPress={() => navigation.navigate('Topic', { id: 'replacement-synthetic-topic', conversationId: 'synthetic-chat' })} />
     <NativeButton title="Replace synthetic topic parent" onPress={() => navigation.navigate('Topic', { id: target.id, conversationId: 'replacement-synthetic-parent' })} />
@@ -115,11 +131,75 @@ function noticeOwner(view: ReturnType<typeof render>, text: string) {
 beforeEach(() => { useWorkspace.getState().reset(); mockNotificationListener = undefined; mockOpen.mockResolvedValue(50); mockOpenTopic.mockResolvedValue(50); });
 afterEach(() => { useWorkspace.getState().reset(); });
 
+test('home search uses a separate stack route and returns from chat or topic to its retained query', async () => {
+  const view = start(true);
+  const state = () => view.UNSAFE_getByType(NavigationContainer).props.ref.current.getRootState();
+  fireEvent.press(view.getByText('Open synthetic search'));
+  await waitFor(() => expect(view.getByLabelText('Synthetic search query')).toBeTruthy());
+  expect(state().routes.at(-1).name).toBe('Search');
+  fireEvent.changeText(view.getByLabelText('Synthetic search query'), 'Synthetic query');
+  for (const result of ['Synthetic search chat result', 'Synthetic search topic result']) {
+    fireEvent.press(view.getByText(result));
+    await waitFor(() => expect(view.getByText('Back from synthetic chat')).toBeTruthy());
+    expect(['Chat', 'Topic']).toContain(state().routes.at(-1).name);
+    fireEvent.press(view.getByText('Back from synthetic chat'));
+    await waitFor(() => expect(view.getByLabelText('Synthetic search query').props.value).toBe('Synthetic query'));
+    expect(state().routes.at(-1).name).toBe('Search');
+  }
+  fireEvent.press(view.getByText('Back from synthetic search'));
+  await waitFor(() => expect(view.getByText('Open synthetic search')).toBeTruthy());
+  expect(state().routes.at(-1).name).toBe('Workspace');
+  expect(mockSend).not.toHaveBeenCalled();
+});
+
 test('authenticated global feedback has its own top and horizontal safe area', () => {
   const view = start(true, error);
   expect(noticeOwner(view, error)?.props.edges).toEqual(['top', 'left', 'right']);
   // These are JS contracts; the actual Android inset event and pixels require a package retest.
   expect(view.UNSAFE_getAllByType(SafeAreaProvider)).toHaveLength(2);
+});
+
+test.each([false, true])('visible Search owns global feedback inside navigation without remounting input or providers (error present initially=%s)', async initialError => {
+  const view = start(true, initialError ? error : '');
+  const navigator = view.UNSAFE_getByType(NavigationContainer);
+  const navigationArea = view.UNSAFE_getAllByType(SafeAreaProvider)[1];
+  fireEvent.press(view.getByText('Open synthetic search'));
+  await waitFor(() => expect(view.getByLabelText('Synthetic search query')).toBeTruthy());
+  const input = view.getByLabelText('Synthetic search query');
+  fireEvent.changeText(input, 'retained synthetic query');
+  for (const text of [error, 'Synthetic changed connection error', '']) {
+    act(() => useWorkspace.setState({ error: text }));
+    expect(view.UNSAFE_getByType(NavigationContainer)).toBe(navigator);
+    expect(view.UNSAFE_getAllByType(SafeAreaProvider)[1]).toBe(navigationArea);
+    expect(view.getByLabelText('Synthetic search query')).toBe(input);
+    expect(input.props.value).toBe('retained synthetic query');
+    if (text) {
+      expect(view.getAllByText(text)).toHaveLength(1);
+      expect(noticeOwner(view, text)).toBeUndefined();
+      expect(navigator.findAll((node: unknown) => node === view.getByText(text))).toHaveLength(1);
+    }
+  }
+  act(() => useWorkspace.setState({ error }));
+  fireEvent.press(view.getByText('Back from synthetic search'));
+  await waitFor(() => expect(view.getByText('Open synthetic search')).toBeTruthy());
+  expect(noticeOwner(view, error)?.props.edges).toEqual(['top', 'left', 'right']);
+  expect(useWorkspace.getState().error).toBe(error);
+  expect(mockSend).not.toHaveBeenCalled();
+});
+
+test('covering Search with Chat restores the root Notice and returning moves it back to Search only', async () => {
+  const view = start(true, error);
+  fireEvent.press(view.getByText('Open synthetic search'));
+  await waitFor(() => expect(view.getByLabelText('Synthetic search query')).toBeTruthy());
+  fireEvent.press(view.getByText('Synthetic search chat result'));
+  await waitFor(() => expect(view.getByText('Back from synthetic chat')).toBeTruthy());
+  expect(view.UNSAFE_getAllByType(Notice).filter(node => node.props.text === error)).toHaveLength(1);
+  expect(noticeOwner(view, error)?.props.edges).toEqual(['top', 'left', 'right']);
+  fireEvent.press(view.getByText('Back from synthetic chat'));
+  await waitFor(() => expect(view.getByLabelText('Synthetic search query')).toBeTruthy());
+  expect(view.UNSAFE_getAllByType(Notice).filter(node => node.props.text === error)).toHaveLength(1);
+  expect(noticeOwner(view, error)).toBeUndefined();
+  expect(useWorkspace.getState().error).toBe(error);
 });
 
 test('showing, updating and clearing a global error preserves the real navigation route, draft and local panel', async () => {

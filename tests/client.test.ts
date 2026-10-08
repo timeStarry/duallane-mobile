@@ -11,6 +11,14 @@ function response(body:unknown,status=200){return {ok:status<400,status,json:asy
 beforeEach(()=>{jest.spyOn(console,'warn').mockImplementation(()=>undefined);});
 afterEach(()=>{jest.restoreAllMocks();});
 
+test.each([
+  ['image.selection_invalid', '请选择有效图片后重试'],
+  ['image.too_many', '一次最多发送 9 张图片，请重新选择'],
+  ['image.unavailable', '所选图片无法读取，请重新选择'],
+])('local photo rejection %s explains how to recover', (code, text) => {
+  expect(errorText(new ApiError(code, 0))).toBe(text);
+});
+
 test('concurrent requests share one token rotation and send the installed protocol headers',async()=>{
   const rotation=deferred<Awaited<ReturnType<typeof fetch>>>();
   fetchMock.mockImplementationOnce(()=>rotation.promise).mockResolvedValue(response({ok:true}));
