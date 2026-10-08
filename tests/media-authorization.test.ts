@@ -1,5 +1,5 @@
 import { ApiError, type ApiClient } from '../src/data/client';
-import { attachmentPreviewUri, canPreviewAttachment, setMediaAccount, setMediaClient } from '../src/data/media';
+import { attachmentPreviewUri, canPreviewAttachment, canPreviewEmote, emotePreviewUri, setMediaAccount, setMediaClient } from '../src/data/media';
 import { bootstrapSchema, parseMessage, type Attachment } from '../src/domain/contracts';
 import { useWorkspace } from '../src/domain/store';
 
@@ -129,4 +129,70 @@ test.each(['logout','account','topic','group'])('late image bytes cannot recreat
 test('download compatibility fallback still clears cached bytes when reservation authorization is revoked', async () => {
   await attachmentPreviewUri(file, context); raw.mockRejectedValueOnce(new ApiError('request.failed',405)); json.mockRejectedValueOnce(new ApiError('permission.denied',403));
   await expect(attachmentPreviewUri(file, context)).rejects.toThrow('permission.denied'); expect(mockFiles.size).toBe(0);
+});
+
+const customShortcode = 'custom:11111111-1111-4111-8111-111111111111';
+function emoteSession() {
+  const source = { ...context, messageId: message.id };
+  useWorkspace.getState().patchMessage('topic:t1', message.id, { blocks: [{ type: 'emoji', shortcode: customShortcode }], attachments: [] });
+  const openMedia = jest.fn(async () => mediaResponse());
+  setMediaClient({ origin: 'https://workspace.example', raw, json, openMedia } as unknown as ApiClient);
+  return { source, openMedia };
+}
+
+test('a custom-emote preview reauthorizes every cache use and does not reserve attachment quota', async () => {
+  const { source, openMedia } = emoteSession();
+  const first = await emotePreviewUri(customShortcode, source);
+  expect(first).toMatch(/^file:\/\/\/cache\/previews\/account-a\//);
+  expect(await emotePreviewUri(customShortcode, source)).toBe(first);
+  expect(openMedia).toHaveBeenCalledTimes(2);
+  expect(openMedia).toHaveBeenCalledWith('/api/workspace/emotes/11111111-1111-4111-8111-111111111111/content', expect.any(AbortSignal));
+  expect(json).not.toHaveBeenCalled();
+});
+
+test.each(['hidden', 'recalled', 'deleted', 'topic', 'conversation', 'account'])('emote preview denies current %s context even with a cached route', async loss => {
+  const { source } = emoteSession();
+  await emotePreviewUri(customShortcode, source);
+  if (loss === 'hidden') useWorkspace.getState().patchMessage('topic:t1', message.id, { hiddenByCurrentUser: true });
+  if (loss === 'recalled') useWorkspace.getState().patchMessage('topic:t1', message.id, { recalledAt: '2026-01-02T00:00:00Z' });
+  if (loss === 'deleted') useWorkspace.getState().patchMessage('topic:t1', message.id, { deletedAt: '2026-01-02T00:00:00Z' });
+  if (loss === 'topic') useWorkspace.getState().upsertTopic({ ...topic, joined: false });
+  if (loss === 'conversation') useWorkspace.getState().applyBootstrap({ ...bootstrap, conversations: [] }, 'account-a');
+  if (loss === 'account') useWorkspace.getState().applyBootstrap(bootstrap, 'account-b');
+  expect(canPreviewEmote(customShortcode, source)).toBe(false);
+  await expect(emotePreviewUri(customShortcode, source)).rejects.toThrow();
+});
+
+test('unrelated or plain-fallback message data cannot authorize arbitrary emote navigation', () => {
+  const { source } = emoteSession();
+  expect(canPreviewEmote('custom:22222222-2222-4222-8222-222222222222', source)).toBe(false);
+  expect(canPreviewEmote(customShortcode, { ...source, messageId: undefined })).toBe(false);
+  useWorkspace.getState().patchMessage('topic:t1', message.id, { fallback: true });
+  expect(canPreviewEmote(customShortcode, source)).toBe(false);
+});
+
+test('late custom-emote bytes cannot rebuild cache after recall', async () => {
+  const { source, openMedia } = emoteSession();
+  const bytes = deferred<ArrayBuffer>(), started = deferred<void>();
+  openMedia.mockResolvedValueOnce({ arrayBuffer: () => { started.resolve(); return bytes.promise; } } as unknown as Response);
+  const loading = emotePreviewUri(customShortcode, source);
+  await started.promise;
+  useWorkspace.getState().patchMessage('topic:t1', message.id, { recalledAt: '2026-01-02T00:00:00Z' });
+  await expect(loading).rejects.toThrow('permission.denied');
+  bytes.resolve(new Uint8Array([1, 2, 3]).buffer);
+  expect(mockFiles.size).toBe(0);
+});
+
+test('a new account route cannot use the previous media client while registration is catching up', async () => {
+  const { source, openMedia } = emoteSession();
+  useWorkspace.getState().applyBootstrap(bootstrap, 'account-b');
+  useWorkspace.getState().upsertTopic(topic);
+  useWorkspace.getState().upsertMessage(message);
+  const nextContext = { ...source, accountKey: 'account-b' };
+  await expect(attachmentPreviewUri(file, nextContext)).rejects.toThrow('permission.denied');
+  useWorkspace.getState().patchMessage('topic:t1', message.id, { blocks: [{ type: 'emoji', shortcode: customShortcode }], attachments: [] });
+  await expect(emotePreviewUri(customShortcode, nextContext)).rejects.toThrow('permission.denied');
+  expect(raw).not.toHaveBeenCalled();
+  expect(openMedia).not.toHaveBeenCalled();
+  expect(mockFiles.size).toBe(0);
 });

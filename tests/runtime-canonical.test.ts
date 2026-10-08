@@ -473,10 +473,12 @@ test('a legitimate cold-start topic draft is kept off screen until metadata succ
   await runtime.bootstrap(true);
   expect(useWorkspace.getState().drafts['topic:t1']).toBeUndefined();
   runtime.draft('c1','synthetic group edit');
-  expect(persisted).toEqual({...saved,c1:{text:'synthetic group edit',mentionIds:[]}});
+  const currentDraft=useWorkspace.getState().drafts.c1;
+  expect(currentDraft).toMatchObject({text:'synthetic group edit',mentionIds:[]});
+  expect(persisted).toEqual({...saved,c1:currentDraft});
   pendingTopics.resolve(response({topics:[topic]}));await topicRequests.mock.results[0]!.value;
   expect(useWorkspace.getState().drafts['topic:t1']).toEqual(saved['topic:t1']);
-  expect(useWorkspace.getState().drafts.c1?.text).toBe('synthetic group edit');
+  expect(useWorkspace.getState().drafts.c1).toBe(currentDraft);
 });
 
 test('failed cold-start topic validation retains private draft storage and restores it after later authorization',async()=>{
@@ -517,10 +519,13 @@ test('a late cold-start topic inventory cannot restore or persist the old accoun
   const snapshot=useWorkspace.getState().bootstrap!;
   useWorkspace.getState().applyBootstrap({...snapshot,auth:{currentUser:{...snapshot.auth.currentUser,id:'u3'}}},'https://workspace.example:u3');
   runtime.draft('c1','synthetic next account draft');
+  const currentDraft=useWorkspace.getState().drafts.c1;
+  expect(currentDraft).toMatchObject({text:'synthetic next account draft',mentionIds:[]});
   pendingTopics.resolve(response({topics:[topic]}));await topicRequests.mock.results[0]!.value;
   expect(useWorkspace.getState().drafts['topic:t1']).toBeUndefined();
   expect(useWorkspace.getState().topics.t1).toBeUndefined();
-  expect(cache.set).toHaveBeenCalledWith('https://workspace.example:u3:drafts',{c1:{text:'synthetic next account draft',mentionIds:[]}});
+  expect(useWorkspace.getState().drafts.c1).toBe(currentDraft);
+  expect(cache.set).toHaveBeenCalledWith('https://workspace.example:u3:drafts',{c1:currentDraft});
 });
 
 test('an earlier bootstrap cannot undo a newer revocation snapshot',async()=>{

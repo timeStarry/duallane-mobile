@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AppState, BackHandler, Modal, View } from 'react-native';
-import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
+import { AppState, BackHandler, Modal, StatusBar, View } from 'react-native';
+import { NavigationContainer, createNavigationContainerRef, useIsFocused } from '@react-navigation/native';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -11,6 +11,7 @@ import * as Notifications from 'expo-notifications';
 import { ThemeProvider, useTheme, type AppearanceMode } from './src/ui/theme';
 import { DualLaneTabBar, Loading, Notice } from './src/ui/components';
 import { MediaViewer } from './src/ui/MediaViewer';
+import { WindowMetricsProvider, WindowSafeArea } from './src/ui/WindowSafeArea';
 import { StackHeader } from './src/ui/StackHeader';
 import { Runtime } from './src/data/runtime';
 import { Transfers } from './src/data/transfers';
@@ -23,9 +24,9 @@ import { installed } from './src/platform/config';
 import { cache } from './src/platform/storage';
 import { notificationTarget } from './src/platform/notifications';
 import { ApiError, errorText } from './src/data/client';
-import { canPreviewAttachment } from './src/data/media';
+import { canPreviewAttachment, canPreviewEmote } from './src/data/media';
 
-type RootParams = { Workspace: undefined; Search: undefined; Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' }; Media: { id: string; fileName: string; mimeType: string; byteSize: number; status: string; canDownload: boolean; accountKey: string; conversationId?: string; topicId?: string; messageId?: string } };
+type RootParams = { Workspace: undefined; Search: undefined; Chat: { id: string; focusMessageId?: string }; Topic: { id: string; conversationId: string }; Details: { id: string; kind?: 'conversation' | 'topic' }; Media: { id: string; fileName: string; mimeType: string; byteSize: number; status: string; canDownload: boolean; accountKey: string; conversationId?: string; topicId?: string; messageId?: string }; EmoteMedia: { shortcode: string; accountKey: string; conversationId: string; topicId?: string; messageId: string } };
 type TabsParams = { 聊天: undefined; 文件: undefined; 成员: undefined; 我的: undefined };
 const Stack = createNativeStackNavigator<RootParams>();
 const Tabs = createBottomTabNavigator<TabsParams>();
@@ -35,17 +36,36 @@ function previewSourceMessageId(bucket: string, fileId: string) {
   return useWorkspace.getState().messages[bucket]?.find(message => message.attachments.some(file => file.id === fileId))?.id;
 }
 
+function MediaWindow({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  const focused = useIsFocused();
+  const policy = useWorkspace(s => s.policy);
+  const forced = policy ? updateDecision(policy, installed) === 'forced' : false;
+  const t = useTheme();
+  return <Modal visible={focused && !forced} animationType={t.reduceMotion ? 'none' : 'fade'} statusBarTranslucent navigationBarTranslucent onRequestClose={() => { if (focused && !forced) onClose(); }}>
+    <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+    {/* A native modal has window coordinates, independent of the navigation frame below a Notice. */}
+    <WindowSafeArea>{children}</WindowSafeArea>
+  </Modal>;
+}
+
 function AuthorizedMediaScreen({ route, navigation: nav, runtime, transfers }: NativeStackScreenProps<RootParams, 'Media'> & { runtime: Runtime; transfers: Transfers }) {
   useWorkspace();
   const params = route.params;
   const file = useMemo(() => ({ id: params.id, fileName: params.fileName, mimeType: params.mimeType, byteSize: params.byteSize, status: params.status, capabilities: { canDownload: params.canDownload } }), [params]);
   const context = useMemo(() => ({ accountKey: params.accountKey, conversationId: params.conversationId, topicId: params.topicId, messageId: params.messageId }), [params.accountKey, params.conversationId, params.topicId, params.messageId]);
   const authorized = canPreviewAttachment(file, context);
-  return <MediaViewer file={file} context={context} authorized={authorized} onClose={() => nav.goBack()} onDownload={async () => {
+  return <MediaWindow onClose={() => nav.goBack()}><MediaViewer file={file} context={context} authorized={authorized} onClose={() => nav.goBack()} onDownload={async () => {
     const api = runtime.api;
     if (!api || !canPreviewAttachment(file, context)) throw new ApiError('permission.denied', 403);
-    await transfers.download(api, context.accountKey, file, 'share');
-  }} />;
+    await transfers.download(api, context.accountKey, file, 'save');
+  }} /></MediaWindow>;
+}
+
+function AuthorizedEmoteScreen({ route, navigation: nav }: NativeStackScreenProps<RootParams, 'EmoteMedia'>) {
+  useWorkspace();
+  const params = route.params;
+  const context = useMemo(() => ({ accountKey: params.accountKey, conversationId: params.conversationId, topicId: params.topicId, messageId: params.messageId }), [params]);
+  return <MediaWindow onClose={() => nav.goBack()}><MediaViewer emoteShortcode={params.shortcode} context={context} authorized={canPreviewEmote(params.shortcode, context)} onClose={() => nav.goBack()} /></MediaWindow>;
 }
 
 export default function App() {
@@ -53,11 +73,13 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
+        <WindowMetricsProvider>
         <ThemeProvider mode={mode}>
           <KeyboardProvider enabled={false} preserveEdgeToEdge statusBarTranslucent navigationBarTranslucent>
             <Application mode={mode} setMode={setMode} />
           </KeyboardProvider>
-        </ThemeProvider>
+          </ThemeProvider>
+        </WindowMetricsProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
@@ -196,6 +218,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                   nav.navigate('Topic', { id: topicId, conversationId: topic?.conversationId ?? route.params.id });
                 }}
                 onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload, accountKey: useWorkspace.getState().accountKey, conversationId: route.params.id, messageId: previewSourceMessageId(route.params.id, file.id) })}
+                onPreviewEmote={(shortcode, messageId) => nav.navigate('EmoteMedia', { shortcode, messageId, accountKey: useWorkspace.getState().accountKey, conversationId: route.params.id })}
               />
             )}
           </Stack.Screen>
@@ -208,11 +231,15 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
                 details={() => nav.navigate('Details', { id: route.params.id, kind: 'topic' })}
                 onOpenTopic={topicId => nav.navigate('Topic', { id: topicId, conversationId: route.params.conversationId })}
                 onPreview={file => nav.navigate('Media', { id: file.id, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.byteSize, status: file.status, canDownload: file.capabilities.canDownload, accountKey: useWorkspace.getState().accountKey, conversationId: route.params.conversationId, topicId: route.params.id, messageId: previewSourceMessageId(`topic:${route.params.id}`, file.id) })}
+                onPreviewEmote={(shortcode, messageId) => nav.navigate('EmoteMedia', { shortcode, messageId, accountKey: useWorkspace.getState().accountKey, conversationId: route.params.conversationId, topicId: route.params.id })}
               />
             )}
           </Stack.Screen>
-          <Stack.Screen name="Media" options={{ headerShown: false }}>
+          <Stack.Screen name="Media" options={{ headerShown: false, animation: 'none' }}>
             {props => <AuthorizedMediaScreen {...props} runtime={runtime} transfers={transfers} />}
+          </Stack.Screen>
+          <Stack.Screen name="EmoteMedia" options={{ headerShown: false, animation: 'none' }}>
+            {props => <AuthorizedEmoteScreen {...props} />}
           </Stack.Screen>
           <Stack.Screen name="Details" options={{ title: '详情' }}>
             {({ route, navigation: nav }) => (

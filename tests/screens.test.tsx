@@ -25,7 +25,7 @@ beforeEach(()=>{config.apiOrigin='';});
 
 test('chat attachments expose an authorized download action',()=>{
   const download=jest.fn();const view=renderMessage(<MessageRow message={parseMessage(message)!} retry={jest.fn()} download={download}/>);
-  fireEvent.press(view.getByRole('button',{name:'保存到设备'}));expect(download).toHaveBeenCalledWith(file);
+  fireEvent.press(view.getByRole('button',{name:'保存文件example.txt到设备'}));expect(download).toHaveBeenCalledWith(file);
 });
 test('SVG avatars keep a single centered visual while image avatars retain their fallback',()=>{
   const svg=renderMessage(<Avatar name="回声" uri="/assets/echo-avatar.svg" id="echo" shape="bot"/>);
@@ -36,20 +36,20 @@ test('SVG avatars keep a single centered visual while image avatars retain their
 test('message controls keep attachment taps separate and expose a complete TalkBack summary',()=>{
   const download=jest.fn();
   const view=renderMessage(<MessageRow message={parseMessage(message)!} retry={jest.fn()} download={download}/>);
-  const menu=view.getByRole('button',{name:/消息操作，Test/});
-  expect(menu.props.accessibilityHint).toBe('点按查看更多消息操作');
-  expect(menu.findAllByType(EllipsisVertical)).toHaveLength(1);
+  const menu=view.getByRole('text',{name:/消息操作，Test/});
+  expect(menu.props.accessibilityHint).toBe('长按消息或使用辅助功能动作查看消息操作');
+  expect(view.root.findAllByType(EllipsisVertical)).toHaveLength(0);
   expect(menu.props.accessibilityLabel).toContain('1个附件');
   expect(menu.props.accessibilityLabel).toContain('2026');
-  fireEvent.press(view.getByRole('button',{name:'保存到设备'}));
+  fireEvent.press(view.getByRole('button',{name:'保存文件example.txt到设备'}));
   expect(download).toHaveBeenCalledTimes(1);
-  fireEvent.press(menu);
+  fireEvent(view.getByTestId('message-body-m1'),'longPress');
   expect(view.getByRole('button',{name:'更多'})).toBeTruthy();
 });
 test('quick reactions send a catalog key and surface a rejected request', async()=>{
   const react=jest.fn().mockRejectedValue(new Error('反应暂不可用'));
   const view=renderMessage(<MessageRow message={parseMessage(message)!} retry={jest.fn()} download={jest.fn()} runtime={{react} as unknown as Runtime}/>);
-  fireEvent.press(view.getByRole('button',{name:/消息操作，Test/}));
+  fireEvent(view.getByTestId('message-body-m1'),'longPress');
   fireEvent.press(view.getByRole('button',{name:'反应'}));
   fireEvent.press(view.getByRole('button',{name:'反应 👍'}));
   expect(react).toHaveBeenCalledWith('m1','emoji:thumbs-up',false);
@@ -57,7 +57,7 @@ test('quick reactions send a catalog key and surface a rejected request', async(
 });
 test('recalled messages never expose the old attachment action',()=>{
   const view=renderMessage(<MessageRow message={parseMessage({...message,recalledAt:'2026-01-02T00:00:00Z',recallReason:'内容有误',plainText:'Test因内容有误撤回了一条消息'})!} retry={jest.fn()} download={jest.fn()}/>);
-  expect(view.queryByRole('button',{name:'下载并保存'})).toBeNull();
+  expect(view.queryByRole('button',{name:'保存文件example.txt到设备'})).toBeNull();
   expect(view.getByText('Test因内容有误撤回了一条消息')).toBeTruthy();
   expect(view.queryByText('消息已不可用')).toBeNull();
 });
@@ -67,7 +67,7 @@ test('available message images can be saved to the personal emote library', asyn
   const image={...file,fileName:'sticker.png',mimeType:'image/png'};
   const parsed=parseMessage({...message,attachments:[image]})!;
   const view=renderMessage(<MessageRow message={parsed} retry={jest.fn()} download={jest.fn()} runtime={{favoriteMessageEmote} as unknown as Runtime}/>);
-  fireEvent.press(view.getByRole('button',{name:/消息操作，Test/}));
+  fireEvent(view.getByTestId('message-body-m1'),'longPress');
   fireEvent.press(view.getByRole('button',{name:'更多'}));
   fireEvent.press(view.getByRole('button',{name:'收藏为表情'}));
   await waitFor(()=>expect(favoriteMessageEmote).toHaveBeenCalledWith('m1','f1'));

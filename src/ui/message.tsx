@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Keyboard, Pressable, View } from 'react-native';
+import { Keyboard, Pressable, View, useWindowDimensions, type AccessibilityActionEvent } from 'react-native';
 import { Text } from './Text';
 import { Copy, EllipsisVertical, EyeOff, MessageSquare, Pin, Smile, SmilePlus, Undo2 } from 'lucide-react-native';
 import type { Attachment, Message } from '../domain/contracts';
@@ -15,7 +15,7 @@ import { errorText } from '../data/client';
 const emptyMembers: Array<{ id: string; displayName: string }> = [];
 import { Avatar } from './chrome';
 import { Button, Dialog, InlineFeedback, Label, ObjectActionSheet } from './primitives';
-import { MessageContent, ReactionGlyph } from './MessageContent';
+import { MessageContent, ReactionGlyph, standaloneMessageMedia } from './MessageContent';
 import { CatalogEmoteGrid } from './CatalogEmoteGrid';
 import { catalogReactionKey, catalogUnicodeGlyph, reactionEmotePacks } from '../domain/emote-catalog';
 import { useTheme } from './theme';
@@ -58,6 +58,7 @@ export function MessageRow({
   onReply,
   onOpenTopic,
   onPreview,
+  onPreviewEmote,
   locate,
   onToggleProjection,
   isProjected,
@@ -74,12 +75,14 @@ export function MessageRow({
   onReply?: (message: Message) => void;
   onOpenTopic?: (topicId: string) => void;
   onPreview?: (file: Attachment) => void;
+  onPreviewEmote?: (shortcode: string) => void;
   locate?: (id: string) => void;
   onToggleProjection?: () => void;
   isProjected?: boolean;
   projectionBusy?: boolean;
 }) {
   const t = useTheme();
+  const { width } = useWindowDimensions();
   const userId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const accountKey = useWorkspace(s => s.accountKey);
   const conversation = useWorkspace(s => s.conversations[message.conversationId]);
@@ -141,16 +144,8 @@ export function MessageRow({
     react(emoteKey, remove);
   };
   const grouped = groupPosition ? groupPosition === 'middle' || groupPosition === 'end' : previous && previous.authorId === message.authorId && previous.kind === message.kind && !message.replyToMessageId && !previous.recalledAt && Math.abs(Date.parse(message.createdAt) - Date.parse(previous.createdAt)) < 300000;
-  const position = groupPosition ?? (grouped ? 'end' : 'single');
-  const outer = t.bubble.outer;
-  const inner = t.bubble.inner;
-  const top = position === 'middle' || position === 'end' ? inner : outer;
-  const bottom = position === 'middle' || position === 'start' ? inner : outer;
-  const radiusStyle = position === 'middle'
-    ? { borderTopLeftRadius: inner, borderTopRightRadius: inner, borderBottomLeftRadius: inner, borderBottomRightRadius: inner }
-    : own
-      ? { borderTopLeftRadius: outer, borderTopRightRadius: top, borderBottomLeftRadius: outer, borderBottomRightRadius: bottom }
-      : { borderTopLeftRadius: top, borderTopRightRadius: outer, borderBottomLeftRadius: bottom, borderBottomRightRadius: outer };
+  const bareMedia = !!standaloneMessageMedia(message);
+  const contentWidth = Math.max(1, Math.min(480, (width - t.space.lg * 2) * 0.96 - (own ? 0 : t.list.chatAvatar + 4)));
   const reply = message.replyToMessageId ? useWorkspace.getState().messages[message.topicId ? `topic:${message.topicId}` : message.conversationId]?.find(item => item.id === message.replyToMessageId) : undefined;
   const actions = !canAccessMessage
     ? [{ id: 'copy', title: '复制' }] : messageActions(message, { own, group: conversation?.type === 'group', canSend: canWrite });
@@ -166,6 +161,12 @@ export function MessageRow({
   const accessibilityActions = actions.filter(action => action.id === 'copy' || action.id === 'reply')
     .map(action => ({ name: action.id, label: action.title }));
   if (actions.length) accessibilityActions.push({ name: 'more', label: '更多消息操作' });
+  const onAccessibilityAction = (event: AccessibilityActionEvent) => {
+    const action = event.nativeEvent.actionName;
+    if (action === 'copy' && actions.some(item => item.id === 'copy')) void runAction(() => copyText(message.plainText));
+    if (action === 'reply' && actions.some(item => item.id === 'reply')) onReply?.(message);
+    if (action === 'more' && actions.length) openSheet();
+  };
   const favoriteAttachment = canAccessMessage && message.status !== 'sending' && message.status !== 'failed' && !message.recalledAt && !message.deletedAt
     ? message.attachments.find(file => file.status === 'available' && file.mimeType.startsWith('image/') && file.capabilities.canDownload)
     : undefined;
@@ -195,17 +196,17 @@ export function MessageRow({
         ) : (
           <View style={{ flexDirection: own ? 'row-reverse' : 'row', maxWidth: '96%', alignItems: 'flex-end', gap: 4 }}>
             {own ? null : grouped ? <View style={{ width: t.list.chatAvatar }} /> : <Avatar name={authorName} uri={message.authorAvatarUrl || conversation?.members.find(member => member.id === message.authorId)?.avatarUrl} id={message.authorId ?? authorName} shape={message.authorKind === 'bot' || message.kind === 'bot' ? 'bot' : 'person'} size={t.list.chatAvatar} />}
-            <View style={{ flexShrink: 1, minWidth: 0 }}>
+            <View style={{ flexShrink: 1, minWidth: 0, maxWidth: contentWidth }}>
               {grouped ? null : (
-                <Text accessibilityLabel={messageAccessibilityLabel(message, authorName, false)} style={{ color: t.muted, fontSize: t.type.timestamp, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${authorName} · Bot` : authorName} · {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                <Text style={{ color: t.muted, fontSize: t.type.timestamp, marginBottom: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}>{message.authorKind === 'bot' || message.kind === 'bot' ? `${authorName} · Bot` : authorName}</Text>
               )}
-              <Pressable accessible={false} delayLongPress={450} onLongPress={openCluster} style={{ maxWidth: '100%', padding: 12, backgroundColor: own ? t.sharedSoft : t.surface, alignSelf: own ? 'flex-end' : 'flex-start', ...radiusStyle }}>
+              <Pressable testID={`message-body-${message.id}`} accessible={false} delayLongPress={450} onLongPress={openCluster} style={{ maxWidth: '100%', padding: bareMedia ? 0 : 12, backgroundColor: bareMedia ? undefined : own ? t.sharedSoft : t.surface, alignSelf: own ? 'flex-end' : 'flex-start', borderRadius: t.radius.bubble }}>
           {message.replyToMessageId ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="定位原消息" onPress={() => locate?.(message.replyToMessageId!)}>
+            <Pressable accessibilityRole="button" accessibilityLabel="定位原消息" onPress={() => locate?.(message.replyToMessageId!)} style={bareMedia ? { padding: 8, marginBottom: 6, borderRadius: t.radius.control, backgroundColor: t.soft } : undefined}>
               <Label muted>{reply && !reply.hiddenByCurrentUser ? (reply.recalledAt ? '已撤回的消息' : `${reply.authorName}: ${reply.plainText}`) : '原消息不可用'}</Label>
             </Pressable>
           ) : null}
-          <MessageContent message={message} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} />
+          <MessageContent message={message} download={download} onPreview={onPreview} onPreviewEmote={onPreviewEmote} mediaWidth={Math.max(1, contentWidth - (bareMedia ? 0 : 24))} onLongPress={openCluster} accessibilityActions={accessibilityActions} onAccessibilityAction={onAccessibilityAction} onOpenTopic={onOpenTopic} runtime={runtime} />
           {message.reactions?.length ? (
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
               {message.reactions.map(reaction => (
@@ -235,26 +236,18 @@ export function MessageRow({
             </>
           )}
               </Pressable>
+              <Text
+                accessibilityRole="text"
+                accessibilityLabel={`消息操作，${messageAccessibilityLabel(message, authorName)}`}
+                accessibilityHint="长按消息或使用辅助功能动作查看消息操作"
+                accessibilityActions={accessibilityActions}
+                onAccessibilityAction={onAccessibilityAction}
+                onLongPress={openCluster}
+                style={{ color: t.muted, fontSize: t.type.timestamp, marginTop: 4, alignSelf: own ? 'flex-end' : 'flex-start' }}
+              >
+                {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
             </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`消息操作，${messageAccessibilityLabel(message, authorName)}`}
-              accessibilityHint="点按查看更多消息操作"
-              accessibilityActions={accessibilityActions}
-              onAccessibilityAction={event => {
-                const action = event.nativeEvent.actionName;
-                if (action === 'copy' && actions.some(item => item.id === 'copy')) void runAction(() => copyText(message.plainText));
-                if (action === 'reply' && actions.some(item => item.id === 'reply')) onReply?.(message);
-                if (action === 'more' && actions.length) openSheet();
-              }}
-              onPress={() => {
-                if (cluster) { setCluster(false); setReactOpen(false); }
-                else openCluster();
-              }}
-              style={({ pressed }) => ({ minWidth: t.hit, minHeight: t.hit, borderRadius: t.radius.control, alignItems: 'center', justifyContent: 'center', opacity: pressed ? t.pressedOpacity : 1 })}
-            >
-              <EllipsisVertical size={18} color={t.muted} />
-            </Pressable>
           </View>
         )}
         {cluster && !system ? (

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Linking, Pressable, ScrollView, View, type TextStyle } from 'react-native';
+import { Linking, Pressable, ScrollView, View, useWindowDimensions, type AccessibilityActionEvent, type AccessibilityActionInfo, type TextStyle } from 'react-native';
 import { Text } from './Text';
 import type { Attachment, Block, Message } from '../domain/contracts';
 import { catalogImage, catalogUnicodeGlyph } from '../domain/emote-catalog';
@@ -10,25 +10,69 @@ import { FileRow } from './files';
 import { Label } from './primitives';
 import { useTheme } from './theme';
 import { WorkspaceCard } from './cards';
-import { attachmentPreviewUri, emoteSource, isPreviewableImage, splitCatalogEmotes } from '../data/media';
+import { attachmentPreviewUri, canPreviewAttachment, canPreviewEmote, emoteSource, isPreviewableImage, splitCatalogEmotes, type MediaContext } from '../data/media';
 import { RemoteImage } from './RemoteImage';
 import { EmoteCollectionShare } from './EmoteCollectionShare';
+
+type StandaloneMedia = { kind: 'emote'; shortcode: string } | { kind: 'image' };
+type MediaActions = {
+  onLongPress?: () => void;
+  accessibilityActions?: AccessibilityActionInfo[];
+  onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
+};
+
+export function standaloneMessageMedia(message: Message): StandaloneMedia | null {
+  if (message.fallback || !message.blocks.length) return null;
+  if (message.blocks.length === 1 && !message.attachments.length) {
+    const block = message.blocks[0]!;
+    if (block.type === 'emoji' && emoteSource(block.shortcode)) return { kind: 'emote', shortcode: block.shortcode };
+    if (block.type === 'text') {
+      const parts = splitCatalogEmotes(block.text.trim());
+      if (parts.length === 1 && parts[0]?.src && parts[0].token) return { kind: 'emote', shortcode: parts[0].token };
+    }
+  }
+  if (message.blocks.every(block => block.type === 'attachment' && message.attachments.some(file => file.id === block.attachmentId && file.status === 'available' && file.capabilities.canDownload && isPreviewableImage(file)))
+    && message.attachments.every(file => message.blocks.some(block => block.type === 'attachment' && block.attachmentId === file.id))) return { kind: 'image' };
+  return null;
+}
+
+export function messageMediaSize(maxWidth: number, windowHeight: number, kind: 'image' | 'emote', natural?: { width: number; height: number }) {
+  const widthLimit = Math.max(1, Math.min(maxWidth, kind === 'emote' ? 160 : 280));
+  const heightLimit = Math.max(1, Math.min(kind === 'emote' ? 180 : 300, windowHeight * 0.5));
+  const ratio = natural && Number.isFinite(natural.width) && Number.isFinite(natural.height) && natural.width > 0 && natural.height > 0
+    ? natural.width / natural.height : kind === 'emote' ? 1 : 4 / 3;
+  const width = Math.min(widthLimit, heightLimit * ratio);
+  return { width, height: width / ratio };
+}
 
 export function MessageContent({
   message,
   download,
   onPreview,
+  onPreviewEmote,
+  mediaWidth,
+  onLongPress,
+  accessibilityActions,
+  onAccessibilityAction,
   onOpenTopic,
   runtime,
 }: {
   message: Message;
   download: (file: Attachment) => void;
   onPreview?: (file: Attachment) => void;
+  onPreviewEmote?: (shortcode: string) => void;
+  mediaWidth?: number;
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
-}) {
+} & MediaActions) {
   const settings = useWorkspace(s => s.chatSettings);
+  const accountKey = useWorkspace(s => s.accountKey);
+  const { width, height } = useWindowDimensions();
   const [expanded, setExpanded] = useState(false);
+  const standalone = standaloneMessageMedia(message);
+  const maxMediaWidth = mediaWidth ?? Math.max(1, width - 80);
+  const mediaContext = { accountKey, conversationId: message.conversationId, topicId: message.topicId ?? undefined, messageId: message.id };
+  const mediaActions = { onLongPress, accessibilityActions, onAccessibilityAction };
   const matched = hiddenTypes(settings, message.blocks, message.attachments, message.plainText);
   if (matched.length && !expanded) {
     return (
@@ -36,6 +80,9 @@ export function MessageContent({
         <Label muted>已折叠（{matched.map(type => ({ image: '图片', emote: '表情', long: '长消息' }[type])).join('、')}），点按展开。这只影响你自己的显示。</Label>
       </Pressable>
     );
+  }
+  if (standalone?.kind === 'emote') {
+    return <StandaloneEmote shortcode={standalone.shortcode} onPreview={onPreviewEmote} context={mediaContext} maxWidth={maxMediaWidth} windowHeight={height} {...mediaActions} />;
   }
   if (message.fallback || !message.blocks.length) {
     return (
@@ -49,7 +96,7 @@ export function MessageContent({
   return (
     <View style={{ gap: 6 }}>
       {message.blocks.map((block, index) => (
-        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} cardContext={{ conversationId: message.conversationId, topicId: message.topicId }} />
+        <BlockView key={`${message.id}:${index}`} block={block} attachments={message.attachments} download={download} onPreview={onPreview} onOpenTopic={onOpenTopic} runtime={runtime} cardContext={{ conversationId: message.conversationId, topicId: message.topicId }} mediaContext={mediaContext} maxMediaWidth={maxMediaWidth} windowHeight={height} mediaActions={mediaActions} />
       ))}
     </View>
   );
@@ -63,6 +110,10 @@ function BlockView({
   onOpenTopic,
   runtime,
   cardContext,
+  mediaContext,
+  maxMediaWidth,
+  windowHeight,
+  mediaActions,
 }: {
   block: Block;
   attachments: Attachment[];
@@ -71,6 +122,10 @@ function BlockView({
   onOpenTopic?: (topicId: string) => void;
   runtime?: import('../data/runtime').Runtime;
   cardContext: { conversationId: string; topicId?: string | null };
+  mediaContext: MediaContext;
+  maxMediaWidth: number;
+  windowHeight: number;
+  mediaActions: MediaActions;
 }) {
   const t = useTheme();
   if (block.type === 'text') return <MarkdownText text={block.text} />;
@@ -85,7 +140,7 @@ function BlockView({
   if (block.type === 'attachment') {
     const file = attachments.find(item => item.id === block.attachmentId);
     if (!file) return <Label muted>附件不可用</Label>;
-    if (isPreviewableImage(file)) return <AttachmentImage file={file} download={download} onPreview={onPreview} />;
+    if (isPreviewableImage(file)) return <AttachmentImage file={file} download={download} onPreview={onPreview} context={mediaContext} maxWidth={maxMediaWidth} windowHeight={windowHeight} {...mediaActions} />;
     return <FileRow file={file} download={() => download(file)} />;
   }
   if (block.type === 'card') return <WorkspaceCard block={block} runtime={runtime} onOpenTopic={onOpenTopic} context={cardContext} />;
@@ -103,6 +158,7 @@ function BlockView({
 export function EmoteImage({ uri, token, size }: { uri: string; token: string; size: number }) {
   const [failed, setFailed] = useState(false);
   const fail = useCallback(() => setFailed(true), []);
+  useEffect(() => setFailed(false), [uri]);
   if (failed) return <View style={{ width: size, height: size }} />;
   return (
     <View accessible accessibilityRole="image" accessibilityLabel={token.startsWith('[custom:') ? '自定义表情' : token}>
@@ -126,19 +182,43 @@ function EmoteView({ shortcode }: { shortcode: string }) {
   return <Text style={{ fontSize: 28 }}>{shortcode.startsWith('custom:') || shortcode.startsWith('[') ? (shortcode.startsWith('[') ? shortcode : `[${shortcode}]`) : `:${shortcode}:`}</Text>;
 }
 
-function AttachmentImage({ file, download, onPreview }: { file: Attachment; download: (file: Attachment) => void; onPreview?: (file: Attachment) => void }) {
+function StandaloneEmote({ shortcode, onPreview, context, maxWidth, windowHeight, ...actions }: { shortcode: string; onPreview?: (shortcode: string) => void; context: MediaContext; maxWidth: number; windowHeight: number } & MediaActions) {
+  const t = useTheme();
+  const allowed = useWorkspace(() => canPreviewEmote(shortcode, context));
+  const src = emoteSource(shortcode);
+  const [failed, setFailed] = useState(false);
+  const [natural, setNatural] = useState<{ width: number; height: number }>();
+  useEffect(() => { setFailed(false); setNatural(undefined); }, [src]);
+  const size = messageMediaSize(maxWidth, windowHeight, 'emote', natural);
+  const token = shortcode.startsWith('[') ? shortcode : `[${shortcode}]`;
+  if (!allowed || !src || failed) return <View style={{ maxWidth }}><Text style={{ color: t.text, fontSize: t.type.body }}>{token}</Text><Label muted>表情暂不可用</Label></View>;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={shortcode.includes('custom:') ? '预览自定义表情' : `预览表情 ${token}`} accessibilityHint="点按查看大图，长按查看消息操作" onPress={() => onPreview?.(shortcode)} delayLongPress={450} {...actions} style={{ ...size, borderRadius: t.radius.bubble, overflow: 'hidden' }}>
+      <RemoteImage uri={src} style={{ ...size, borderRadius: t.radius.bubble }} resizeMode="contain" onLoad={setNatural} onError={() => setFailed(true)} />
+    </Pressable>
+  );
+}
+
+function AttachmentImage({ file, download, onPreview, context, maxWidth, windowHeight, ...actions }: { file: Attachment; download: (file: Attachment) => void; onPreview?: (file: Attachment) => void; context: MediaContext; maxWidth: number; windowHeight: number } & MediaActions) {
+  const t = useTheme();
+  const allowed = useWorkspace(() => canPreviewAttachment(file, context));
   const [uri, setUri] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [natural, setNatural] = useState<{ width: number; height: number }>();
+  const { accountKey, conversationId, topicId, messageId } = context;
   useEffect(() => {
     let cancelled = false;
-    void attachmentPreviewUri(file).then(value => { if (!cancelled) setUri(value); }).catch(() => { if (!cancelled) setFailed(true); });
+    setUri(null); setFailed(false); setNatural(undefined);
+    if (!allowed) return;
+    void attachmentPreviewUri(file, { accountKey, conversationId, topicId, messageId }).then(value => { if (!cancelled) setUri(value); }).catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
-  }, [file]);
-  if (failed) return <FileRow file={file} download={() => download(file)} />;
+  }, [file, accountKey, conversationId, topicId, messageId, allowed]);
+  if (!allowed || failed) return <FileRow file={file} download={() => download(file)} />;
   if (!uri) return <Label muted>图片加载中…</Label>;
+  const size = messageMediaSize(maxWidth, windowHeight, 'image', natural);
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`预览图片 ${file.fileName}`} onPress={() => (onPreview ?? download)(file)}>
-      <RemoteImage uri={uri} style={{ width: 240, height: 180, borderRadius: 12 }} onError={() => setFailed(true)} />
+    <Pressable accessibilityRole="button" accessibilityLabel={`预览图片 ${file.fileName}`} accessibilityHint="点按查看大图，长按查看消息操作" onPress={() => (onPreview ?? download)(file)} delayLongPress={450} {...actions} style={{ ...size, borderRadius: t.radius.bubble, overflow: 'hidden' }}>
+      <RemoteImage uri={uri} style={{ ...size, borderRadius: t.radius.bubble }} resizeMode="contain" onLoad={setNatural} onError={() => setFailed(true)} />
     </Pressable>
   );
 }

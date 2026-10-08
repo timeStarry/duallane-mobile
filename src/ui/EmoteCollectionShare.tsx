@@ -9,6 +9,7 @@ import { useWorkspace } from '../domain/store';
 import { Button } from './primitives';
 import { RemoteImage } from './RemoteImage';
 import { useTheme } from './theme';
+import { WindowSafeArea } from './WindowSafeArea';
 
 type ShareSummary = Extract<Block, { type: 'emote_collection' }>['share'];
 
@@ -20,6 +21,8 @@ export function EmoteCollectionShare({ shareId, summary, runtime }: {
 }) {
   const t = useTheme();
   const accountKey = useWorkspace(state => state.accountKey);
+  const userId = useWorkspace(state => state.bootstrap?.auth.currentUser.id);
+  const api = runtime?.api;
   const [open, setOpen] = useState(false);
   const [share, setShare] = useState<EmoteShare | null>(null);
   const [loading, setLoading] = useState(false);
@@ -28,10 +31,19 @@ export function EmoteCollectionShare({ shareId, summary, runtime }: {
   const [imported, setImported] = useState(false);
   const [importing, setImporting] = useState(false);
   const [retry, setRetry] = useState(0);
-  const inFlight = useRef(false);
+  const interactionIdentity = useRef({ accountKey, userId, shareId, runtime, api });
+  interactionIdentity.current = { accountKey, userId, shareId, runtime, api };
+  const inFlight = useRef<object | null>(null);
   const alive = useRef(true);
-  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const identityCurrent = (started: typeof interactionIdentity.current) => {
+    const latest = interactionIdentity.current;
+    const state = useWorkspace.getState();
+    return alive.current && latest.accountKey === started.accountKey && latest.userId === started.userId
+      && latest.shareId === started.shareId && latest.runtime === started.runtime && latest.api === started.api
+      && state.accountKey === started.accountKey && state.bootstrap?.auth.currentUser.id === started.userId
+      && started.runtime?.api === started.api;
+  };
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
@@ -39,40 +51,49 @@ export function EmoteCollectionShare({ shareId, summary, runtime }: {
     setShare(null);
     setImported(false);
     setSubscribed(false);
-  }, [accountKey, shareId]);
+    setLoading(false);
+    setImporting(false);
+    setError('');
+    inFlight.current = null;
+  }, [accountKey, userId, shareId, runtime, api]);
   useEffect(() => {
     if (!open || !runtime) return;
     let current = true;
+    const started = { accountKey, userId, shareId, runtime, api };
     setLoading(true);
     setError('');
     setShare(null);
     void runtime.emoteShare(shareId).then(value => {
-      if (current) setShare(value);
+      if (current && identityCurrent(started)) setShare(value);
     }).catch(cause => {
-      if (current) setError(errorText(cause));
+      if (current && identityCurrent(started)) setError(errorText(cause));
     }).finally(() => {
-      if (current) setLoading(false);
+      if (current && identityCurrent(started)) setLoading(false);
     });
     return () => { current = false; };
-  }, [open, runtime, shareId, accountKey, retry]);
+  }, [open, runtime, shareId, accountKey, userId, api, retry]);
 
   const unavailable = !!summary?.revokedAt;
   const displayName = summary?.name?.trim() || '表情合集';
   const cellSize = Math.min(88, Math.max(64, Math.floor((width - 32 - 3 * 8) / 4)));
 
   async function importShare() {
-    if (!runtime || !share || share.revokedAt || importing || imported || inFlight.current) return;
-    inFlight.current = true;
+    if (!runtime || !share || share.id !== shareId || share.revokedAt || importing || imported || inFlight.current) return;
+    const started = { ...interactionIdentity.current };
+    if (!identityCurrent(started)) return;
+    const invocation = {};
+    inFlight.current = invocation;
+    const current = () => inFlight.current === invocation && identityCurrent(started);
     setImporting(true);
     setError('');
     try {
       await runtime.importEmoteShare(share.id, subscribed && share.canSubscribeToSourceChanges);
-      if (alive.current) setImported(true);
+      if (current()) setImported(true);
     } catch (cause) {
-      if (alive.current) setError(errorText(cause));
+      if (current()) setError(errorText(cause));
     } finally {
-      inFlight.current = false;
-      if (alive.current) setImporting(false);
+      if (current()) setImporting(false);
+      if (inFlight.current === invocation) inFlight.current = null;
     }
   }
 
@@ -97,8 +118,9 @@ export function EmoteCollectionShare({ shareId, summary, runtime }: {
           {unavailable ? '历史消息仍保留，无法预览或导入' : `${summary?.itemCount ?? '多'} 张表情 · 点按预览`}
         </Text>
       </Pressable>
-      <Modal visible={open} animationType={t.reduceMotion ? 'none' : 'slide'} onRequestClose={() => setOpen(false)}>
-        <View style={{ flex: 1, backgroundColor: t.bg, paddingTop: insets.top, paddingBottom: insets.bottom }}>
+      <Modal visible={open} statusBarTranslucent navigationBarTranslucent animationType={t.reduceMotion ? 'none' : 'slide'} onRequestClose={() => setOpen(false)}>
+        <WindowSafeArea>
+        <CollectionPreviewSurface>
           <View style={{ paddingHorizontal: t.space.lg, paddingVertical: t.space.sm, flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
             <View style={{ flex: 1 }}>
               <Text accessibilityRole="header" style={{ color: t.text, fontSize: t.type.section, fontWeight: '700' }} numberOfLines={2}>
@@ -147,8 +169,15 @@ export function EmoteCollectionShare({ shareId, summary, runtime }: {
               </>
             ) : null}
           </ScrollView>
-        </View>
+        </CollectionPreviewSurface>
+        </WindowSafeArea>
       </Modal>
     </>
   );
+}
+
+function CollectionPreviewSurface({ children }: { children: React.ReactNode }) {
+  const t = useTheme();
+  const insets = useSafeAreaInsets();
+  return <View testID="emote-share-window" style={{ flex: 1, backgroundColor: t.bg, paddingTop: insets.top, paddingBottom: insets.bottom, paddingLeft: insets.left, paddingRight: insets.right }}>{children}</View>;
 }
