@@ -43,7 +43,7 @@ function renderRow(runtime: Runtime, message = original, props: Partial<Pick<Rea
   );
   const view = render(element(message));
   const openMore = () => {
-    fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
+    fireEvent(view.getByRole('text', { name: /^消息操作，/ }), 'longPress');
     fireEvent.press(view.getByRole('button', { name: '更多' }));
   };
   return { view, openMore, rerender: (item: Message) => view.rerender(element(item)) };
@@ -90,7 +90,7 @@ test('450ms bubble long press opens the same cluster without executing an action
   expect(runtime.react).not.toHaveBeenCalled();
 });
 
-test('opening message controls dismisses the keyboard while closing the cluster preserves its state and draft', async () => {
+test('long press and TalkBack actions dismiss the keyboard without consuming the draft', async () => {
   const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined);
   const runtime = {
     react: jest.fn().mockResolvedValue(undefined),
@@ -98,35 +98,29 @@ test('opening message controls dismisses the keyboard while closing the cluster 
   } as unknown as Runtime;
   const topic = topicSchema.parse({ id: 'topic-synthetic', conversationId: original.conversationId, title: '合成话题', status: 'open', joined: true });
   useWorkspace.getState().upsertTopic(topic);
-  const draft = { text: '保留中的合成草稿', mentionIds: [], mentionSpans: [] };
+  const draft = { text: '保留中的合成草稿', mentionIds: [], mentionSpans: [], emoteSpans: [] };
   useWorkspace.getState().setDraft(`topic:${topic.id}`, draft);
   const onReply = jest.fn();
   const message = { ...original, topicId: topic.id };
   const { view } = renderRow(runtime, message, { onReply });
-  const control = view.getByRole('button', { name: /^消息操作，/ });
-  fireEvent.press(control);
+  const control = view.getByRole('text', { name: /^消息操作，/ });
+  fireEvent(control, 'longPress');
   expect(dismiss).toHaveBeenCalledTimes(1);
   expect(view.getByRole('button', { name: '复制' })).toBeTruthy();
   expect(view.getByRole('button', { name: '回复' })).toBeTruthy();
   expect(view.getByRole('button', { name: '反应' })).toBeTruthy();
   expect(view.getByRole('button', { name: '更多' })).toBeTruthy();
-  fireEvent.press(control);
-  expect(dismiss).toHaveBeenCalledTimes(1);
-  expect(view.queryByRole('button', { name: '更多' })).toBeNull();
-  const bubble = view.root.findAll((item: { props: { delayLongPress?: number; onLongPress?: () => void } }) => item.props.delayLongPress === 450 && typeof item.props.onLongPress === 'function')[0];
-  fireEvent(bubble!, 'longPress');
-  expect(dismiss).toHaveBeenCalledTimes(2);
   fireEvent.press(view.getByRole('button', { name: '更多' }));
-  expect(dismiss).toHaveBeenCalledTimes(3);
+  expect(dismiss).toHaveBeenCalledTimes(2);
   fireEvent.press(view.getByRole('button', { name: '复制' }));
   await waitFor(() => expect(copyText).toHaveBeenCalledWith(message.plainText));
-  fireEvent.press(control);
+  fireEvent(control, 'longPress');
   fireEvent.press(view.getByRole('button', { name: '回复' }));
   expect(onReply).toHaveBeenCalledWith(message);
   fireEvent(control, 'accessibilityAction', { nativeEvent: { actionName: 'more' } });
-  expect(dismiss).toHaveBeenCalledTimes(5);
+  expect(dismiss).toHaveBeenCalledTimes(4);
   await act(async () => fireEvent.press(view.getByRole('button', { name: '添加表情回复' })));
-  expect(dismiss).toHaveBeenCalledTimes(6);
+  expect(dismiss).toHaveBeenCalledTimes(5);
   const catalog = within(view.getByTestId('dialog-选择消息表情回复'));
   fireEvent.press(catalog.getAllByRole('button', { name: '笑脸' }).find(item => within(item).queryByText('😀'))!);
   expect(runtime.react).toHaveBeenCalledWith(message.id, 'emoji:grinning', false);
@@ -137,7 +131,7 @@ test('opening message controls dismisses the keyboard while closing the cluster 
 test('TalkBack copy reply and more actions execute the same available handlers', async () => {
   const onReply = jest.fn();
   const { view } = renderRow({} as Runtime, original, { onReply });
-  const control = view.getByRole('button', { name: /^消息操作，/ });
+  const control = view.getByRole('text', { name: /^消息操作，/ });
   expect(control.props.accessibilityActions).toEqual([
     { name: 'copy', label: '复制' }, { name: 'reply', label: '回复' }, { name: 'more', label: '更多消息操作' },
   ]);
@@ -153,7 +147,7 @@ test.each(['sending', 'failed'])('a %s message has copy and more but no reply or
   const message = { ...original, status: status as 'sending' | 'failed' };
   const onReply = jest.fn();
   const { view, openMore } = renderRow({} as Runtime, message, { onReply });
-  const control = view.getByRole('button', { name: /^消息操作，/ });
+  const control = view.getByRole('text', { name: /^消息操作，/ });
   expect(control.props.accessibilityActions.map((action: { name: string }) => action.name)).toEqual(['copy', 'more']);
   fireEvent(control, 'accessibilityAction', { nativeEvent: { actionName: 'reply' } });
   expect(onReply).not.toHaveBeenCalled();
@@ -165,10 +159,10 @@ test.each(['sending', 'failed'])('a %s message has copy and more but no reply or
 test('system and recalled rows expose no shared mutation or stale-body controls', () => {
   const runtime = {} as Runtime;
   const system = renderRow(runtime, { ...original, kind: 'system' });
-  expect(system.view.queryByRole('button', { name: /^消息操作，/ })).toBeNull();
+  expect(system.view.queryByRole('text', { name: /^消息操作，/ })).toBeNull();
   system.view.unmount();
   const recalled = renderRow(runtime, { ...original, recalledAt: original.createdAt, plainText: '成员甲撤回了一条消息' });
-  expect(recalled.view.queryByRole('button', { name: /^消息操作，/ })).toBeNull();
+  expect(recalled.view.queryByRole('text', { name: /^消息操作，/ })).toBeNull();
   expect(recalled.view.queryByText(text)).toBeNull();
 });
 
@@ -180,7 +174,7 @@ test('complete reaction catalog sends canonical non-quick emoji and built-in ima
     emoteLibrary: jest.fn().mockResolvedValue({ emotes: [emote], collections: [], entries: [] }),
   } as unknown as Runtime;
   const { view, openMore } = renderRow(runtime);
-  fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
+  fireEvent(view.getByTestId('message-body-' + original.id), 'longPress');
   fireEvent.press(view.getByRole('button', { name: '反应' }));
   const quick = view.getByRole('button', { name: '反应 👍' });
   expect(StyleSheet.flatten(quick.props.style)).toMatchObject({ minWidth: resolveTheme('light').hit, minHeight: resolveTheme('light').hit });
@@ -248,7 +242,7 @@ test.each([
   const runtime = { react: jest.fn().mockResolvedValue(undefined) } as unknown as Runtime;
   const { view, rerender } = renderRow(runtime);
   const chooseQuick = async (selected: boolean) => {
-    fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
+    fireEvent(view.getByTestId('message-body-' + original.id), 'longPress');
     fireEvent.press(view.getByRole('button', { name: '反应' }));
     const quick = view.getByRole('button', { name: `反应 ${glyph}` });
     expect(quick.props.accessibilityState).toMatchObject({ selected });

@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
+import { Download } from 'lucide-react-native';
 import { Text } from './Text';
 import type { Attachment } from '../domain/contracts';
 import type { UploadTask } from '../data/transfers';
@@ -17,9 +18,13 @@ export function FileRow({ file, download }: { file: Attachment; download: () => 
   const t = useTheme();
   return (
     <View style={[fileStyles.row, { borderColor: t.line }]}>
-      <Text style={{ color: t.text, fontSize: t.type.body }} numberOfLines={2}>{file.fileName}</Text>
-      <Label muted>{formatBytes(file.byteSize)} · {fileStatus(file)}</Label>
-      <Button title="保存到设备" secondary disabled={!file.capabilities.canDownload} onPress={download} />
+      <View style={fileStyles.detail}>
+        <Text style={{ color: t.text, fontSize: t.type.body }} numberOfLines={2}>{file.fileName}</Text>
+        <Label muted>{formatBytes(file.byteSize)} · {fileStatus(file)}</Label>
+      </View>
+      <IconButton label={`保存文件${file.fileName}到设备`} disabled={file.status !== 'available' || !file.capabilities.canDownload} onPress={download}>
+        <Download size={20} color={t.shared} />
+      </IconButton>
     </View>
   );
 }
@@ -75,6 +80,7 @@ export function TransferItem({
 }
 
 const fileStyles = StyleSheet.create({
-  row: { paddingHorizontal: 16, paddingVertical: 14, minHeight: 72, borderBottomWidth: StyleSheet.hairlineWidth, gap: 4 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, minHeight: 72, borderBottomWidth: StyleSheet.hairlineWidth, gap: 12 },
+  detail: { flex: 1, minWidth: 0, gap: 4 },
   actions: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
 });

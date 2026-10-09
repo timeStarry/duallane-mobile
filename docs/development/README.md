@@ -23,6 +23,7 @@
 | [R4 聊天补全与实测](../design/mobile-experience-redesign/R4.md) | 当前补全范围、APK 构建与真机验证记录及剩余边界 |
 | [R5 移动端验收与修复](../design/mobile-experience-redesign/R5.md) | 2026-10-06 旧正式包复现、权限／聊天修复与候选包证据 |
 | [R6 首页搜索与图片发送](../design/mobile-experience-redesign/R6.md) | 独立搜索页、本机历史、图片系统确认后直接发送的实现及实际验证 |
+| [R7 表情与媒体修复](../design/mobile-experience-redesign/R7.md) | 自定义表情跨端契约、媒体样式与安全区、保存、长按及相邻账号／回包审查 |
 | [安全与数据](SECURITY_AND_DATA.md) | Workspace 信任边界、凭证、缓存、本地通知、日志和隐私 |
 | [测试与发布](TESTING_AND_RELEASE.md) | Android 构建、版本、OTA、本地通知 验收、灰度、回滚 |
 

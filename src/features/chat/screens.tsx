@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { z } from 'zod';
 import { useWorkspace } from '../../domain/store';
 import { attachmentSchema, parseMessage, targetKey, type Attachment, type ChatTarget, type Draft, type Emote, type EmoteLibrary, type Message, type Topic } from '../../domain/contracts';
-import { activeMentionQuery, appendDraftMention, editDraftText, insertDraftMention, mentionCandidates } from '../../domain/compose';
+import { activeMentionQuery, appendDraftMention, editDraftText, insertDraftEmote, insertDraftMention, mentionCandidates } from '../../domain/compose';
 import { Runtime } from '../../data/runtime';
 import { errorText } from '../../data/client';
 import { rememberEmotes } from '../../data/media';
@@ -136,6 +136,7 @@ export function ChatScreen({
   details,
   onOpenTopic,
   onPreview,
+  onPreviewEmote,
   focusMessageId,
 }: {
   target: ChatTarget;
@@ -144,6 +145,7 @@ export function ChatScreen({
   details: () => void;
   onOpenTopic?: (topicId: string) => void;
   onPreview?: (file: import('../../domain/contracts').Attachment) => void;
+  onPreviewEmote?: (shortcode: string, messageId: string) => void;
   focusMessageId?: string;
 }) {
   const t = useTheme();
@@ -319,19 +321,28 @@ export function ChatScreen({
     const listener = AppState.addEventListener('change', state => setForeground(state === 'active'));
     return () => listener.remove();
   }, []);
+  const emoteApi = runtime.api;
   useEffect(() => {
+    let cancelled = false;
+    const current = () => !cancelled && runtime.api === emoteApi && useWorkspace.getState().accountKey === accountKey;
+    setEmotes([]);
+    setLibrary(null);
     void Promise.all([runtime.emotes(), runtime.emoteLibrary()]).then(([list, nextLibrary]) => {
+      if (!current()) return;
       const collected = [...list.items, ...nextLibrary.emotes, ...nextLibrary.collections.flatMap(collection => collection.items)];
       rememberEmotes(collected);
       setEmotes(list.items);
       setLibrary(nextLibrary);
     }).catch(() => {
+      if (!current()) return;
       void runtime.emotes().then(result => {
+        if (!current()) return;
         rememberEmotes(result.items);
         setEmotes(result.items);
       }).catch(() => undefined);
     });
-  }, [runtime]);
+    return () => { cancelled = true; };
+  }, [runtime, accountKey, emoteApi]);
   const selfId = useWorkspace(s => s.bootstrap?.auth.currentUser.id);
   const identity = conversation ? conversationIdentity(conversation, selfId, members) : undefined;
   const modeRef = useRef(mode);
@@ -608,6 +619,7 @@ export function ChatScreen({
       replyToMessageId: existing ? existing.replyToMessageId : latest.replyToMessageId,
       mentionIds: existing ? [] : latest.mentionIds,
       mentionSpans: existing ? undefined : latest.mentionSpans,
+      emoteSpans: existing ? undefined : latest.emoteSpans,
       syncToGroup: target.kind === 'topic' && (existing ? !!existing.pendingSyncToGroup : syncToGroup),
       uploadTaskId,
       upload: needsUpload ? () => {
@@ -924,6 +936,7 @@ export function ChatScreen({
                 isProjected={projections.isProjected(item.message.id)}
                 projectionBusy={projections.isBusy(item.message.id)}
                 onPreview={onPreview}
+                onPreviewEmote={shortcode => onPreviewEmote?.(shortcode, item.message.id)}
                 download={file => {
                   const api = runtime.api;
                   if (api) void transfers.download(api, useWorkspace.getState().accountKey, file).catch(e => setError(errorText(e)));
@@ -992,13 +1005,24 @@ export function ChatScreen({
                   const token = item.token ?? item.value ?? `[${packId}:${item.id}]`;
                   const enabled = useWorkspace.getState().chatSettings?.clickImageEmoteToSend ?? false;
                   if (shouldDirectSendWorkspaceEmote(item, packId, enabled)) {
-                    runtime.patchDraft(key, editDraftText(useWorkspace.getState().drafts[key] ?? draft, token));
-                    send();
+                    const selected = insertDraftEmote({ text: '', mentionIds: [] }, item, token);
+                    const api = runtime.api, account = useWorkspace.getState().accountKey;
+                    const current = () => echoRoute.current.key === key && echoRoute.current.accountKey === account
+                      && echoRoute.current.focused && runtime.api === api && useWorkspace.getState().accountKey === account;
+                    setError('');
+                    pinToLatest.current = true;
+                    invalidateReadConfirmation();
+                    void runtime.send(target.kind === 'conversation' ? target.id : target.conversationId, selected.text, undefined, undefined, {
+                      topicId: target.kind === 'topic' ? target.id : undefined,
+                      syncToGroup: target.kind === 'topic' && syncToGroup,
+                      mentionIds: [], mentionSpans: [], emoteSpans: selected.emoteSpans,
+                      replyToMessageId: null, preserveDraft: true, shouldSend: current,
+                    }).catch(error => { if (current()) setError(errorText(error)); });
                     ime.closePanel();
                     return;
                   }
                   const current = useWorkspace.getState().drafts[key] ?? draft;
-                  runtime.patchDraft(key, editDraftText(current, `${current.text}${token}`));
+                  runtime.patchDraft(key, insertDraftEmote(current, item, token));
                 }}
               />
             ) : null}

@@ -1,32 +1,29 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { Text } from './Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { X } from 'lucide-react-native';
+import { Download, RotateCcw, X } from 'lucide-react-native';
 import type { Attachment } from '../domain/contracts';
-import { attachmentPreviewUri, type MediaContext } from '../data/media';
+import { attachmentPreviewUri, emotePreviewUri, type MediaContext } from '../data/media';
 import { RemoteImage } from './RemoteImage';
-import { Button } from './primitives';
 import { useTheme } from './theme';
 import { errorText } from '../data/client';
 
-export function MediaViewer({
-  file,
-  context,
-  authorized,
-  onClose,
-  onDownload,
-}: {
-  file: Attachment;
+type MediaViewerProps = {
   context: MediaContext;
   authorized: boolean;
   onClose: () => void;
-  onDownload: () => void | Promise<void>;
-}) {
+  onDownload?: () => void | Promise<void>;
+} & ({ file: Attachment; emoteShortcode?: never } | { file?: never; emoteShortcode: string });
+
+export function MediaViewer({ file, emoteShortcode, context, authorized, onClose, onDownload }: MediaViewerProps) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
-  const [uri, setUri] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  const source = useMemo(() => ({ file, emoteShortcode, context }), [file, emoteShortcode, context]);
+  const previewGeneration = useRef(0);
+  const [preview, setPreview] = useState<{ source: typeof source; generation: number; uri: string | null; failed: boolean }>({ source, generation: 0, uri: null, failed: false });
+  const uri = preview.source === source ? preview.uri : null;
+  const failed = preview.source === source && preview.failed;
   const [attempt, setAttempt] = useState(0);
   const [downloadError, setDownloadError] = useState('');
   const [downloading, setDownloading] = useState(false);
@@ -38,9 +35,10 @@ export function MediaViewer({
     setDownloading(false);
     setDownloadError('');
     return () => { generation.current++; };
-  }, [file, context, authorized]);
+  }, [source, authorized]);
+  const canDownload = !!onDownload && (!file || (file.status === 'available' && file.capabilities.canDownload));
   const download = async () => {
-    if (downloadBusy.current || !authorized || !file.capabilities.canDownload) return;
+    if (downloadBusy.current || !authorized || !canDownload || !onDownload) return;
     const generation = downloadGeneration.current;
     downloadBusy.current = true;
     setDownloading(true);
@@ -54,27 +52,50 @@ export function MediaViewer({
   useEffect(() => { if (!authorized) onClose(); }, [authorized, onClose]);
   useEffect(() => {
     let cancelled = false;
-    setFailed(false);
-    setUri(null);
-    if (authorized) void attachmentPreviewUri(file, context).then(value => { if (!cancelled) setUri(value); }).catch(() => { if (!cancelled) setFailed(true); });
+    const generation = ++previewGeneration.current;
+    setPreview({ source, generation, uri: null, failed: false });
+    if (authorized) {
+      const load = source.file ? attachmentPreviewUri(source.file, source.context) : source.emoteShortcode ? emotePreviewUri(source.emoteShortcode, source.context) : Promise.reject(new Error('Preview source unavailable'));
+      void load.then(value => { if (!cancelled) setPreview({ source, generation, uri: value, failed: false }); }).catch(() => { if (!cancelled) setPreview({ source, generation, uri: null, failed: true }); });
+    }
     return () => { cancelled = true; };
-  }, [file, context, authorized, attempt]);
+  }, [source, authorized, attempt]);
   if (!authorized) return null;
+  const saveTitle = downloading ? '保存中…' : `保存到手机${file ? `（${(file.byteSize / 1000000).toFixed(1)} MB）` : ''}`;
   return (
-    <View style={{ flex: 1, backgroundColor: '#000' }}>
-      <View style={{ alignItems: 'flex-end', paddingTop: 8, paddingHorizontal: 12 }}>
-        <Pressable accessibilityRole="button" accessibilityLabel="关闭预览" onPress={onClose} style={{ width: t.hit, height: t.hit, alignItems: 'center', justifyContent: 'center' }}>
-          <X size={24} color="#fff" />
+    <View testID="media-viewer" style={styles.viewer}>
+      {!failed && uri ? <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+        <RemoteImage key={`${preview.generation}:${uri}`} uri={uri} resizeMode="contain" style={styles.image} onError={() => setPreview(current => current.source === source && current.generation === preview.generation ? { ...current, failed: true } : current)} />
+      </View> : null}
+      <View testID="media-viewer-top-controls" style={{ alignItems: 'flex-end', paddingTop: insets.top + 8, paddingLeft: insets.left + 12, paddingRight: insets.right + 12 }}>
+        <Pressable accessibilityRole="button" accessibilityLabel="关闭预览" onPress={onClose} style={({ pressed }) => [styles.close, { minWidth: t.hit, minHeight: t.hit, opacity: pressed ? t.pressedOpacity : 1 }]}>
+          <X size={20} color="#fff" />
         </Pressable>
       </View>
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        {failed ? <Text style={{ color: '#fff', textAlign: 'center' }}>图片无法加载</Text> : uri ? <RemoteImage uri={uri} resizeMode="contain" style={{ width: '100%', height: '80%' }} onError={() => setFailed(true)} /> : <Text style={{ color: '#fff', textAlign: 'center' }}>加载中…</Text>}
+      <View pointerEvents="none" style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingLeft: insets.left + 16, paddingRight: insets.right + 16 }}>
+        {failed ? <Text accessibilityRole="alert" style={styles.feedback}>图片无法加载</Text> : !uri ? <Text style={styles.feedback}>加载中…</Text> : null}
       </View>
-      <View style={{ padding: 16, paddingBottom: Math.max(insets.bottom, 16), backgroundColor: t.elevated, gap: 8 }}>
-        {failed ? <Button title="重试" secondary onPress={() => setAttempt(value => value + 1)} /> : null}
-        {downloadError ? <Text accessibilityRole="alert" style={{ color: t.danger }}>{downloadError}</Text> : null}
-        <Button title={downloading ? '正在下载…' : '下载并分享'} disabled={downloading || !file.capabilities.canDownload} onPress={() => void download()} />
+      <View testID="media-viewer-bottom-controls" style={[styles.bottom, { paddingBottom: insets.bottom + 8, paddingLeft: insets.left + 16, paddingRight: insets.right + 16 }]}>
+        {failed ? <Pressable accessibilityRole="button" accessibilityLabel="重试加载图片" onPress={() => setAttempt(value => value + 1)} style={({ pressed }) => [styles.action, { minWidth: t.hit, minHeight: t.hit, opacity: pressed ? t.pressedOpacity : 1 }]}>
+          <RotateCcw size={18} color="#fff" />
+          <Text style={[styles.actionText, { fontSize: t.type.control }]}>重试加载</Text>
+        </Pressable> : null}
+        {downloadError ? <Text accessibilityRole="alert" style={styles.feedback}>{downloadError}</Text> : null}
+        {onDownload ? <Pressable accessibilityRole="button" accessibilityLabel={saveTitle} accessibilityState={{ disabled: downloading || !canDownload, busy: downloading }} disabled={downloading || !canDownload} onPress={() => void download()} style={({ pressed }) => [styles.action, { minWidth: t.hit, minHeight: t.hit, opacity: downloading || !canDownload ? t.disabledOpacity : pressed ? t.pressedOpacity : 1 }]}>
+          <Download size={18} color="#fff" />
+          <Text style={[styles.actionText, { fontSize: t.type.control }]}>{saveTitle}</Text>
+        </Pressable> : null}
       </View>
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  viewer: { flex: 1, backgroundColor: '#000' },
+  image: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  close: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent' },
+  bottom: { alignItems: 'center', gap: 4, paddingTop: 8, backgroundColor: 'transparent' },
+  action: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, maxWidth: '100%', paddingHorizontal: 12, paddingVertical: 8, backgroundColor: 'transparent' },
+  actionText: { color: '#fff', flexShrink: 1, textAlign: 'center', textShadowColor: '#000', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+  feedback: { color: '#fff', textAlign: 'center', textShadowColor: '#000', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+});
