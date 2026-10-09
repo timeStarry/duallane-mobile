@@ -7,7 +7,7 @@ import { hideResultSchema, reactionResultSchema, topicCreatedRef } from '../doma
 import { setMediaAccount, setMediaClient, clearAccountPreviewCache, rememberEmotes } from './media';
 import { topicReadResultSchema } from './inbox-read';
 import { topicProjectionLimit, topicProjectionResultSchema, topicProjectionsSchema } from '../domain/topic-projections';
-import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteCollectionSchema, emoteLibrarySchema, emoteListSchema, emoteSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type MentionSpan, type Message, type WorkspaceEvent } from '../domain/contracts';
+import { bootstrapSchema, cardResolutionSchema, chatSettingsResponseSchema, conversationSchema, draftSchema, emoteCollectionSchema, emoteLibrarySchema, emoteListSchema, emoteSchema, parseMessage, profileResponseSchema, sessionSchema, topicSchema, type Attachment, type ChatSettingsPatch, type Draft, type EmoteSpan, type MentionSpan, type Message, type WorkspaceEvent } from '../domain/contracts';
 import { composeBlocks } from '../domain/compose';
 import { assertAllowedCardAction } from '../domain/actions';
 import { clearAccountFiles } from './transfers';
@@ -347,7 +347,7 @@ export class Runtime {
       throw error;
     }
   }
-  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];mentionSpans?:MentionSpan[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;preserveDraft?:boolean;shouldSend?:()=>boolean;}){
+  async send(id:string,text:string,existing?:Message,attachmentId?:string,options?:{topicId?:string;replyToMessageId?:string|null;mentionIds?:string[];mentionSpans?:MentionSpan[];emoteSpans?:EmoteSpan[];upload?:()=>Promise<Attachment|null>;uploadTaskId?:string;syncToGroup?:boolean;preserveDraft?:boolean;shouldSend?:()=>boolean;}){
     const s=useWorkspace.getState();const topicId=options?.topicId??existing?.topicId;const conversationId=existing?.conversationId??id;
     const bucket=topicId?`topic:${topicId}`:conversationId;
     const topic=topicId?s.topics[topicId]:undefined;
@@ -367,11 +367,11 @@ export class Runtime {
     let fileId=attachmentId??existing?.attachments[0]?.id;
     const uploadTaskId=options?.uploadTaskId??existing?.pendingUploadTaskId;
     const syncToGroup=existing?.pendingSyncToGroup??options?.syncToGroup??false;
-    let blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,fileId,options?.mentionSpans);
+    let blocks=existing?.blocks.length?existing.blocks:composeBlocks(text,members,mentionIds,fileId,options?.mentionSpans,options?.emoteSpans);
     if(!blocks.length&&!options?.upload&&!uploadTaskId)return;
     let pending:Message=existing??{id:clientMessageId,conversationId,topicId,authorId:s.bootstrap.auth.currentUser.id,authorName:s.bootstrap.auth.currentUser.displayName,kind:'user',clientMessageId,createdAt:new Date().toISOString(),plainText:text,replyToMessageId:replyTo,hiddenByCurrentUser:false,attachments:[],reactions:[],blocks,fallback:false};
     pending={...pending,pendingUploadTaskId:uploadTaskId,pendingSyncToGroup:topicId?syncToGroup:undefined};
-    this.inFlight.add(clientMessageId);s.upsertMessage({...pending,status:'sending'},bucket);if(!existing&&!options?.preserveDraft)this.patchDraft(bucket,{text:'',mentionIds:[],mentionSpans:[],replyToMessageId:undefined,pendingAttachment:undefined});
+    this.inFlight.add(clientMessageId);s.upsertMessage({...pending,status:'sending'},bucket);if(!existing&&!options?.preserveDraft)this.patchDraft(bucket,{text:'',mentionIds:[],mentionSpans:[],emoteSpans:[],replyToMessageId:undefined,pendingAttachment:undefined});
     try{
       if(uploadTaskId&&!fileId&&!options?.upload)throw new Error('Upload unavailable');
       if(options?.upload&&!fileId){
@@ -379,7 +379,7 @@ export class Runtime {
         if(!readable())return;
         if(!file)throw new Error('Upload paused');
         fileId=file.id;
-        blocks=existing?.blocks.length?[...existing.blocks.filter(block=>block.type!=='attachment'),{type:'attachment',attachmentId:file.id}]:composeBlocks(text,members,mentionIds,file.id,options?.mentionSpans);
+        blocks=existing?.blocks.length?[...existing.blocks.filter(block=>block.type!=='attachment'),{type:'attachment',attachmentId:file.id}]:composeBlocks(text,members,mentionIds,file.id,options?.mentionSpans,options?.emoteSpans);
         pending={...pending,attachments:[file],blocks,plainText:text||file.fileName};
         useWorkspace.getState().upsertMessage({...pending,status:'sending'},bucket);
         if(!canStillSend())throw new Error('Cannot send');
@@ -586,21 +586,37 @@ export class Runtime {
     useWorkspace.setState(s=>({conversations:{...s.conversations,[conversationId]:result.conversation}}));
     await this.messages(conversationId);
   }
-  async emotes(){return this.requireApi().json('/api/workspace/me/emotes',emoteListSchema);}
-  async emoteLibrary(){return this.requireApi().json('/api/workspace/me/emote-library',emoteLibrarySchema);}
+  async emotes(){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const result=await api.json('/api/workspace/me/emotes',emoteListSchema);
+    if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account)throw new Error('Stale session');
+    return result;
+  }
+  async emoteLibrary(){
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const result=await api.json('/api/workspace/me/emote-library',emoteLibrarySchema);
+    if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account)throw new Error('Stale session');
+    return result;
+  }
   async emoteShare(shareId:string){
-    const result=await this.requireApi().json(`/api/workspace/emote-collection-shares/${encodeURIComponent(shareId)}`,z.object({share:emoteShareSchema}));
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const result=await api.json(`/api/workspace/emote-collection-shares/${encodeURIComponent(shareId)}`,z.object({share:emoteShareSchema}));
+    if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account)throw new Error('Stale session');
     return result.share;
   }
   async importEmoteShare(shareId:string,subscribeToSourceChanges=false){
-    const result=await this.requireApi().json(`/api/workspace/emote-collection-shares/${encodeURIComponent(shareId)}/import`,z.object({
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const result=await api.json(`/api/workspace/emote-collection-shares/${encodeURIComponent(shareId)}/import`,z.object({
       collection:emoteCollectionSchema.nullish(),items:z.array(emoteSchema).default([]),
     }),{asCollection:true,subscribeToSourceChanges});
+    if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account)throw new Error('Stale session');
     if(result.collection)rememberEmotes(result.collection.items);
     return result;
   }
   async favoriteMessageEmote(messageId:string,attachmentId:string){
-    const result=await this.requireApi().json('/api/workspace/me/emotes/favorite',z.object({emote:emoteSchema}),{messageId,attachmentId});
+    const api=this.requireApi(),epoch=this.epoch,account=useWorkspace.getState().accountKey;
+    const result=await api.json('/api/workspace/me/emotes/favorite',z.object({emote:emoteSchema}),{messageId,attachmentId});
+    if(!this.current(epoch)||this.api!==api||useWorkspace.getState().accountKey!==account)throw new Error('Stale session');
     rememberEmotes([result.emote]);
     return result.emote;
   }

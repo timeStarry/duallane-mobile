@@ -1,4 +1,4 @@
-import type { Block, Draft, Member, MentionSpan } from './contracts';
+import { emoteSpanSchema, type Block, type Draft, type EmoteSpan, type Member, type MentionSpan } from './contracts';
 
 function validMentionSpans(text: string, spans: MentionSpan[]): MentionSpan[] {
   const sorted = spans.filter(span => Number.isInteger(span.start) && Number.isInteger(span.end)
@@ -8,6 +8,21 @@ function validMentionSpans(text: string, spans: MentionSpan[]): MentionSpan[] {
   // Conflicting ranges cannot establish which identity the user selected.
   return sorted.filter((span, index) => !sorted.some((other, otherIndex) => index !== otherIndex
     && span.start < other.end && other.start < span.end));
+}
+
+function validEmoteSpans(text: string, spans: EmoteSpan[]): EmoteSpan[] {
+  const valid = spans.filter(span => emoteSpanSchema.safeParse(span).success
+    && span.end <= text.length && text.slice(span.start, span.end) === span.token);
+  return valid.filter((span, index) => !valid.some((other, otherIndex) => index !== otherIndex
+    && span.start < other.end && other.start < span.end));
+}
+
+function spansOutsideEdit<T extends { start: number; end: number }>(spans: T[], start: number, end: number, delta: number): T[] {
+  return spans.flatMap(span => {
+    if (span.end <= start) return [span];
+    if (span.start >= end) return [{ ...span, start: span.start + delta, end: span.end + delta }];
+    return [];
+  });
 }
 
 function withMentions(draft: Draft, text: string, mentionSpans: MentionSpan[]): Draft {
@@ -31,7 +46,8 @@ export function editDraftText(draft: Draft, text: string): Draft {
     if (span.start >= end) return [{ ...span, start: span.start + delta, end: span.end + delta }];
     return [];
   });
-  return withMentions(draft, text, validMentionSpans(text, spans));
+  const emoteSpans = spansOutsideEdit(validEmoteSpans(draft.text, draft.emoteSpans ?? []), start, end, delta);
+  return withMentions({ ...draft, emoteSpans: validEmoteSpans(text, emoteSpans) }, text, validMentionSpans(text, spans));
 }
 
 export function insertDraftMention(
@@ -59,7 +75,27 @@ export function insertDraftMention(
     if (other.start >= range.end) return [{ ...other, start: other.start + delta, end: other.end + delta }];
     return [];
   });
-  return withMentions(draft, text, [...spans, span].sort((a, b) => a.start - b.start));
+  const emoteSpans = spansOutsideEdit(validEmoteSpans(draft.text, draft.emoteSpans ?? []), range.start, range.end, delta);
+  return withMentions({ ...draft, emoteSpans }, text, [...spans, span].sort((a, b) => a.start - b.start));
+}
+
+export function insertDraftEmote(
+  draft: Draft,
+  item: { id: string; kind: string },
+  token: string,
+  selection: { start: number; end: number } = { start: draft.text.length, end: draft.text.length },
+): Draft {
+  if (!Number.isInteger(selection.start) || !Number.isInteger(selection.end) || selection.start < 0
+    || selection.end < selection.start || selection.end > draft.text.length) throw new RangeError('Invalid emote insertion range');
+  const text = `${draft.text.slice(0, selection.start)}${token}${draft.text.slice(selection.end)}`;
+  const delta = text.length - draft.text.length;
+  const mentionSpans = spansOutsideEdit(validMentionSpans(draft.text, draft.mentionSpans ?? []), selection.start, selection.end, delta);
+  const emoteSpans = spansOutsideEdit(validEmoteSpans(draft.text, draft.emoteSpans ?? []), selection.start, selection.end, delta);
+  const selected = emoteSpanSchema.safeParse({ customId: item.id.toLowerCase(), token, start: selection.start, end: selection.start + token.length });
+  // As on Web, only a selected custom resource establishes an emoji identity.
+  // Saved built-ins and Unicode keep their existing text protocol.
+  if ((item.kind === 'custom' || item.kind === 'image') && selected.success) emoteSpans.push(selected.data);
+  return withMentions({ ...draft, emoteSpans: emoteSpans.sort((a, b) => a.start - b.start) }, text, mentionSpans);
 }
 
 export function appendDraftMention(draft: Draft, member: Pick<Member, 'id' | 'displayName'>): Draft {
@@ -95,16 +131,21 @@ function legacyMentionSpans(text: string, members: Member[], mentionIds: string[
   return spans;
 }
 
-export function composeBlocks(text: string, members: Member[], mentionIds: string[] = [], attachmentId?: string, mentionSpans?: MentionSpan[]): Block[] {
+export function composeBlocks(text: string, members: Member[], mentionIds: string[] = [], attachmentId?: string, mentionSpans?: MentionSpan[], emoteSpans: EmoteSpan[] = []): Block[] {
   const spans = mentionSpans === undefined ? legacyMentionSpans(text, members, mentionIds) : validMentionSpans(text, mentionSpans);
+  const candidates = [...spans.map(span => ({ ...span, type: 'mention' as const })), ...validEmoteSpans(text, emoteSpans).map(span => ({ ...span, type: 'emote' as const }))];
+  // Conflicting selected ranges cannot establish either resource identity.
+  const selected = candidates.filter((span, index) => !candidates.some((other, otherIndex) => index !== otherIndex
+    && span.start < other.end && other.start < span.end)).sort((a, b) => a.start - b.start);
   const byId = new Map(members.map(member => [member.id, member]));
   const blocks: Block[] = [];
   let offset = 0;
-  for (const span of spans) {
-    const member = byId.get(span.userId);
-    if (!member) continue;
+  for (const span of selected) {
+    const member = span.type === 'mention' ? byId.get(span.userId) : undefined;
+    if (span.type === 'mention' && !member) continue;
     if (span.start > offset) blocks.push({ type: 'text', text: text.slice(offset, span.start) });
-    blocks.push({ type: 'mention', userId: member.id, label: member.displayName });
+    if (span.type === 'emote') blocks.push({ type: 'emoji', shortcode: `custom:${span.customId.toLowerCase()}` });
+    else if (member) blocks.push({ type: 'mention', userId: member.id, label: member.displayName });
     offset = span.end;
   }
   if (offset < text.length) blocks.push({ type: 'text', text: text.slice(offset) });

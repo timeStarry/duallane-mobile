@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Attachment, Bootstrap, ChatSettings, Conversation, Draft, Message, Topic } from './contracts';
 import type { ReleasePolicy } from './updates';
 import type { GitHubRelease } from './github-releases';
+import { editDraftText } from './compose';
 
 // Process-local proof of an accepted HTTP read, never restored from cache.
 type MessageRead = { revision: number; source: object; before?: string };
@@ -132,7 +133,13 @@ export const useWorkspace = create<State>(set => ({
   }),
   setDraft: (id, draft) => set(s => {
     const current = s.drafts[id] ?? emptyDraft();
-    const next = typeof draft === 'string' ? { ...current, text: draft } : { ...current, ...draft };
+    const edited = typeof draft === 'string' ? editDraftText(current, draft)
+      : draft.text === undefined ? current : editDraftText(current, draft.text);
+    const next = typeof draft === 'string' ? edited : { ...edited, ...draft };
+    // Legacy ID-only drafts still need the UI's identity warning. Absence of
+    // selected ranges cannot become an explicit empty modern selection.
+    if (typeof draft !== 'string' && draft.mentionIds !== undefined
+      && draft.mentionSpans === undefined && current.mentionSpans === undefined) delete next.mentionSpans;
     return { drafts: { ...s.drafts, [id]: next } };
   }),
   setChatSettings: chatSettings => set({ chatSettings }),

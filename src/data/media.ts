@@ -152,6 +152,68 @@ export function splitCatalogEmotes(text: string): Array<{ text?: string; src?: s
   return splitImageEmotes(text, emotes);
 }
 
+function emoteKey(value: string): string {
+  return value.trim().replace(/^:|:$/g, '').replace(/^\[|\]$/g, '').toLowerCase();
+}
+
+export function canPreviewEmote(shortcode: string, context: MediaContext): boolean {
+  const s = useWorkspace.getState();
+  if (!s.accountKey || context.accountKey !== s.accountKey || !s.bootstrap?.permissions.canReadConversations
+    || !context.conversationId || !s.conversations[context.conversationId] || !context.messageId || !emoteSource(shortcode)) return false;
+  if (context.topicId && (!s.topics[context.topicId]?.joined || s.topics[context.topicId]?.conversationId !== context.conversationId)) return false;
+  const message = s.messages[context.topicId ? `topic:${context.topicId}` : context.conversationId]?.find(item => item.id === context.messageId);
+  // A preview is an action on the currently visible message, not a registry browser.
+  if (!message || message.hiddenByCurrentUser || message.recalledAt || message.deletedAt || message.fallback) return false;
+  const key = emoteKey(shortcode);
+  return message.blocks.some(block => block.type === 'emoji' ? emoteKey(block.shortcode) === key
+    : block.type === 'text' && splitCatalogEmotes(block.text).some(part => part.token && emoteKey(part.token) === key));
+}
+
+export async function emotePreviewUri(shortcode: string, context: MediaContext): Promise<string> {
+  const api = client, account = mediaAccount, started = generation;
+  if (!api || !account) throw new Error('Media client unavailable');
+  const source = emoteSource(shortcode);
+  if (!source) throw new Error('Emote unavailable');
+  const hadSession = !!api.session;
+  const current = () => {
+    if (client !== api || mediaAccount !== account || generation !== started || (hadSession && !api.session)) throw new Error('Stale media session');
+    if (context.accountKey !== account || useWorkspace.getState().accountKey !== account || !canPreviewEmote(shortcode, context)) throw new Error('permission.denied');
+  };
+  return withMediaScope(api, current, async (controller, currentScope) => {
+    // Reauthorize the logical resource before using an account-scoped cached image.
+    let response: Response;
+    try { response = await api.openMedia(source, controller.signal); }
+    catch (error) {
+      currentScope();
+      const failure = apiFailure(error);
+      if (failure && [401, 403, 404, 410].includes(failure.status)) clearAccountPreviewCache(account);
+      throw error;
+    }
+    currentScope();
+    if (/\.svg(\?|$)/i.test(source)) {
+      void response.body?.cancel().catch(() => undefined);
+      return source;
+    }
+    const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `emote-preview:${api.origin}:${account}:${emoteKey(shortcode)}`);
+    currentScope();
+    const dir = new Directory(Paths.cache, 'previews', account);
+    const cached = new File(dir, digest);
+    if (cached.exists && cached.size > 0) {
+      void response.body?.cancel().catch(() => undefined);
+      return cached.uri;
+    }
+    const bytes = new Uint8Array(await readMediaBody(() => response.arrayBuffer(), controller, current));
+    currentScope();
+    if (!bytes.byteLength) throw new Error('Empty media');
+    dir.create({ intermediates: true, idempotent: true });
+    if (cached.exists && cached.size > 0) return cached.uri;
+    cached.create({ overwrite: true });
+    const handle = cached.open();
+    try { handle.writeBytes(bytes); } finally { handle.close(); }
+    return cached.uri;
+  });
+}
+
 export async function attachmentPreviewUri(file: Attachment, context?: MediaContext): Promise<string> {
   const api = client;
   if (!api) throw new Error('Media client unavailable');
@@ -161,7 +223,7 @@ export async function attachmentPreviewUri(file: Attachment, context?: MediaCont
   const hadSession = !!api.session;
   const current = () => {
     if (client !== api || mediaAccount !== account || generation !== started || (hadSession && !api.session)) throw new Error('Stale media session');
-    if (!canPreviewAttachment(file, context)) throw new Error('permission.denied');
+    if (useWorkspace.getState().accountKey !== account || (context && context.accountKey !== account) || !canPreviewAttachment(file, context)) throw new Error('permission.denied');
   };
   return withMediaScope(api, current, async (controller, currentScope) => {
     const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `preview:${api.origin}:${account}:${file.id}`);

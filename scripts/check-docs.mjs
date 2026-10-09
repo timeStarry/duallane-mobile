@@ -3,5 +3,6 @@ const files=['AGENTS.md','docs/development/README.md','docs/development/ARCHITEC
 files.push('docs/adr/2026-10-07-search-and-photo-send.md');
 files.push('docs/design/mobile-experience-redesign/R6.md');
 files.push('docs/adr/2026-10-09-github-release-discovery.md');
+files.push('docs/design/mobile-experience-redesign/R7.md');
 for(const file of files){const source=await readFile(file,'utf8');if((source.match(/```/g)?.length??0)%2)throw new Error(`${file} has unbalanced fences`);}
 console.log(`checked ${files.length} mobile documents`);

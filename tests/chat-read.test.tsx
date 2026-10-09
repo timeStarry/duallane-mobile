@@ -1281,6 +1281,7 @@ test('changing the historical anchor on the same route suppresses read before lo
 test.each([conversationTarget, topicTarget])('reply location fetches an authorized $kind around window without reading new messages or changing the draft', async target => {
   seed(target, [message('reply', 2, target, { replyToMessageId: 'original' })]);
   useWorkspace.getState().setDraft(targetKey(target), { text: 'draft stays', mentionIds: ['other'], replyToMessageId: 'reply' });
+  const originalDraft = useWorkspace.getState().drafts[targetKey(target)];
   const runtime = createRuntime();
   runtime.api.json.mockResolvedValue({ messages: [dto('original', 0, target), dto('foreign', 1, { kind: 'conversation', id: 'foreign-group' })] });
   const view = render(screen(runtime, target));
@@ -1290,7 +1291,7 @@ test.each([conversationTarget, topicTarget])('reply location fetches an authoriz
   await waitFor(() => expect(FlatList.prototype.scrollToIndex).toHaveBeenCalledWith({ index: 0, animated: false, viewPosition: 0.5 }));
   expect(runtime.api.json).toHaveBeenCalledWith(`/api/workspace/${target.kind === 'topic' ? 'topics' : 'conversations'}/${target.id}/messages?around=original&limit=50`, expect.anything());
   expect(useWorkspace.getState().messages[targetKey(target)]?.map(item => item.id)).toEqual(['original', 'reply']);
-  expect(useWorkspace.getState().drafts[targetKey(target)]).toEqual({ text: 'draft stays', mentionIds: ['other'], replyToMessageId: 'reply' });
+  expect(useWorkspace.getState().drafts[targetKey(target)]).toBe(originalDraft);
   act(() => useWorkspace.getState().upsertMessage(message('latest-3', 3, target)));
   expect(runtime.markRead).toHaveBeenCalledTimes(1);
   fireEvent.press(view.getByRole('button', { name: '回到最新' }));
@@ -1417,26 +1418,29 @@ test('reply auto mention adds a selected span beside literal same-name text and 
   useWorkspace.getState().setDraft('g1', { text: '@Peer', mentionIds: [] });
   const runtime = createRuntime();
   const view = render(screen(runtime));
-  fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
+  fireEvent(view.getByTestId('message-body-original'), 'longPress');
   fireEvent.press(view.getByRole('button', { name: '回复' }));
-  expect(useWorkspace.getState().drafts.g1).toEqual({ text: '@Peer @Peer ', mentionIds: ['other'], replyToMessageId: 'original', mentionSpans: [{ userId: 'other', label: 'Peer', start: 6, end: 11 }] });
-  fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
+  expect(useWorkspace.getState().drafts.g1).toEqual({ text: '@Peer @Peer ', mentionIds: ['other'], replyToMessageId: 'original', mentionSpans: [{ userId: 'other', label: 'Peer', start: 6, end: 11 }], emoteSpans: [] });
+  fireEvent(view.getByTestId('message-body-original'), 'longPress');
   fireEvent.press(view.getByRole('button', { name: '回复' }));
   expect(useWorkspace.getState().drafts.g1?.text).toBe('@Peer @Peer ');
   await act(async () => undefined);
 });
 
-test('emote insertion preserves selected spans and direct image replacement clears unrelated mentions', async () => {
+test('emote insertion preserves selected mentions and direct custom-emote send leaves the full draft untouched', async () => {
   seed(conversationTarget, []);
   useWorkspace.getState().setDraft('g1', { text: '@Peer ', mentionIds: ['other'], mentionSpans: [{ userId: 'other', label: 'Peer', start: 0, end: 5 }] });
   mockPanel = 'emoji';
   const runtime = createRuntime();
   const view = render(screen(runtime));
   act(() => view.UNSAFE_getByType(CatalogEmoteGrid).props.onPick({ kind: 'unicode', id: 'smile', label: 'smile', value: '😀' }, 'emoji'));
-  expect(useWorkspace.getState().drafts.g1).toEqual({ text: '@Peer 😀', mentionIds: ['other'], mentionSpans: [{ userId: 'other', label: 'Peer', start: 0, end: 5 }] });
+  expect(useWorkspace.getState().drafts.g1).toEqual({ text: '@Peer 😀', mentionIds: ['other'], mentionSpans: [{ userId: 'other', label: 'Peer', start: 0, end: 5 }], emoteSpans: [] });
+  act(() => useWorkspace.getState().setDraft('g1', { replyToMessageId: 'quoted', pendingAttachment: { taskId: 'synthetic-upload', fileName: 'synthetic.png', mimeType: 'image/png', byteSize: 3 } }));
+  const originalDraft = useWorkspace.getState().drafts.g1;
   act(() => useWorkspace.getState().setChatSettings({ replyAutoMention: false, clickImageEmoteToSend: true, autoHideMessages: false, autoHideMessageTypes: [] }));
   act(() => view.UNSAFE_getByType(CatalogEmoteGrid).props.onPick({ kind: 'image', id: '00000000-0000-0000-0000-000000000001', label: 'custom', token: '[custom:00000000-0000-0000-0000-000000000001]' }, 'custom'));
-  expect(runtime.send).toHaveBeenCalledWith('g1', '[custom:00000000-0000-0000-0000-000000000001]', undefined, undefined, expect.objectContaining({ mentionIds: [], mentionSpans: [] }));
+  expect(runtime.send).toHaveBeenCalledWith('g1', '[custom:00000000-0000-0000-0000-000000000001]', undefined, undefined, expect.objectContaining({ mentionIds: [], mentionSpans: [], emoteSpans: [{ customId: '00000000-0000-0000-0000-000000000001', token: '[custom:00000000-0000-0000-0000-000000000001]', start: 0, end: 45 }], preserveDraft: true, replyToMessageId: null }));
+  expect(useWorkspace.getState().drafts.g1).toBe(originalDraft);
   await act(async () => undefined);
 });
 
@@ -1447,13 +1451,13 @@ test('posted topic messages expose sync and cancel through the shared action men
   runtime.setTopicProjection.mockResolvedValueOnce({ id: 'p1', topicMessageId: 'posted', removedAt: null });
   const view = render(screen(runtime, topicTarget));
   await waitFor(() => expect(runtime.topicProjections).toHaveBeenCalledWith('t1'));
-  fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
+  fireEvent(view.getByTestId('message-body-posted'), 'longPress');
   fireEvent.press(view.getByRole('button', { name: '更多' }));
   await waitFor(() => expect(view.getByRole('button', { name: '同步到群聊' })).toBeTruthy());
   fireEvent.press(view.getByRole('button', { name: '同步到群聊' }));
   await waitFor(() => expect(view.getByText('已同步到群聊')).toBeTruthy());
   expect(runtime.setTopicProjection).toHaveBeenLastCalledWith('t1', 'posted', true);
-  fireEvent.press(view.getByRole('button', { name: /^消息操作，/ }));
+  fireEvent(view.getByTestId('message-body-posted'), 'longPress');
   fireEvent.press(view.getByRole('button', { name: '更多' }));
   fireEvent.press(view.getByRole('button', { name: '取消同步到群聊' }));
   await waitFor(() => expect(view.getByText('已取消同步')).toBeTruthy());

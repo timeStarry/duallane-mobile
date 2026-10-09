@@ -9,36 +9,43 @@ export function RemoteImage({
   onError,
   resizeMode,
   showLoadingIndicator = true,
+  onLoad,
 }: {
   uri: string;
   style?: StyleProp<ImageStyle>;
   onError?: () => void;
   resizeMode?: 'cover' | 'contain' | 'stretch' | 'center';
   showLoadingIndicator?: boolean;
+  onLoad?: (dimensions: { width: number; height: number }) => void;
 }) {
   const svg = /\.svg(\?|$)/i.test(uri);
-  const [source, setSource] = useState<string | null>(!svg && (uri.startsWith('file:') || /^https:\/\/avatars\.githubusercontent\.com\//i.test(uri)) ? uri : null);
-  const [failed, setFailed] = useState(false);
+  const [resolved, setResolved] = useState<{ uri: string; source: string | null }>({ uri, source: !svg && (uri.startsWith('file:') || /^https:\/\/avatars\.githubusercontent\.com\//i.test(uri)) ? uri : null });
+  const source = resolved.uri === uri ? resolved.source : null;
+  const [failedUri, setFailedUri] = useState<string>();
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const uriRef = useRef(uri);
+  uriRef.current = uri;
+  const onLoadRef = useRef(onLoad);
+  onLoadRef.current = onLoad;
   useEffect(() => {
     let cancelled = false;
-    setFailed(false);
+    setFailedUri(undefined);
     if (!svg && (uri.startsWith('file:') || /^https:\/\/avatars\.githubusercontent\.com\//i.test(uri))) {
-      setSource(uri);
+      setResolved({ uri, source: uri });
       return;
     }
-    setSource(null);
+    setResolved({ uri, source: null });
     const load = svg ? localMediaText(uri) : localMediaUri(uri);
-    void load.then(local => { if (!cancelled) setSource(local); }).catch(() => {
+    void load.then(local => { if (!cancelled) setResolved({ uri, source: local }); }).catch(() => {
       if (!cancelled) {
-        setFailed(true);
+        setFailedUri(uri);
         onErrorRef.current?.();
       }
     });
     return () => { cancelled = true; };
   }, [svg, uri]);
-  if (failed) return <View style={style} />;
+  if (failedUri === uri) return <View style={style} />;
   if (!source) {
     return (
       <View style={[{ alignItems: 'center', justifyContent: 'center' }, style]}>
@@ -50,5 +57,9 @@ export function RemoteImage({
     const flat = StyleSheet.flatten(style) as { width?: number; height?: number } | undefined;
     return <SvgXml xml={source} width={flat?.width ?? 40} height={flat?.height ?? 40} />;
   }
-  return <Image source={{ uri: source }} style={style} resizeMode={resizeMode} onError={() => { setFailed(true); onErrorRef.current?.(); }} accessibilityIgnoresInvertColors />;
+  return <Image key={uri} source={{ uri: source }} style={style} resizeMode={resizeMode} onLoad={event => {
+    if (uriRef.current !== uri) return;
+    const { width, height } = event.nativeEvent.source;
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) onLoadRef.current?.({ width, height });
+  }} onError={() => { if (uriRef.current === uri) { setFailedUri(uri); onErrorRef.current?.(); } }} accessibilityIgnoresInvertColors />;
 }

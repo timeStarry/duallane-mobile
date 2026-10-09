@@ -128,11 +128,20 @@ export const mentionSpanSchema = z.object({
   end: z.number().int().positive(),
 }).refine(span => span.end > span.start);
 export type MentionSpan = z.infer<typeof mentionSpanSchema>;
+export const emoteSpanSchema = z.object({
+  customId: z.string().regex(/^[a-f0-9-]{36}$/i),
+  token: z.string().regex(/^\[custom:[a-f0-9-]{36}\]$/i),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+}).refine(span => span.end - span.start === span.token.length
+  && span.token.slice('[custom:'.length, -1).toLowerCase() === span.customId.toLowerCase());
+export type EmoteSpan = z.infer<typeof emoteSpanSchema>;
 export const draftSchema = z.object({
   text: z.string().default(''),
   replyToMessageId: z.string().optional(),
   mentionIds: z.array(z.string()).default([]),
   mentionSpans: z.array(mentionSpanSchema).optional(),
+  emoteSpans: z.array(emoteSpanSchema).optional(),
   pendingAttachment: z.object({ taskId: z.string(), fileName: z.string(), mimeType: z.string(), byteSize: z.number() }).optional(),
 });
 export type Draft = z.infer<typeof draftSchema>;
