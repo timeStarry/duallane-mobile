@@ -41,11 +41,29 @@ export function parseApkBadging(output) {
 }
 
 export function parseApkCertificate(output) {
-  const certificates = [...output.matchAll(/^Signer #\d+ certificate SHA-256 digest: ([a-fA-F0-9]+)\s*$/gm)];
-  requireValue(certificates.length === 1, 'APK signing certificate is missing or ambiguous');
-  const sha256 = certificates[0][1].toLowerCase();
-  requireValue(digest.test(sha256), 'APK signing certificate SHA-256 is invalid');
-  return sha256;
+  const lines = output.split(/\r?\n/).map(line => line.trim());
+  const counts = lines.filter(line => line.startsWith('Number of signers:'));
+  requireValue(lines.includes('Verifies') && !lines.includes('DOES NOT VERIFY') && counts.length > 0 &&
+    counts.every(line => line === 'Number of signers: 1'), 'APK must verify with one signing identity');
+  const records = lines.filter(line => line.startsWith('Signer ') && line.includes(' certificate SHA-256 digest:'));
+  requireValue(records.length > 0, 'APK signing certificate is missing or ambiguous');
+  const certificates = new Set();
+  for (const record of records) {
+    const fields = record.match(/^Signer (.+) certificate SHA-256 digest: ([A-Fa-f0-9]{64})$/);
+    requireValue(fields, 'APK signing certificate format is invalid');
+    const numbered = fields[1].match(/^#([1-9]\d*)(?: (.+))?$/);
+    requireValue(!numbered || numbered[1] === '1', 'APK must verify with one signing identity');
+    const rangeLabel = numbered ? numbered[2] : fields[1];
+    if (rangeLabel !== undefined) {
+      const range = rangeLabel.match(/^\(minSdkVersion=([1-9]\d*)(?: \(dev release=true\))?, maxSdkVersion=([1-9]\d*)\)$/);
+      requireValue(range && Number.isSafeInteger(Number(range[1])) && Number.isSafeInteger(Number(range[2])) &&
+        Number(range[1]) <= Number(range[2]), 'APK signing certificate SDK range is invalid');
+    }
+    certificates.add(fields[2].toLowerCase());
+  }
+  // SDK-range output may repeat one certificate; different identities require explicit rotation support.
+  requireValue(certificates.size === 1, 'APK signing certificate is missing or ambiguous');
+  return [...certificates][0];
 }
 
 export function parseAabCertificate(output) {

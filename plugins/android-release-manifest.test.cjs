@@ -123,7 +123,7 @@ test('APK package inspection rejects missing identity and malformed numeric vers
 
 test('certificate parsers reject missing, malformed, or multiple signing identities', async () => {
   const { parseApkCertificate, parseAabCertificate } = await implementation;
-  const apk = `Signer #1 certificate SHA-256 digest: ${certificate.toUpperCase()}\n`;
+  const apk = `Verifies\nNumber of signers: 1\nSigner #1 certificate SHA-256 digest: ${certificate.toUpperCase()}\n`;
   const aab = `Signer #1:\nCertificate #1:\nCertificate fingerprints:\n\t SHA256: ${certificate.toUpperCase().match(/../g).join(':')}\n`;
   assert.equal(parseApkCertificate(apk), certificate);
   assert.equal(parseAabCertificate(aab), certificate);
@@ -133,6 +133,43 @@ test('certificate parsers reject missing, malformed, or multiple signing identit
   for (const output of ['', aab + aab.replace('#1:', '#2:'), aab.replace('SHA256:', 'SHA1:')]) {
     assert.throws(() => parseAabCertificate(output));
   }
+});
+
+test('actual SDK 36 verbose output and repeated SDK-range certificates resolve to one verified identity', async () => {
+  const { parseApkCertificate } = await implementation;
+  const actualCertificate = '3a6441fb4015f9377a3781de3484d9af0f6eddc3bd52e64cb0641dbdaf811db9';
+  // Captured from Java 17 / Android build-tools 36.0.0 verifying the signed code41 APK.
+  const actualOutput = [
+    'Verifies',
+    'Verified using v1 scheme (JAR signing): false',
+    'Verified using v2 scheme (APK Signature Scheme v2): true',
+    'Verified using v3 scheme (APK Signature Scheme v3): false',
+    'Verified using v3.1 scheme (APK Signature Scheme v3.1): false',
+    'Verified using v4 scheme (APK Signature Scheme v4): false',
+    'Verified for SourceStamp: false',
+    'Number of signers: 1',
+    'Signer #1 certificate DN: CN=DualLane Android Release, OU=Mobile, O=DualLane, C=CN',
+    `Signer #1 certificate SHA-256 digest: ${actualCertificate}`,
+    'Signer #1 certificate SHA-1 digest: 25722baf482c7792140216c87e8bf975f4622f79',
+    'Signer #1 certificate MD5 digest: 2e51873acabe85bb8e22b0e2f37cf1ad',
+    'Signer #1 key algorithm: RSA',
+    'Signer #1 key size (bits): 4096',
+    'Signer #1 public key SHA-256 digest: 45b0c817ee2161058337abfc61cb6207ea3bd5f343c38177075fc877419bb72b',
+  ].join('\r\n');
+  assert.equal(parseApkCertificate(actualOutput), actualCertificate);
+  const ranges = `Verifies\nNumber of signers: 1\n` +
+    `Signer (minSdkVersion=33, maxSdkVersion=2147483647) certificate SHA-256 digest: ${actualCertificate}\n` +
+    `Signer (minSdkVersion=28, maxSdkVersion=32) certificate SHA-256 digest: ${actualCertificate.toUpperCase()}\n`;
+  assert.equal(parseApkCertificate(ranges), actualCertificate);
+  assert.equal(parseApkCertificate(ranges.replace('minSdkVersion=33,', 'minSdkVersion=33 (dev release=true),')), actualCertificate);
+  for (const output of [
+    ranges.replace(actualCertificate.toUpperCase(), certificate),
+    actualOutput.replace('Number of signers: 1', 'Number of signers: 2'),
+    actualOutput + `\nSigner #2 certificate SHA-256 digest: ${actualCertificate}\n`,
+    ranges.replace('maxSdkVersion=32', 'maxSdkVersion=27'),
+    actualOutput.replace('Verifies\r\n', ''),
+    actualOutput.replace('Signer #1 certificate SHA-256 digest:', 'Source Stamp Signer certificate SHA-256 digest:'),
+  ]) assert.throws(() => parseApkCertificate(output));
 });
 
 test('mismatched identities, signatures and unsafe packaged configuration cannot create provenance', async () => {

@@ -85,6 +85,7 @@ jobs:
         run: pnpm prebuild
 
       - name: Build signed APK and AAB
+        id: build_packages
         env:
           DUALLANE_ANDROID_KEYSTORE: ${{ runner.temp }}/duallane-signing/release.keystore
           DUALLANE_ANDROID_STORE_PASSWORD: ${{ secrets.DUALLANE_ANDROID_STORE_PASSWORD }}
@@ -95,16 +96,29 @@ jobs:
           ./gradlew --no-daemon --max-workers=2 assembleRelease bundleRelease
 
       - name: Verify packages and generate release metadata
+        id: release_metadata
         timeout-minutes: 3
         run: |
-          build_tools="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -printf '%h\n' | sort -V | tail -n 1)"
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
           test -x "$build_tools/aapt"
           test -x "$build_tools/apksigner"
+          printf 'Verifying packages with Android build-tools 36.0.0\n'
           node scripts/create-android-release-manifest.mjs \
             --apk android/app/build/outputs/apk/release/app-release.apk \
             --aab android/app/build/outputs/bundle/release/app-release.aab \
             --output-dir artifacts/android-release \
             --aapt "$build_tools/aapt" --apksigner "$build_tools/apksigner"
+
+      - name: Preserve compiled packages on metadata verification failure
+        if: failure() && steps.build_packages.outcome == 'success' && steps.release_metadata.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: duallane-android-unverified-${{ github.sha }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/bundle/release/*.aab
 
       - name: Upload Android packages
         uses: actions/upload-artifact@v4
