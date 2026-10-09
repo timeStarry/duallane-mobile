@@ -28,6 +28,13 @@ Users can sign in directly without choosing a server. The optional invitation
 field accepts only Workspace invitations for that configured service. Development
 builds without a configured origin retain the service/invitation input.
 
+Android update checks discover published stable versions directly from this
+repository's GitHub Releases and validate their `build-provenance.json` metadata.
+The Workspace service still controls minimum-version and protocol requirements.
+Automatic public checks run in the background at most every 15 minutes; the
+About screen can request an immediate check. See the
+[release discovery decision](docs/adr/2026-10-09-github-release-discovery.md).
+
 The design is recorded in
 [`docs/WORKSPACE_MOBILE_CLIENT_DESIGN.md`](docs/WORKSPACE_MOBILE_CLIENT_DESIGN.md).
 The next Android experience revision is specified in

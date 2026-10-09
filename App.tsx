@@ -92,6 +92,7 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
   const ready = useWorkspace(s => s.ready);
   const busy = useWorkspace(s => s.busy);
   const error = useWorkspace(s => s.error);
+  const policyError = useWorkspace(s => s.policyError);
   const accountKey = useWorkspace(s => s.accountKey);
   const spaceId = useWorkspace(s => s.bootstrap?.space.id ?? '');
   const searchContext = useMemo(() => ({ accountKey, spaceId, api: runtime.api }), [accountKey, spaceId, runtime.api]);
@@ -181,13 +182,13 @@ function Application({ mode, setMode }: { mode: AppearanceMode; setMode: (v: App
 
   const shell = !ready ? (
     <SafeAreaView style={{ flex: 1, backgroundColor: t.bg }} edges={['top', 'left', 'right']}>
-      <Notice text={error} />
+      <Notice text={error || policyError} />
       {busy ? <Loading /> : <LoginScreen runtime={runtime} />}
     </SafeAreaView>
   ) : (
     <View style={{ flex: 1, backgroundColor: t.bg }}>
-      {error && !searchVisible ? <SafeAreaView edges={['top', 'left', 'right']}>
-        <Notice text={error} />
+      {(error || policyError) && !searchVisible ? <SafeAreaView edges={['top', 'left', 'right']}>
+        <Notice text={error || policyError} />
       </SafeAreaView> : null}
       {/* Recompute navigation insets from the remaining frame without remounting routes. */}
       <SafeAreaProvider>

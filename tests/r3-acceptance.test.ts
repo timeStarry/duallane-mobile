@@ -112,7 +112,7 @@ test('A02 policy network failure is not a forced update', () => {
     minimum: { appVersion: '0.1.0', versionCode: 1 }, recommendation: 'soft', apkUrl: null,
     protocol: { eventMajor: 1, contentFormats: ['duallane.message+json;v=1'] },
   });
-  expect(updateDecision(policy, { appVersion: '0.1.0', versionCode: 1 })).toBe('soft');
+  expect(updateDecision(policy, { appVersion: '0.1.0', versionCode: 1 })).toBe('none');
   expect(updateDecision(policy, { appVersion: '0.0.1', versionCode: 1 })).toBe('forced');
 });
 

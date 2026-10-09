@@ -14,6 +14,8 @@ import { clearAccountFiles } from './transfers';
 import { clearAvatarSelections, cleanupAvatarCopies, readAvatarBytes, type AvatarSelection } from './avatar';
 import { mergeMessages, useWorkspace } from '../domain/store';
 import { releaseSchema, updateDecision } from '../domain/updates';
+import { githubReleaseSchema } from '../domain/github-releases';
+import { fetchLatestGitHubRelease, GitHubReleaseError } from './github-releases';
 import { ReplayTracker } from '../domain/replay';
 import { shouldNotify } from '../domain/notifications';
 import { cache, credentials } from '../platform/storage';
@@ -21,6 +23,9 @@ import { config, installed, redirectUri, validateOrigin } from '../platform/conf
 import { clearNotifications, showMessageNotification } from '../platform/notifications';
 
 const NativeWebSocket: new (url:string, protocols?:string[], options?:{headers:Record<string,string>}) => WebSocket = WebSocket;
+const githubReleaseCacheKey = 'github-release:timeStarry/duallane-mobile:v1';
+const releaseCheckIntervalMs = 15 * 60 * 1000;
+const cachedGitHubReleaseSchema = z.object({ checkedAt: z.number().finite().positive(), release: githubReleaseSchema.nullable() });
 const emoteShareSchema=z.object({
   id:z.string().min(1),name:z.string(),itemCount:z.number().int().nonnegative(),
   revokedAt:z.string().nullish(),
@@ -33,6 +38,11 @@ export type EmoteShare=z.infer<typeof emoteShareSchema>;
 export class Runtime {
   api:ApiClient|null=null;
   private epoch=0;
+  private policyInvocation=0;
+  private releaseInvocation=0;
+  private releaseTask:Promise<void>|null=null;
+  private releaseController:AbortController|null=null;
+  private lastReleaseAttemptAt=0;
   // A denied resource invalidates permission snapshots that began before the denial.
   private authorizationRevision=0;
   private avatarRevision=0;
@@ -58,8 +68,9 @@ export class Runtime {
   private current(epoch:number){return this.active&&epoch===this.epoch;}
   private requireApi(){if(!this.api)throw new ApiError('auth.required',401);return this.api;}
   private createApi(origin:string){
+    this.cancelReleaseCheck();this.policyInvocation++;
     this.api?.invalidate();setMediaClient(null);const epoch=this.epoch;
-    useWorkspace.setState({policy:null});
+    useWorkspace.setState({policy:null,policyError:'',release:null,releaseCheck:{status:'idle',checkedAt:null,error:''}});
     const api:ApiClient=new ApiClient(origin,async session=>{
       const existing=await credentials.read();
       if(this.api!==api||epoch!==this.epoch)throw new Error('Stale session');
@@ -67,7 +78,7 @@ export class Runtime {
     },()=>{if(this.api===api)void this.logout(false);},()=>this.api===api&&epoch===this.epoch&&!this.forced());
     this.api=api;setMediaClient(api);setMediaAccount(useWorkspace.getState().accountKey);return api;
   }
-  start(){this.attach();if(this.starting)return this.starting;try{cleanupAvatarCopies();}catch{/* Disposable cache cleanup cannot prevent restoring credentials. */}const task=this.restore();this.starting=task;void task.finally(()=>{if(this.starting===task)this.starting=null;});return task;}
+  start(){this.attach();if(this.starting){void this.checkRelease();return this.starting;}try{cleanupAvatarCopies();}catch{/* Disposable cache cleanup cannot prevent restoring credentials. */}const task=this.restore();this.starting=task;void task.finally(()=>{if(this.starting===task)this.starting=null;});return task;}
   private async restore(){
     const epoch=this.epoch;
     useWorkspace.setState({busy:true});
@@ -102,11 +113,45 @@ export class Runtime {
     await credentials.save({origin,refreshToken:session.refreshToken});if(!this.current(epoch))return;api.session=session;await this.bootstrap();this.connect();
   }
   async checkPolicy(){
-    const api=this.api,epoch=this.epoch;if(!api)return;
+    const api=this.api,epoch=this.epoch;if(!api||!this.current(epoch))return;
+    void this.checkRelease();
+    const invocation=++this.policyInvocation;
     const key=`policy:${api.origin}`;
     const saved=releaseSchema.safeParse(cache.get(key));if(saved.success)useWorkspace.setState({policy:saved.data});
-    try{const p=await api.json('/api/mobile/release-policy',releaseSchema,undefined,'GET',false);if(!this.current(epoch)||this.api!==api)return;cache.set(key,p);useWorkspace.setState({policy:p,error:''});if(this.forced())this.disconnect();}
-    catch(error){if(this.current(epoch)&&this.api===api)useWorkspace.setState({error:`暂时无法检查更新，请稍后重试（${errorDiagnostic(error)}）`});}
+    try{const p=await api.json('/api/mobile/release-policy',releaseSchema,undefined,'GET',false);if(!this.current(epoch)||this.api!==api||invocation!==this.policyInvocation)return;cache.set(key,p);useWorkspace.setState({policy:p,policyError:''});if(this.forced())this.disconnect();}
+    catch(error){if(this.current(epoch)&&this.api===api&&invocation===this.policyInvocation)useWorkspace.setState({policyError:`暂时无法检查服务兼容性，请稍后重试（${errorDiagnostic(error)}）`});}
+  }
+  checkUpdates(force=true){return Promise.all([this.checkRelease(force),this.checkPolicy()]).then(()=>undefined);}
+  private cancelReleaseCheck(){
+    this.releaseInvocation++;this.releaseController?.abort();this.releaseController=null;this.releaseTask=null;this.lastReleaseAttemptAt=0;
+  }
+  checkRelease(force=false):Promise<void>{
+    const api=this.api,epoch=this.epoch;if(!api||!this.current(epoch))return Promise.resolve();
+    if(this.releaseTask)return this.releaseTask;
+    const now=Date.now();
+    let saved: z.infer<typeof cachedGitHubReleaseSchema>|null=null;
+    try{const parsed=cachedGitHubReleaseSchema.safeParse(cache.get(githubReleaseCacheKey));if(parsed.success&&parsed.data.checkedAt<=now)saved=parsed.data;}catch{/* Public metadata cache is disposable. */}
+    if(saved&&useWorkspace.getState().releaseCheck.status==='idle')useWorkspace.setState({release:saved.release,releaseCheck:{status:'checked',checkedAt:saved.checkedAt,error:''}});
+    if(!force&&((this.lastReleaseAttemptAt>0&&now-this.lastReleaseAttemptAt<releaseCheckIntervalMs)||(saved&&now-saved.checkedAt<releaseCheckIntervalMs)))return Promise.resolve();
+    this.lastReleaseAttemptAt=now;
+    const invocation=++this.releaseInvocation,controller=new AbortController();this.releaseController=controller;
+    const current=()=>this.current(epoch)&&this.api===api&&invocation===this.releaseInvocation&&!controller.signal.aborted;
+    useWorkspace.setState(s=>({releaseCheck:{...s.releaseCheck,status:'checking',error:''}}));
+    const task=(async()=>{
+      try{
+        const release=await fetchLatestGitHubRelease(controller.signal);if(!current())return;
+        const checkedAt=Date.now();
+        try{cache.set(githubReleaseCacheKey,{release,checkedAt});}catch{/* A cache write cannot invalidate a successful public check. */}
+        useWorkspace.setState({release,releaseCheck:{status:'checked',checkedAt,error:''}});
+      }catch(error){
+        if(!current())return;
+        const diagnostic=error instanceof GitHubReleaseError?error.diagnostic:'request.failed';
+        useWorkspace.setState(s=>({releaseCheck:{...s.releaseCheck,status:'failed',error:`暂时无法获取 GitHub 最新版本，请稍后重试（${diagnostic}）`}}));
+      }
+    })();
+    this.releaseTask=task;
+    void task.finally(()=>{if(invocation===this.releaseInvocation){this.releaseTask=null;this.releaseController=null;}});
+    return task;
   }
   forced(){const p=useWorkspace.getState().policy;return p?updateDecision(p,installed)==='forced':false;}
   private persistDrafts(account:string){
@@ -688,8 +733,8 @@ export class Runtime {
   private startHttpSync(){if(this.poll||!this.active)return;void this.httpSync();this.poll=setInterval(()=>{void this.httpSync();},8000);}
   private stopHttpSync(){if(this.poll)clearInterval(this.poll);this.poll=null;}
   private async httpSync(){if(!this.active||!this.api?.session||useWorkspace.getState().connection==='已连接')return;try{await this.bootstrap(true);if(this.active&&useWorkspace.getState().connection!=='已连接')useWorkspace.setState({connection:'实时未接通，已用 HTTP 同步'});}catch{/* WebSocket retry continues */}}
-  async logout(remote=true){const api=this.api,session=api?.session;this.epoch++;api?.invalidate();this.stopHttpSync();this.disconnect();this.api=null;this.pendingTopicDrafts=null;this.notified.clear();this.inFlight.clear();this.resuming=null;this.starting=null;const key=useWorkspace.getState().accountKey;useWorkspace.getState().reset();if(key){clearAccountFiles(key);clearAccountPreviewCache(key);cache.clearAccount(key);}const avatarCleanup=key?clearAvatarSelections(key).catch(()=>undefined):Promise.resolve();setMediaAccount('');setMediaClient(null);await credentials.clear();await clearNotifications();await avatarCleanup;
+  async logout(remote=true){const api=this.api,session=api?.session;this.epoch++;this.cancelReleaseCheck();this.policyInvocation++;api?.invalidate();this.stopHttpSync();this.disconnect();this.api=null;this.pendingTopicDrafts=null;this.notified.clear();this.inFlight.clear();this.resuming=null;this.starting=null;const key=useWorkspace.getState().accountKey;useWorkspace.getState().reset();if(key){clearAccountFiles(key);clearAccountPreviewCache(key);cache.clearAccount(key);}const avatarCleanup=key?clearAvatarSelections(key).catch(()=>undefined):Promise.resolve();setMediaAccount('');setMediaClient(null);await credentials.clear();await clearNotifications();await avatarCleanup;
     if(remote&&api&&session){try{await api.raw('/api/auth/mobile/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refreshToken:session.refreshToken})},false);}catch{/* Local logout must still complete offline. */}}api?.invalidate();
   }
-  dispose(){this.active=false;this.stopHttpSync();this.disconnect();this.stopAppState?.();this.stopAppState=null;}
+  dispose(){this.active=false;this.cancelReleaseCheck();this.stopHttpSync();this.disconnect();this.stopAppState?.();this.stopAppState=null;}
 }

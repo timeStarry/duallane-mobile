@@ -85,6 +85,7 @@ jobs:
         run: pnpm prebuild
 
       - name: Build signed APK and AAB
+        id: build_packages
         env:
           DUALLANE_ANDROID_KEYSTORE: ${{ runner.temp }}/duallane-signing/release.keystore
           DUALLANE_ANDROID_STORE_PASSWORD: ${{ secrets.DUALLANE_ANDROID_STORE_PASSWORD }}
@@ -94,22 +95,52 @@ jobs:
         run: |
           ./gradlew --no-daemon --max-workers=2 assembleRelease bundleRelease
 
+      - name: Verify packages and generate release metadata
+        id: release_metadata
+        timeout-minutes: 3
+        run: |
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          test -x "$build_tools/aapt"
+          test -x "$build_tools/apksigner"
+          printf 'Verifying packages with Android build-tools 36.0.0\n'
+          node scripts/create-android-release-manifest.mjs \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --aab android/app/build/outputs/bundle/release/app-release.aab \
+            --output-dir artifacts/android-release \
+            --aapt "$build_tools/aapt" --apksigner "$build_tools/apksigner"
+
+      - name: Preserve compiled packages on metadata verification failure
+        if: failure() && steps.build_packages.outcome == 'success' && steps.release_metadata.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: duallane-android-unverified-${{ github.sha }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/bundle/release/*.aab
+
       - name: Upload Android packages
         uses: actions/upload-artifact@v4
         with:
           name: duallane-android-${{ github.sha }}
           if-no-files-found: error
-          path: |
-            android/app/build/outputs/apk/release/*.apk
-            android/app/build/outputs/bundle/release/*.aab
-            !android/app/build/outputs/**/*.idsig
+          path: artifacts/android-release/*
 
-      - name: Create GitHub Release for tag
+      - name: Create complete draft GitHub Release for tag
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            android/app/build/outputs/apk/release/*.apk \
-            android/app/build/outputs/bundle/release/*.aab \
-            --generate-notes
+            artifacts/android-release/app-release.apk \
+            artifacts/android-release/app-release.aab \
+            artifacts/android-release/build-provenance.json \
+            artifacts/android-release/SHA256SUMS \
+            --draft --verify-tag --generate-notes
+
+      - name: Publish verified GitHub Release as latest
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest --verify-tag

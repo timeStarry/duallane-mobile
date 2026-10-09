@@ -13,6 +13,7 @@
 | [Android 前台字体配置通知](../adr/2026-10-06-android-font-metrics.md) | Dimensions 缓存缺口、原生配置事件、共享倍率及 android-3 兼容 |
 | [Android 弹窗辅助焦点](../adr/2026-10-07-android-accessibility-focus.md) | 原生动作与事件区别、弱引用票据、生命周期守卫及 android-4 兼容 |
 | [首页搜索与图片快捷发送](../adr/2026-10-07-search-and-photo-send.md) | 本机历史、可读会话／话题召回、系统多选图片确认后发送及 android-5 兼容 |
+| [GitHub 正式版本发现](../adr/2026-10-09-github-release-discovery.md) | 匿名查询正式 Release、构建清单、防降级、服务兼容门禁与发布完整性 |
 | [代码规范](CODE_STANDARDS.md) | TypeScript、React Native、异步、协议解析、错误处理 |
 | [UI/UX 规范](UI_UX_STANDARDS.md) | 视觉 token、导航、组件、触控、无障碍和页面状态 |
 | [DL Android 体验改造](../design/mobile-experience-redesign/README.md) | 当前包的体验缺口、跨端一致与原生适配、布局／视觉／聊天改造目标及验收账本 |

@@ -11,6 +11,7 @@ import { ReplayTracker } from '../src/domain/replay';
 import type { WorkspaceEvent } from '../src/domain/contracts';
 
 jest.mock('expo/fetch',()=>({fetch:jest.fn()}));
+jest.mock('../src/data/github-releases',()=>({...jest.requireActual('../src/data/github-releases'),fetchLatestGitHubRelease:jest.fn(async()=>null)}));
 jest.mock('expo-web-browser',()=>({openAuthSessionAsync:jest.fn(async()=>({type:'cancel'}))}));
 jest.mock('expo-crypto',()=>({randomUUID:()=> '12345678-1234-1234-1234-123456789012',digestStringAsync:async()=> 'test-challenge',CryptoDigestAlgorithm:{SHA256:'SHA256'},CryptoEncoding:{BASE64:'base64'}}));
 jest.mock('../src/platform/config',()=>({installed:{appVersion:'0.1.0',versionCode:1},config:{apiOrigin:''},redirectUri:'com.timestarry.duallane://oauth',validateOrigin:(s:string)=>s}));
@@ -95,7 +96,8 @@ test('a failed version check records a diagnostic code without blocking GitHub l
   });
   await runtime.start();
   await runtime.checkPolicy();
-  expect(useWorkspace.getState().error).toBe('暂时无法检查更新，请稍后重试（net.failed）');
+  expect(useWorkspace.getState().policyError).toBe('暂时无法检查服务兼容性，请稍后重试（net.failed）');
+  expect(useWorkspace.getState().error).toBe('');
   await runtime.login('https://workspace.example');
   expect(fetchMock.mock.calls.some(([url])=>url==='https://workspace.example/api/auth/mobile/github/start')).toBe(true);
 });

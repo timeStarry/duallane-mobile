@@ -84,6 +84,12 @@ Home 恢复；记录触发控件、关闭即刻和稳定帧的实际绿色焦点
 发布前检查 release policy 的 latest/minimum/recommendation、APK 地址、OTA manifest、hash、签名、
 release notes 与 APK/AAB 一致。原生模块、权限、协议 major 或 runtime 变化必须走新的 Android 包。
 
+当前客户端推荐升级直接读取固定公开 GitHub 仓库的最新正式 Release 和
+`build-provenance.json`；服务端继续负责最低版本与协议强更，其 latest 与
+recommendation 不用于推荐新版。元数据须与 tag、APK 文件名／大小／摘要一致，
+版本和构建号都不能降低，至少一项提高。自动检查后台运行且按 15 分钟节流；手动
+检查绕过节流，失败不伪装最新或改变聊天错误。见 [版本发现 ADR](../adr/2026-10-09-github-release-discovery.md)。
+
 ## 灰度与回滚
 
 首发只做 internal APK/AAB；未来若增加 beta/production，再按 channel、版本和 rollout 百分比控制。本地通知可关闭；
@@ -98,6 +104,12 @@ GitHub 托管的 Java 17 和 Android SDK，执行 `pnpm check`、`assembleReleas
 `DUALLANE_API_ORIGIN`，以及 secrets `DUALLANE_ANDROID_KEYSTORE_BASE64`、
 `DUALLANE_ANDROID_STORE_PASSWORD`、`DUALLANE_ANDROID_KEY_ALIAS`、
 `DUALLANE_ANDROID_KEY_PASSWORD`。keystore 只在 runner 临时目录解码，不提交到仓库。
+
+构建后运行 `scripts/create-android-release-manifest.mjs`，使用 aapt、apksigner、
+jarsigner、keytool 和 APK 内 `assets/app.config` 核对实际包名、版本、签名与运行时。
+同签名 APK/AAB、`build-provenance.json` 和 `SHA256SUMS` 一起上传 artifact；正式 tag
+先创建含四个完整附件的草稿 Release，再公开为 latest。清单缺失或不匹配时不发布。
+候选包清单的 releaseTag 为 null，不进入客户端正式升级发现。现有 v0.2.3 清单兼容。
 
 手动构建必须填写 `app_version`（严格 `MAJOR.MINOR.PATCH`），可指定大于已安装包的
 `version_code`；未指定时使用 workflow run number。候选分支使用同一正式签名输出
