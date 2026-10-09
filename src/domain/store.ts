@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Attachment, Bootstrap, ChatSettings, Conversation, Draft, Message, Topic } from './contracts';
 import type { ReleasePolicy } from './updates';
+import type { GitHubRelease } from './github-releases';
 
 // Process-local proof of an accepted HTTP read, never restored from cache.
 type MessageRead = { revision: number; source: object; before?: string };
@@ -19,6 +20,9 @@ type State = {
   cardSyncVersion: number;
   connection: string;
   policy: ReleasePolicy | null;
+  policyError: string;
+  release: GitHubRelease | null;
+  releaseCheck: { status: 'idle' | 'checking' | 'checked' | 'failed'; checkedAt: number | null; error: string };
   ready: boolean;
   busy: boolean;
   error: string;
@@ -42,7 +46,9 @@ const emptyDraft = (): Draft => ({ text: '', mentionIds: [] });
 const initial = {
   bootstrap: null, conversations: {}, topics: {}, messages: {}, messageReads: {}, files: [], drafts: {}, chatSettings: null,
   cursor: 0, cardRevisions: {} as Record<string, number>, cardSyncVersion: 0,
-  connection: '正在连接', policy: null, ready: false, busy: false, error: '', accountKey: '',
+  connection: '正在连接', policy: null, policyError: '', release: null,
+  releaseCheck: { status: 'idle' as const, checkedAt: null, error: '' },
+  ready: false, busy: false, error: '', accountKey: '',
 };
 
 export function mergeMessages(existing: Message[], incoming: Message[]): Message[] {

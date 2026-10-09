@@ -50,6 +50,12 @@ feature 层用于隐藏会话级动作；不得据此生成邀请、角色、容
 再写入 domain store；事件按 event ID 去重、按 seq 检查缺口，缺口触发受控 refetch。
 平台模块通过接口注入 domain，不让业务组件直接调用 Keystore、本地通知或原生文件 API。
 
+正式版本发现由独立 `data/github-releases.ts` 匿名查询固定公开仓库，使用
+`domain/github-releases.ts` 校验 Release 与构建清单；不复用认证 API client。
+Runtime 将公开元数据和 15 分钟检查时间保存在已有 KV，后台发现新版不阻塞登录或
+聊天。`release/releaseCheck` 与服务端 `policy/policyError` 独立；服务端最低版本与
+协议门禁优先，Github 不解除强更。见 [版本发现 ADR](../adr/2026-10-09-github-release-discovery.md)。
+
 个人头像复用 Workspace 已有的 `PUT/DELETE /api/workspace/me/avatar`：`data/avatar.ts`
 负责系统图片选择、受限缓存副本和字节上限，Runtime 发送 raw image 并校验 canonical
 用户响应。只更新本人 `avatarUrl`，不把头像回执覆盖为整份资料或权限快照。头像完成前

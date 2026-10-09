@@ -14,6 +14,7 @@ import { avatarErrorText, chooseAvatar, type AvatarSelection } from '../../data/
 import { cache } from '../../platform/storage';
 import { enableNotifications } from '../../platform/notifications';
 import { installed } from '../../platform/config';
+import { updateTarget } from '../../domain/updates';
 import {
   AppHeader,
   Avatar,
@@ -615,17 +616,25 @@ function SpaceInfoScreen() {
   );
 }
 
-function AboutScreen({ runtime }: { runtime: Runtime }) {
+export function AboutScreen({ runtime }: { runtime: Runtime }) {
   const t = useTheme();
   const policy = useWorkspace(s => s.policy);
+  const policyError = useWorkspace(s => s.policyError);
+  const release = useWorkspace(s => s.release);
+  const check = useWorkspace(s => s.releaseCheck);
+  const target = updateTarget(policy, release, installed);
   const [notice, setNotice] = useState('');
   const [otaReady, setOtaReady] = useState(false);
   return (
     <ScrollView style={{ backgroundColor: t.bg }} contentContainerStyle={styles.content}>
       <Label>版本 {installed.appVersion} ({installed.versionCode})</Label>
-      <Button title="检查更新" secondary onPress={() => void runtime.checkPolicy()} />
-      {policy ? <Label muted>{policy.latest.releaseNotes.join('\n') || '暂无更新说明'}</Label> : null}
-      {policy?.apkUrl ? <Button title="下载 Android 安装包" onPress={() => void Linking.openURL(policy.apkUrl!)} /> : null}
+      <Button title={check.status === 'checking' ? '正在检查更新' : '检查更新'} disabled={check.status === 'checking'} secondary onPress={() => void runtime.checkUpdates()} />
+      {check.status === 'failed' ? <InlineFeedback text={check.error} tone="warning" /> : null}
+      {check.status === 'checked' ? <Label muted>{target ? `发现新版本 ${target.appVersion}` : release ? '当前版本无需更新' : '暂未发布正式版本'}</Label> : null}
+      {release ? <Label muted>GitHub 最新正式版 {release.appVersion} ({release.versionCode})</Label> : null}
+      {target?.releaseNotes.length ? <Label muted>{target.releaseNotes.join('\n')}</Label> : null}
+      {target?.apkUrl ? <Button title="下载 Android 安装包" onPress={() => void Linking.openURL(target.apkUrl!)} /> : null}
+      {policyError ? <InlineFeedback text={policyError} tone="warning" /> : null}
       <Button
         title="检查兼容补丁"
         secondary

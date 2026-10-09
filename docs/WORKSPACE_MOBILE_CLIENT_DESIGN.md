@@ -217,7 +217,7 @@ boot
 ```
 
 版本策略检查可以与 token 恢复并行，但不能在强制更新状态下渲染聊天内容。更新策略
-响应失败时，若已有可用安装包和有效 session，允许进入缓存页面并显示“无法检查更新”；
+响应失败时，若已有可用安装包和有效 session，允许进入缓存页面并显示“无法检查服务兼容性”；
 当服务端明确返回 `minSupportedVersion` 高于当前版本时必须阻断 Workspace 数据访问。
 
 ### 5.2 页面结构
@@ -328,8 +328,8 @@ type FallbackMessage = {
 
 移动端同时维护以下字段：
 
-下表及响应是协议示例；当前 SDK 55 配套 APK 使用 `runtimeVersion: android-2`，
-与旧 `android-1` 原生 ABI 分组隔离，详见 [运行时 ADR](adr/2026-10-06-android-font-layout-runtime.md)。
+下表及响应是协议示例；当前 APK 使用 `runtimeVersion: android-5`，
+原生 ABI 演进见 [首页搜索与图片发送 ADR](adr/2026-10-07-search-and-photo-send.md)。
 
 | 字段 | 示例 | 用途 |
 | --- | --- | --- |
@@ -345,10 +345,10 @@ SemVer 比较规则与主仓一致：只比较 `major.minor.patch`，无法解�
 
 ### 8.2 Release policy 响应
 
-建议后端新增同源、可匿名读取的：
+客户端已使用同源、可匿名读取的服务兼容接口（当前请求不带用户或版本 query）：
 
 ```text
-GET /api/mobile/release-policy?platform=android&channel=internal&appVersion=0.1.0&versionCode=1&runtimeVersion=android-1
+GET /api/mobile/release-policy
 ```
 
 响应示例：
@@ -384,8 +384,21 @@ GET /api/mobile/release-policy?platform=android&channel=internal&appVersion=0.1.
 ```
 
 服务端不应只返回一个 `latestVersion` 字符串。`minimum` 是安全/协议硬门槛，
-`recommendation` 是产品提醒，`ota.runtimeVersion` 决定能否热更，APK URL 是内部包更新入口。
+`recommendation/latest` 保留旧客户端接口兼容；当前推荐新版来自 GitHub 正式 Release，
+`ota.runtimeVersion` 决定能否热更，服务端 APK URL 只保留为强更维护者入口。
 响应本身应由服务端签名或通过受信任的同源 HTTPS 提供；manifest、bundle 和 hash 必须校验。
+
+正式版本发现直接匿名查询固定 `timeStarry/duallane-mobile` 仓库的
+`GET https://api.github.com/repos/timeStarry/duallane-mobile/releases/latest`，排除草稿和
+预发布；同一 Release 的 `build-provenance.json` 必须声明匹配的 tag、appVersion、
+versionCode、包名、运行时、协议和 APK 文件名／字节／摘要。已发布旧正式包 0.2.3
+的清单兼容。不存在清单、字段不匹配、超时或 GitHub 限流都显示失败，不视为最新。
+
+检查后台进行，自动请求按 15 分钟节流，手动「检查更新」绕过节流；公开元数据和
+检查时间保存在已有本机 KV，不含用户或消息。版本和构建号都不能下降，至少一项
+提高，才提供推荐安装；例如 0.2.4/code41 候选不会推荐降为正式 0.2.3/code36。
+服务最低版本和协议强更继续独立生效；Github 不可用不解除已经确定的强更。
+实现与发布完整性见 [版本发现 ADR](adr/2026-10-09-github-release-discovery.md)。
 
 ### 8.3 热更（OTA）
 
@@ -403,21 +416,21 @@ GET /api/mobile/release-policy?platform=android&channel=internal&appVersion=0.1.
 
 ### 8.4 弱更新提醒
 
-触发：当前版本低于 `latest`，但不低于 `minimum`，且没有安全强更原因。
+触发：GitHub 正式版 SemVer 与 versionCode 均不低于本机且至少一项提高，
+同时本机满足服务端 `minimum` 与协议门槛。未取到服务策略时允许推荐正式包，
+已知强制升级仍优先。
 
 - 首次进入会话列表显示顶部可关闭 banner：“发现新版本，建议更新”。
 - 点击查看更新说明；“稍后”按 `releaseId` 记录本地，默认 24 小时后再提醒。
 - 若存在兼容 OTA，优先后台下载，完成后提示“下次启动生效”；用户可继续聊天。
 - 低版本 fallback 消息出现时，弱提醒升级为当前上下文中的提示，但不打断发送/阅读。
 
-### 8.5 强更新提醒
+### 8.5 服务推荐与当前边界
 
-触发：版本低于 `latest` 且服务端 recommendation 为 `strong`，但当前版本仍可安全运行。
-
-- 登录后或回到前台显示不可忽略的 update sheet；允许“立即更新”和“稍后”。
-- “稍后”只允许延迟一个服务端配置的时间窗（建议 24 小时），不能永久关闭。
-- 若是 OTA，下载完成后要求重启；若是APK/AAB 原生包，打开 APK 下载入口。
-- 聊天页面保持当前草稿；更新流程不自动发送草稿。
+旧接口 `recommendation: strong` 仍可供旧客户端使用，当前客户端不根据服务端
+latest/strong 提醒新版，避免静态策略落后于正式 Release。GitHub 正式版使用可
+延迟的推荐提醒；强制升级仅由服务端最低版本与协议要求决定。OTA 默认禁用，
+未来若启用，仍执行 8.3 的签名与运行时规则。
 
 ### 8.6 强制更新 Dialog
 
@@ -529,8 +542,8 @@ ntfy 本轮不删除、不迁移，待实际使用验证后另行决定。
 | 当前安装 | policy | 预期 |
 | --- | --- | --- |
 | `< minimum` | forced | 启动阻断，Dialog 不可关闭 |
-| `>= minimum < latest` | soft | 可聊天，banner 可关闭并按 releaseId 延迟 |
-| `>= minimum < latest` | strong | update sheet，有限期延迟 |
+| 满足 minimum；GitHub 正式版无降级且有提高 | GitHub soft | 可聊天，banner 可关闭并按正式 releaseId 延迟 |
+| 服务端 latest/recommendation | 旧客户端兼容字段 | 当前不据此推荐新版 |
 | runtime 匹配且有签名 OTA | ota | 后台下载，下次启动切换，失败自动回滚 |
 | runtime 不匹配 | store | 打开 APK 下载入口，不尝试 OTA |
 | policy 网络失败 | unknown | 已有可用版本继续；显示可重试的检查失败状态 |
