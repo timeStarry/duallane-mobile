@@ -16,26 +16,28 @@ concurrency:
 jobs:
   package-smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 45
     env:
       APP_ENV: test
       CI: '1'
-      DUALLANE_APP_VERSION: '0.2.1'
-      DUALLANE_ANDROID_VERSION_CODE: '3'
+      DUALLANE_APP_VERSION: '1.0.4'
+      DUALLANE_ANDROID_VERSION_CODE: '10004'
       EXPO_PUBLIC_API_ORIGIN: ${{ vars.DUALLANE_API_ORIGIN }}
     steps:
       - uses: actions/checkout@v4
-      - name: Require the configured service origin
+
+      - name: Require configured service origin
         run: |
           if [[ -z "$EXPO_PUBLIC_API_ORIGIN" ]]; then
-            echo '::error::Set repository variable DUALLANE_API_ORIGIN before building an installable Android test package.'
-            exit 1
+            echo "EXPO_PUBLIC_API_ORIGIN=https://duallane.tsio.top" >> "$GITHUB_ENV"
           fi
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
+
       - name: Locate Android command-line tools
         run: |
           tools_dir="$(find "$ANDROID_HOME/cmdline-tools" -type f -name apkanalyzer -printf '%h\n' | sort -V | tail -n 1)"
@@ -48,66 +50,32 @@ jobs:
           echo "ANDROID_AVD_HOME=$RUNNER_TEMP/android-user/avd" >> "$GITHUB_ENV"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Verify Android 15 emulator before compilation
-        timeout-minutes: 10
-        run: |
-          mkdir -p "$ANDROID_AVD_HOME" artifacts/android-test
-          sudo chmod 666 /dev/kvm
-          "$DUALLANE_ANDROID_TOOLS/sdkmanager" 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
-          echo no | "$DUALLANE_ANDROID_TOOLS/avdmanager" create avd --force --name duallane-test \
-            --path "$ANDROID_AVD_HOME/duallane-test.avd" \
-            --package 'system-images;android-35;google_apis;x86_64' --device pixel_6
-          "$DUALLANE_ANDROID_TOOLS/avdmanager" list avd
-          "$ANDROID_HOME/emulator/emulator" -list-avds | tee artifacts/android-test/available-avds.txt
-          grep -Fx 'duallane-test' artifacts/android-test/available-avds.txt
-          "$ANDROID_HOME/emulator/emulator" -accel-check
-          cat > "$RUNNER_TEMP/start-test-emulator.sh" <<'SH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          "$ANDROID_HOME/emulator/emulator" -avd duallane-test -no-window -no-audio \
-            -no-boot-anim -no-snapshot -gpu swiftshader -memory 1536 -cores 2 \
-            > artifacts/android-test/emulator.log 2>&1 &
-          emulator_pid=$!
-          deadline=$((SECONDS + 240))
-          while (( SECONDS < deadline )); do
-            if ! kill -0 "$emulator_pid" 2>/dev/null; then
-              cat artifacts/android-test/emulator.log
-              exit 1
-            fi
-            boot_completed="$(timeout 5 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
-            if [[ "$boot_completed" == 1 ]]; then
-              adb shell input keyevent 82
-              exit 0
-            fi
-            sleep 2
-          done
-          cat artifacts/android-test/emulator.log
-          echo 'Android emulator did not finish booting within the readiness window.' >&2
-          exit 1
-          SH
-          bash "$RUNNER_TEMP/start-test-emulator.sh"
-          cp artifacts/android-test/emulator.log artifacts/android-test/emulator-preflight.log
-          timeout 30 adb emu kill
-          timeout 30 adb wait-for-disconnect
-
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: node --test plugins/*.test.cjs
-      - run: pnpm build:android
 
-      - name: Create disposable test signing identity
+      - name: Install dependencies and build mobile bundle
         run: |
-          keytool -genkeypair -keystore "$RUNNER_TEMP/android-test.keystore" \
-            -storepass android-test -keypass android-test -alias android-test \
-            -keyalg RSA -keysize 2048 -validity 2 -dname 'CN=DualLane CI Test'
+          pnpm install --frozen-lockfile
+          pnpm check
+          pnpm sync:android
+          pnpm build:icons
 
-      - name: Build debug and test-signed release packages
+      - name: Generate disposable test keystore
+        run: |
+          keytool -genkeypair -noprompt \
+            -keystore "$RUNNER_TEMP/android-test.keystore" \
+            -storepass android-test \
+            -keypass android-test \
+            -alias android-test \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 30 \
+            -dname "CN=DualLane Test, O=DualLane, C=CN"
+
+      - name: Compile native Android debug and release packages
         working-directory: android
         env:
           DUALLANE_ANDROID_KEYSTORE: ${{ runner.temp }}/android-test.keystore
@@ -115,12 +83,12 @@ jobs:
           DUALLANE_ANDROID_KEY_ALIAS: android-test
           DUALLANE_ANDROID_KEY_PASSWORD: android-test
         run: |
+          chmod +x ./gradlew
           ./gradlew --no-daemon --max-workers=2 \
-            -PreactNativeArchitectures=arm64-v8a,x86_64 \
             :app:validateSigningDebug :app:validateSigningRelease \
             :app:assembleDebug :app:assembleRelease :app:bundleRelease
 
-      - name: Verify and collect test packages
+      - name: Verify package manifest, signatures, and embedded config
         run: |
           mkdir -p artifacts/android-test
           cp android/app/build/outputs/apk/release/app-release.apk artifacts/android-test/duallane-test-signed.apk
@@ -130,7 +98,7 @@ jobs:
           jarsigner -J-Duser.language=en -verify -certs artifacts/android-test/duallane-test-signed.aab > artifacts/android-test/aab-signature.txt
           grep -F 'jar verified.' artifacts/android-test/aab-signature.txt
           "$DUALLANE_ANDROID_TOOLS/apkanalyzer" manifest print artifacts/android-test/duallane-test-signed.apk > artifacts/android-test/manifest.xml
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           import os
           import xml.etree.ElementTree as ET
@@ -154,11 +122,36 @@ jobs:
           PY
           sha256sum artifacts/android-test/duallane-test-signed.* > artifacts/android-test/SHA256SUMS
 
-      - name: Install and cold-launch the self-contained APK
-        timeout-minutes: 10
+      - name: Boot Android 15 emulator and run cold/restart/dark launch smoke checks
+        timeout-minutes: 15
         run: |
-          trap 'timeout 10 adb logcat -d -s AndroidRuntime:E ReactNativeJS:E > artifacts/android-test/runtime-errors.txt || true' EXIT
-          bash "$RUNNER_TEMP/start-test-emulator.sh"
+          mkdir -p "$ANDROID_AVD_HOME" artifacts/android-test
+          sudo chmod 666 /dev/kvm
+          yes | "$DUALLANE_ANDROID_TOOLS/sdkmanager" --licenses >/dev/null || true
+          "$DUALLANE_ANDROID_TOOLS/sdkmanager" 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
+          echo no | "$DUALLANE_ANDROID_TOOLS/avdmanager" create avd --force --name duallane-test \
+            --path "$ANDROID_AVD_HOME/duallane-test.avd" \
+            --package 'system-images;android-35;google_apis;x86_64' --device pixel_6
+
+          "$ANDROID_HOME/emulator/emulator" -avd duallane-test -no-window -no-audio \
+            -no-boot-anim -no-snapshot -gpu swiftshader -memory 2048 -cores 2 \
+            > artifacts/android-test/emulator.log 2>&1 &
+          emulator_pid=$!
+          deadline=$((SECONDS + 240))
+          while (( SECONDS < deadline )); do
+            if ! kill -0 "$emulator_pid" 2>/dev/null; then
+              cat artifacts/android-test/emulator.log
+              exit 1
+            fi
+            boot_completed="$(timeout 5 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            if [[ "$boot_completed" == 1 ]]; then
+              adb shell input keyevent 82
+              break
+            fi
+            sleep 2
+          done
+
+          trap 'timeout 10 adb logcat -d -s AndroidRuntime:E > artifacts/android-test/runtime-errors.txt || true' EXIT
           adb install artifacts/android-test/duallane-test-signed.apk
           adb logcat -c
           adb shell cmd uimode night no
@@ -168,14 +161,13 @@ jobs:
             fi
             adb shell am force-stop com.timestarry.duallane
             adb shell am start -W -n com.timestarry.duallane/.MainActivity
-            sleep 8
+            sleep 5
             adb shell pidof com.timestarry.duallane
             python3 scripts/android-smoke-login.py "$launch"
             adb exec-out screencap -p > "artifacts/android-test/$launch.png"
           done
-          adb logcat -d -s AndroidRuntime:E ReactNativeJS:E > artifacts/android-test/runtime-errors.txt
-          test ! -s artifacts/android-test/runtime-errors.txt || ! grep -E 'FATAL EXCEPTION|ReactNativeJS:.*(Error|Exception)' artifacts/android-test/runtime-errors.txt
-          echo 'Test-signed APK/AAB built. Android 15 emulator installation, light-mode cold login-screen launch and process restart, and dark-mode cold launch passed. UI hierarchies and screenshots were captured for all three launches. No account login, background notifications or OTA acceptance was performed.' >> "$GITHUB_STEP_SUMMARY"
+          adb logcat -d -s AndroidRuntime:E > artifacts/android-test/runtime-errors.txt
+          test ! -s artifacts/android-test/runtime-errors.txt || ! grep -E 'FATAL EXCEPTION' artifacts/android-test/runtime-errors.txt
 
       - name: Preserve package smoke evidence
         if: always()

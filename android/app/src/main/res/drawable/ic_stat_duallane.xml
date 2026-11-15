@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Back pane (Private Direct silhouette) -->
+    <path
+        android:fillColor="#80FFFFFF"
+        android:pathData="M9.6,3.8 L18.2,3.0 C19.5,2.9 20.6,3.9 20.7,5.2 L21.4,13.6 C21.5,14.9 20.5,16.0 19.2,16.1 L10.6,16.9 C9.3,17.0 8.2,16.0 8.1,14.7 L7.4,6.3 C7.3,5.0 8.3,3.9 9.6,3.8 Z" />
+    <!-- Front pane (Shared Space silhouette) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4.8,7.9 L13.6,7.2 C15.0,7.1 16.2,8.1 16.3,9.5 L17.0,18.2 C17.1,19.6 16.1,20.8 14.7,20.9 L5.9,21.6 C4.5,21.7 3.3,20.7 3.2,19.3 L2.5,10.6 C2.4,9.2 3.4,8.0 4.8,7.9 Z" />
+</vector>

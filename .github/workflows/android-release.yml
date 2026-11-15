@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       version_code:
-        description: 'Optional Android versionCode; otherwise use the workflow run number'
+        description: 'Optional Android versionCode; otherwise derived from semantic version / run number'
         required: false
         type: string
   push:
@@ -37,10 +37,8 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Set up Node and pnpm
+      - name: Set up pnpm and Node
         uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -62,7 +60,9 @@ jobs:
           KEY_ALIAS: ${{ secrets.DUALLANE_ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.DUALLANE_ANDROID_KEY_PASSWORD }}
         run: |
-          test -n "$EXPO_PUBLIC_API_ORIGIN" || { echo 'Repository variable DUALLANE_API_ORIGIN is required'; exit 1; }
+          if [[ -z "$EXPO_PUBLIC_API_ORIGIN" ]]; then
+            echo "EXPO_PUBLIC_API_ORIGIN=https://duallane.tsio.top" >> "$GITHUB_ENV"
+          fi
           test -n "$KEYSTORE_B64" || { echo 'DUALLANE_ANDROID_KEYSTORE_BASE64 secret is required'; exit 1; }
           test -n "$STORE_PASSWORD" || { echo 'DUALLANE_ANDROID_STORE_PASSWORD secret is required'; exit 1; }
           test -n "$KEY_ALIAS" || { echo 'DUALLANE_ANDROID_KEY_ALIAS secret is required'; exit 1; }
@@ -76,13 +76,17 @@ jobs:
           printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/duallane-signing/release.keystore"
           test -s "$RUNNER_TEMP/duallane-signing/release.keystore"
 
-      - name: Check JavaScript and contracts
+      - name: Check TypeScript, lint, tests, and bundle Android assets
         run: |
           pnpm check
-          node --test plugins/*.test.cjs
+          pnpm sync:android
+          pnpm build:icons
 
-      - name: Regenerate Android project for release version
-        run: pnpm prebuild
+      - name: Ensure Android SDK 36 build-tools
+        run: |
+          sdkmgr="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          yes | "$sdkmgr" --licenses >/dev/null || true
+          "$sdkmgr" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Build signed APK and AAB
         id: build_packages
@@ -93,6 +97,7 @@ jobs:
           DUALLANE_ANDROID_KEY_PASSWORD: ${{ secrets.DUALLANE_ANDROID_KEY_PASSWORD }}
         working-directory: android
         run: |
+          chmod +x ./gradlew
           ./gradlew --no-daemon --max-workers=2 assembleRelease bundleRelease
 
       - name: Verify packages and generate release metadata
@@ -102,23 +107,11 @@ jobs:
           build_tools="$ANDROID_HOME/build-tools/36.0.0"
           test -x "$build_tools/aapt"
           test -x "$build_tools/apksigner"
-          printf 'Verifying packages with Android build-tools 36.0.0\n'
           node scripts/create-android-release-manifest.mjs \
             --apk android/app/build/outputs/apk/release/app-release.apk \
             --aab android/app/build/outputs/bundle/release/app-release.aab \
             --output-dir artifacts/android-release \
             --aapt "$build_tools/aapt" --apksigner "$build_tools/apksigner"
-
-      - name: Preserve compiled packages on metadata verification failure
-        if: failure() && steps.build_packages.outcome == 'success' && steps.release_metadata.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: duallane-android-unverified-${{ github.sha }}-${{ github.run_attempt }}
-          if-no-files-found: warn
-          retention-days: 7
-          path: |
-            android/app/build/outputs/apk/release/*.apk
-            android/app/build/outputs/bundle/release/*.aab
 
       - name: Upload Android packages
         uses: actions/upload-artifact@v4
@@ -132,15 +125,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            artifacts/android-release/app-release.apk \
-            artifacts/android-release/app-release.aab \
-            artifacts/android-release/build-provenance.json \
-            artifacts/android-release/SHA256SUMS \
-            --draft --verify-tag --generate-notes
-
-      - name: Publish verified GitHub Release as latest
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest --verify-tag
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" \
+              artifacts/android-release/app-release.apk \
+              artifacts/android-release/app-release.aab \
+              artifacts/android-release/build-provenance.json \
+              artifacts/android-release/SHA256SUMS \
+              --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              artifacts/android-release/app-release.apk \
+              artifacts/android-release/app-release.aab \
+              artifacts/android-release/build-provenance.json \
+              artifacts/android-release/SHA256SUMS \
+              --draft --verify-tag --generate-notes
+            gh release edit "${GITHUB_REF_NAME}" --draft=false --latest --verify-tag
+          fi

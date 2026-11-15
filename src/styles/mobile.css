@@ -1,0 +1,198 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: var(--dl-bg);
+  --color-surface: var(--dl-surface);
+  --color-soft: var(--dl-soft);
+  --color-line: var(--dl-line);
+  --color-line-strong: var(--dl-line-strong);
+  --color-text: var(--dl-text);
+  --color-muted: var(--dl-muted);
+  --color-control: var(--dl-control);
+  --color-shared: var(--dl-shared);
+  --color-shared-soft: var(--dl-shared-soft);
+  --color-on-shared: var(--dl-on-shared);
+  --color-direct: var(--dl-direct);
+  --color-direct-soft: var(--dl-direct-soft);
+  --color-on-direct: var(--dl-on-direct);
+  --color-accent: var(--dl-accent);
+  --color-accent-soft: var(--dl-accent-soft);
+  --color-on-accent: var(--dl-on-accent);
+  --color-success: var(--dl-success);
+  --color-success-soft: var(--dl-success-soft);
+  --color-warning: var(--dl-warning);
+  --color-warning-soft: var(--dl-warning-soft);
+  --color-danger: var(--dl-danger);
+  --color-danger-soft: var(--dl-danger-soft);
+}
+
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --ime-height: 0px;
+  --dl-bg: #eef2f6;
+  --dl-canvas-from: #f6f8fb;
+  --dl-canvas-to: #e6edf5;
+  --dl-surface: #ffffff;
+  --dl-soft: #f4f7fa;
+  --dl-glass-chrome: rgba(255, 255, 255, 0.78);
+  --dl-glass-elevated: rgba(255, 255, 255, 0.90);
+  --dl-glass-pill: rgba(255, 255, 255, 0.82);
+  --dl-line: rgba(15, 23, 42, 0.08);
+  --dl-line-strong: rgba(15, 23, 42, 0.16);
+  --dl-text: #0f172a;
+  --dl-muted: #5b6676;
+  --dl-control: #cbd5e1;
+  --dl-backdrop: rgba(10, 16, 28, 0.42);
+  --dl-direct: #b84d0e;
+  --dl-direct-soft: rgba(184, 77, 14, 0.12);
+  --dl-on-direct: #ffffff;
+  --dl-shared: #0369a1;
+  --dl-shared-soft: rgba(3, 105, 161, 0.14);
+  --dl-on-shared: #ffffff;
+  --dl-accent: #0369a1;
+  --dl-accent-soft: rgba(3, 105, 161, 0.14);
+  --dl-on-accent: #ffffff;
+  --dl-border: rgba(15, 23, 42, 0.08);
+  --dl-card: #f4f7fa;
+  --dl-text-muted: #5b6676;
+  --dl-bubble-own: #0369a1;
+  --dl-bubble-own-text: #ffffff;
+  --dl-bubble-peer: #ffffff;
+  --dl-success: #15803d;
+  --dl-success-soft: rgba(21, 128, 61, 0.12);
+  --dl-warning: #a14307;
+  --dl-warning-soft: rgba(161, 67, 7, 0.12);
+  --dl-danger: #b91c1c;
+  --dl-danger-soft: rgba(185, 28, 28, 0.12);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: linear-gradient(168deg, var(--dl-canvas-from), var(--dl-canvas-to));
+  color: var(--dl-text);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "MiSans", "HarmonyOS Sans SC",
+    "Noto Sans CJK SC", "Segoe UI", Roboto, sans-serif;
+  overscroll-behavior: none;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.dl-selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.dl-glass {
+  background: var(--dl-glass-chrome);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+}
+
+[data-transparency="solid"] .dl-glass {
+  background: var(--dl-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.dl-glass-elevated {
+  background: var(--dl-glass-elevated);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+}
+
+[data-transparency="solid"] .dl-glass-elevated {
+  background: var(--dl-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.dl-scroll {
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dl-scroll::-webkit-scrollbar {
+  width: 0px;
+  height: 0px;
+}
+
+.pt-safe {
+  padding-top: var(--safe-top);
+}
+
+.pb-safe {
+  padding-bottom: var(--safe-bottom);
+}
+
+.pb-ime-or-safe {
+  padding-bottom: max(var(--ime-height), var(--safe-bottom));
+}
+
+@keyframes dl-sheet-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0.7;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes dl-slide-in-right {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-sheet-up {
+  animation: dl-sheet-up 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-slide-in {
+  animation: dl-slide-in-right 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+@keyframes dlSheetUp {
+  from {
+    transform: translateY(100%);
+    opacity: 0.7;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+[data-motion="reduced"] .animate-sheet-up,
+[data-motion="reduced"] .animate-slide-in {
+  animation: none !important;
+}

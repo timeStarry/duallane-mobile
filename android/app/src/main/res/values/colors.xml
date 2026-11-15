@@ -1,6 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <color name="splashscreen_background">#F7F2EA</color>
-  <color name="icon_background">#F7F2EA</color>
-  <color name="colorPrimary">#023c69</color>
-  <color name="colorPrimaryDark">#ffffff</color>
+    <color name="ic_launcher_background">#0B111B</color>
+    <color name="dl_boot_bg">#0B111B</color>
 </resources>

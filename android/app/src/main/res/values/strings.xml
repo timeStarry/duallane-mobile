@@ -1,4 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <string name="app_name">DualLane</string>
-  <string name="expo_runtime_version">android-5</string>
+    <string name="app_name">DualLane</string>
 </resources>

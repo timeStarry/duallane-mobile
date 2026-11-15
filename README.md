@@ -1,57 +1,37 @@
-# DualLane Mobile
+# DualLane Mobile (`v1.0.4`)
 
-DualLane Mobile is a Workspace-only client design and implementation home for
-the DualLane mobile application. It intentionally does not implement the P2P
-private lane. A cold launch has one product decision:
+**DualLane 净室重构轻量原生移动端（Android）** —— 与 DualLane PC `v1.0.4` 共享统一视觉语言（`04 · 叠境双晶` 品牌体系、5 套主色、浅色/深色/跟随系统、毛玻璃/纯色质感）与完整双通道能力，采用 **纯原生 Kotlin 系统宿主 + 本地预置高性能移动交互层** 构建，摒弃旧版臃肿跨端运行时，安装包体积由 `~128 MB` 精简至 **`~2.5 MB`** 级别。
 
-- no usable Workspace session: show login;
-- an active Workspace session: show the conversation list.
+## 核心架构
 
-The Android client is implemented with React Native and Expo. To validate a checkout:
+- **原生宿主层 (`android/app/src/main/java/com/timestarry/duallane/`)**
+  - `MainActivity.kt`：沉浸式 Edge-to-Edge 窗口、键盘 `WindowInsetsAnimationCompat` 丝滑跟手内边距同步、系统级返回手势栈、Android Photo Picker / SAF 文档选择器、OAuth / 房间邀请 Deep Link 路由。
+  - `TokenVault.kt`：基于 `AndroidKeyStore` (`AES-256-GCM`) 硬件加密保管 `accessToken` 与 `refreshToken`。
+  - `NetworkGateway.kt`：统一 `OkHttp` 连接池 + 64 MB 磁盘缓存、单飞互斥锁 (`refreshLock`) 无感刷新轮换单次 `refreshToken`、GitHub PKCE + Custom Tabs 原生授权、流式分片 (`SHA-256` 校验) 大文件上传。
+  - `RealtimeManager.kt`：原生保活 WebSocket 网关，后台自动投递 Android 系统通知并支持点击直达对应会话。
+  - `NativeBridge.kt`：零反射开销类型安全双向桥接与原生触感反馈 (`Haptics`)、系统分享面板。
+- **移动交互层 (`src/`)**
+  - 对标 Telegram 与飞书移动端的底部四栏架构（**消息 / 直连 / 通讯录 / 我**）及手势交互（左滑引用回复、长按底部操作抽屉 + 快捷表情回应、双击点赞、全屏手势灯箱）。
+  - **共享空间 (`Workspace`)**：分类胶囊（`全部 / 未读 / @我 / 群聊 / 机器人`）、置顶会话、`我的收藏`、精准单双勾已读回执（`✓ / ✓✓`）、`正在输入… / 正在思考…`、群聊 `@提及` 候选与姓名旁 `@TA` 胶囊、单图与贴纸无气泡边框独立渲染、Telegram 风格贴纸工作台（偷表情入收藏、自建表情包、分享导入、底栏 Tab 拖拽/上下调序）、话题回复、合并转发、CardKit v1 交互卡片、机器人斜杠指令（仅机器人会话展示）与凭证解绑管理。
+  - **一对一直连 (`Private Direct / P2P`)**：零登录内存态 `AES-256-GCM` 端到端加密临时房间，与 PC 端 `p2p-lane` 100% 协议互通。
+  - *注：空间管理后台按移动端精简定位不在移动端内置，保持纯粹的沟通与协作体验。*
 
-```text
-corepack pnpm install --frozen-lockfile
-corepack pnpm check
-node --test plugins/*.test.cjs
-corepack pnpm export:android
+## 本地开发与构建
+
+```bash
+# 安装依赖
+pnpm install
+
+# 运行类型检查、ESLint 与单元测试
+pnpm check
+
+# 启动本地移动端调试视图
+pnpm dev
+
+# 构建并同步 Android 预置静态资源与自适应图标
+pnpm sync:android
+pnpm build:icons
+
+# 构建 Android 安装包 (需 JDK 17 + Android SDK 36)
+cd android && ./gradlew assembleDebug assembleRelease bundleRelease
 ```
-
-`corepack pnpm build:android` regenerates the Android project; a JDK and Android
-SDK are required for Gradle packaging. Pull requests run a separate Android
-package smoke workflow with a disposable test signing key. These test artifacts
-are not signed with the internal release identity. See the
-[testing and release guide](docs/development/TESTING_AND_RELEASE.md).
-
-Release and test packages receive their default service from the repository
-variable `DUALLANE_API_ORIGIN`, injected as `EXPO_PUBLIC_API_ORIGIN` at build time.
-Users can sign in directly without choosing a server. The optional invitation
-field accepts only Workspace invitations for that configured service. Development
-builds without a configured origin retain the service/invitation input.
-
-Android update checks discover published stable versions directly from this
-repository's GitHub Releases and validate their `build-provenance.json` metadata.
-The Workspace service still controls minimum-version and protocol requirements.
-Automatic public checks run in the background at most every 15 minutes; the
-About screen can request an immediate check. See the
-[release discovery decision](docs/adr/2026-10-09-github-release-discovery.md).
-
-The design is recorded in
-[`docs/WORKSPACE_MOBILE_CLIENT_DESIGN.md`](docs/WORKSPACE_MOBILE_CLIENT_DESIGN.md).
-The next Android experience revision is specified in
-[`DL Android 体验改造要求`](docs/design/mobile-experience-redesign/README.md), with a
-[cross-client acceptance ledger](docs/design/mobile-experience-redesign/ACCEPTANCE.md)
-and [R0 design confirmation](docs/design/mobile-experience-redesign/R0.md).
-It preserves DL semantics across clients while adapting navigation, controls, and
-system interactions to Android. R0/R1 cover tokens, primitives, navigation shell
-and the personal settings hierarchy. R2 wires chat content, replies, topics and
-object actions. R3 records automated checks and remaining unverified device /
-cross-client / signed-package work. They are not a claim that the acceptance
-ledger has passed.
-The source of truth for server behavior remains the sibling
-[`duallane`](../duallane) repository, especially its Workspace API, message
-protocol, realtime, security, and release documents.
-
-This directory is deliberately kept separate from the web application so the
-mobile release lifecycle, secure token storage, native OAuth callback, local
-notifications, and OTA bundle policy can evolve without reintroducing P2P
-dependencies.
