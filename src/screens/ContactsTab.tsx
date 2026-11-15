@@ -126,7 +126,13 @@ export function ContactsTab() {
                   onClick={() => void startDirectChatWithUser(b.id)}
                   className="w-full px-4 py-3 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
                 >
-                  <Avatar name={b.displayName} src={b.avatarUrl} kind="bot" size={40} />
+                  <Avatar
+                    name={b.displayName}
+                    src={b.avatarUrl}
+                    kind="bot"
+                    color={b.avatarColor}
+                    size={40}
+                  />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className="text-[14px] font-semibold text-[var(--dl-text)] truncate">

@@ -18,8 +18,10 @@ import { useEmoteStore } from "@/store/emote-store";
 import { EntryScreen } from "@/screens/EntryScreen";
 import { App } from "@/App";
 import { nativeBridge } from "@/native/bridge";
+import { compareSemver, useUpdateStore } from "@/shared/updater";
+import { Avatar } from "@/components/Avatar";
 
-describe("DualLane Mobile Clean-Room v1.0.4 Core", () => {
+describe("DualLane Mobile Clean-Room v1.0.5 Core", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useNavStore.setState({
@@ -27,14 +29,22 @@ describe("DualLane Mobile Clean-Room v1.0.4 Core", () => {
       activeTab: "chats",
       activeChatId: null,
       searchOpen: false,
+      directOverlayOpen: false,
+      updateSheetOpen: false,
       actionMessageId: null,
       threadRootId: null,
       chatDetailOpen: false,
       stickerStudioOpen: false,
       sharedPackId: null,
-      botManageOpen: null as unknown as boolean,
+      botManageOpen: false,
     });
-    useNavStore.setState({ botManageOpen: false });
+    useUpdateStore.setState({
+      checking: false,
+      hasUpdate: false,
+      latestRelease: null,
+      lastCheckedAt: null,
+      error: null,
+    });
   });
 
   it("encrypts and decrypts P2P AES-256-GCM frames wire-compatibly with PC", async () => {
@@ -215,10 +225,65 @@ describe("DualLane Mobile Clean-Room v1.0.4 Core", () => {
     });
     expect(useNavStore.getState().activeChatId).toBeNull();
 
-    // Switch to Me tab and verify Space Governance Admin Console is NOT present on mobile
+    // Switch to Me tab and verify 3-tab bottom bar, Direct overlay, Update checker, zero meta copy, and no Space Admin
+    const nav = screen.getByLabelText("主导航栏");
+    expect(nav.textContent).toContain("消息");
+    expect(nav.textContent).toContain("通讯录");
+    expect(nav.textContent).toContain("我");
+    expect(nav.textContent).not.toContain("直连");
+
     fireEvent.click(screen.getByText("我"));
+    expect(screen.getByText("外观与主题")).toBeInTheDocument();
+    expect(screen.queryByText(/与 PC/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/设计语言/)).not.toBeInTheDocument();
+    expect(screen.getByText("一对一加密直连")).toBeInTheDocument();
+    expect(screen.getByText("检查更新")).toBeInTheDocument();
     expect(screen.getByText("表情与贴纸工坊")).toBeInTheDocument();
     expect(screen.queryByText("空间治理后台")).not.toBeInTheDocument();
     expect(screen.queryByText("审计日志")).not.toBeInTheDocument();
+
+    // Open 1-on-1 Direct overlay from Me tab and pop back via hardware gesture
+    fireEvent.click(screen.getByText("一对一加密直连"));
+    expect(useNavStore.getState().directOverlayOpen).toBe(true);
+    act(() => {
+      expect(useNavStore.getState().popBack()).toBe(true);
+    });
+    expect(useNavStore.getState().directOverlayOpen).toBe(false);
+  });
+
+  it("renders bot avatar theme colors and detects new GitHub APK releases", async () => {
+    expect(compareSemver("1.0.5", "1.0.5")).toBe(0);
+    expect(compareSemver("v1.0.6", "1.0.5")).toBe(1);
+    expect(compareSemver("1.0.4", "1.0.5")).toBe(-1);
+
+    const { container } = render(<Avatar name="Astra" kind="bot" color="violet" />);
+    const tile = container.querySelector('[data-avatar-kind="bot"]');
+    expect(tile?.getAttribute("data-bot-color")).toBe("violet");
+
+    const reqSpy = vi.spyOn(nativeBridge, "request").mockResolvedValue({
+      ok: true,
+      status: 200,
+      bodyText: JSON.stringify({
+        tag_name: "v1.0.6",
+        name: "DualLane Mobile v1.0.6",
+        body: "- 新增功能与性能优化",
+        published_at: "2026-11-15T12:00:00Z",
+        html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.6",
+        assets: [
+          {
+            name: "app-release.apk",
+            size: 162000,
+            browser_download_url:
+              "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.6/app-release.apk",
+          },
+        ],
+      }),
+    });
+
+    const result = await useUpdateStore.getState().checkForUpdates(false);
+    expect(result.hasUpdate).toBe(true);
+    expect(result.release?.version).toBe("1.0.6");
+    expect(result.release?.apkSizeBytes).toBe(162000);
+    reqSpy.mockRestore();
   });
 });

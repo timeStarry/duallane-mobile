@@ -88,7 +88,7 @@ export function CreateAndForwardSheets() {
                 type="text"
                 value={groupTitle}
                 onChange={(e) => setGroupTitle(e.target.value)}
-                placeholder="输入群聊名称（如：移动端研发对齐群）"
+                placeholder="输入群聊名称（如：产品周会群）"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
               />
             </div>
@@ -115,6 +115,7 @@ export function CreateAndForwardSheets() {
                     name={u.displayName}
                     src={u.avatarUrl}
                     kind={u.role === "bot" ? "bot" : "user"}
+                    color={u.avatarColor}
                     size={38}
                   />
                   <div className="min-w-0 flex-1">

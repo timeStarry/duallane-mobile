@@ -2,6 +2,8 @@ import { useCallback, useMemo, useState } from "react";
 import {
   Bookmark,
   CheckCheck,
+  ChevronRight,
+  Lock,
   MessageSquarePlus,
   Pin,
   Plus,
@@ -30,6 +32,7 @@ export function ChatsTab() {
   const drafts = useWorkspaceStore((s) => s.drafts);
   const typingByConv = useWorkspaceStore((s) => s.typingByConv);
   const connectionStatus = useWorkspaceStore((s) => s.connectionStatus);
+  const p2pRoom = useWorkspaceStore((s) => s.p2pRoom);
   const togglePinConversation = useWorkspaceStore((s) => s.togglePinConversation);
   const markRead = useWorkspaceStore((s) => s.markRead);
   const leaveGroup = useWorkspaceStore((s) => s.leaveGroup);
@@ -38,6 +41,7 @@ export function ChatsTab() {
   const setSearchOpen = useNavStore((s) => s.setSearchOpen);
   const setCreateChatMode = useNavStore((s) => s.setCreateChatMode);
   const setBotManageOpen = useNavStore((s) => s.setBotManageOpen);
+  const setDirectOverlayOpen = useNavStore((s) => s.setDirectOverlayOpen);
 
   const [filter, setFilter] = useState<ChatFilter>("all");
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
@@ -164,6 +168,22 @@ export function ChatsTab() {
         </div>
       </header>
 
+      {p2pRoom && (
+        <button
+          type="button"
+          onClick={() => setDirectOverlayOpen(true)}
+          className="px-4 py-2 bg-amber-500/14 border-b border-amber-500/25 flex items-center justify-between gap-2 text-left shrink-0 active:opacity-85"
+        >
+          <span className="flex items-center gap-2 text-[12px] font-semibold text-amber-700 dark:text-amber-300 truncate">
+            <Lock size={14} className="shrink-0" />
+            <span className="truncate">
+              一对一加密直连进行中 · 房间 #{p2pRoom.roomId.slice(0, 8)}
+            </span>
+          </span>
+          <ChevronRight size={15} className="text-amber-600 dark:text-amber-300 shrink-0" />
+        </button>
+      )}
+
       {/* Conversation List */}
       <div className="flex-1 overflow-y-auto divide-y divide-[var(--dl-border)]/50">
         {sortedConversations.length === 0 ? (
@@ -185,6 +205,11 @@ export function ChatsTab() {
             const draft = drafts[conv.id];
             const typers = typingByConv[conv.id] || [];
             const botChat = isBotDirect(conv);
+            const peerId =
+              conv.kind === "direct"
+                ? conv.memberIds.find((id) => id !== currentUser?.id)
+                : undefined;
+            const directPeer = peerId ? members[peerId] : undefined;
             const avatarKind =
               conv.kind === "saved"
                 ? "saved"
@@ -222,9 +247,10 @@ export function ChatsTab() {
               >
                 <Avatar
                   name={conv.title}
-                  src={conv.avatarUrl}
+                  src={conv.avatarUrl || directPeer?.avatarUrl}
                   emoji={conv.avatarEmoji}
                   kind={avatarKind}
+                  color={botChat ? directPeer?.avatarColor : undefined}
                   size={48}
                 />
 

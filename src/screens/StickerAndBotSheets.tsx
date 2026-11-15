@@ -12,7 +12,7 @@ import {
   Trash2,
   Unplug,
 } from "lucide-react";
-import { Avatar } from "@/components/Avatar";
+import { Avatar, BOT_AVATAR_COLORS } from "@/components/Avatar";
 import { BottomSheet } from "@/components/BottomSheet";
 import { nativeBridge } from "@/native/bridge";
 import {
@@ -47,6 +47,8 @@ export function StickerAndBotSheets() {
   const deleteSticker = useEmoteStore((s) => s.deleteSticker);
   const deleteCollection = useEmoteStore((s) => s.deleteCollection);
 
+  const members = useWorkspaceStore((s) => s.members);
+  const patchMemberLocal = useWorkspaceStore((s) => s.patchMemberLocal);
   const sendStickerPackShare = useWorkspaceStore((s) => s.sendStickerPackShare);
   const bootstrapWorkspace = useWorkspaceStore((s) => s.bootstrapWorkspace);
 
@@ -391,70 +393,178 @@ export function StickerAndBotSheets() {
               </div>
 
               <div className="space-y-2">
-                {bots.map((b) => (
-                  <button
-                    key={b.id}
-                    type="button"
-                    onClick={() => setSelectedBot(b)}
-                    className="w-full p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center gap-3 text-left active:opacity-85"
-                  >
-                    <Avatar name={b.name} src={b.avatarUrl} kind="bot" size={44} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[15px] font-semibold text-[var(--dl-text)] truncate">
-                          {b.name}
-                        </span>
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                            b.status === "paused"
-                              ? "bg-amber-500/15 text-amber-500"
-                              : "bg-emerald-500/15 text-emerald-500"
-                          }`}
-                        >
-                          {b.status === "paused" ? "已暂停" : "运行中"}
-                        </span>
+                {bots.map((b) => {
+                  const botColor =
+                    (b.botUserId ? members[b.botUserId]?.avatarColor : undefined) ??
+                    b.avatarColor;
+                  return (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => setSelectedBot(b)}
+                      className="w-full p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center gap-3 text-left active:opacity-85"
+                    >
+                      <Avatar
+                        name={b.name}
+                        src={b.avatarUrl}
+                        kind="bot"
+                        color={botColor}
+                        size={44}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[15px] font-semibold text-[var(--dl-text)] truncate">
+                            {b.name}
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                              b.status === "paused"
+                                ? "bg-amber-500/15 text-amber-500"
+                                : "bg-emerald-500/15 text-emerald-500"
+                            }`}
+                          >
+                            {b.status === "paused" ? "已暂停" : "运行中"}
+                          </span>
+                        </div>
+                        <div className="text-[12px] text-[var(--dl-text-muted)] truncate mt-0.5">
+                          点击生成配对地址、设置主题色或解绑凭证
+                        </div>
                       </div>
-                      <div className="text-[12px] text-[var(--dl-text-muted)] truncate mt-0.5">
-                        点击生成配对地址、更换头像或解绑凭证
-                      </div>
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
             </>
           ) : (
             <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const picked = await nativeBridge.pickMedia("image", false);
-                    if (picked.length === 0) return;
-                    await mobileApi.uploadBotAvatar(selectedBot.id, picked[0].id);
-                    await reloadBots();
-                    await bootstrapWorkspace();
-                    showToast("机器人头像已更新", "success");
-                  }}
-                  className="relative"
-                >
-                  <Avatar name={selectedBot.name} src={selectedBot.avatarUrl} kind="bot" size={54} />
-                  <span className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center">
-                    <Camera size={11} />
-                  </span>
-                </button>
-                <div className="flex-1">
-                  <div className="text-[16px] font-bold text-[var(--dl-text)]">
-                    {selectedBot.name}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedBot(null)}
-                    className="text-[12px] text-[var(--dl-accent)]"
-                  >
-                    ← 返回机器人列表
-                  </button>
-                </div>
-              </div>
+              {(() => {
+                const selectedBotColor =
+                  (selectedBot.botUserId
+                    ? members[selectedBot.botUserId]?.avatarColor
+                    : undefined) ??
+                  selectedBot.avatarColor ??
+                  "";
+                const handleSelectBotColor = async (nextColor: string) => {
+                  const prevColor = selectedBotColor;
+                  setSelectedBot({ ...selectedBot, avatarColor: nextColor || undefined });
+                  if (selectedBot.botUserId) {
+                    patchMemberLocal(selectedBot.botUserId, {
+                      avatarColor: nextColor || undefined,
+                    });
+                  }
+                  try {
+                    await mobileApi.updateBotProfile(selectedBot.id, { color: nextColor });
+                    void reloadBots();
+                    showToast("机器人主题色已更新", "success");
+                  } catch {
+                    setSelectedBot({ ...selectedBot, avatarColor: prevColor || undefined });
+                    if (selectedBot.botUserId) {
+                      patchMemberLocal(selectedBot.botUserId, {
+                        avatarColor: prevColor || undefined,
+                      });
+                    }
+                    showToast("更新机器人主题色失败", "warning");
+                  }
+                };
+
+                return (
+                  <>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const picked = await nativeBridge.pickMedia("image", false);
+                          if (picked.length === 0) return;
+                          await mobileApi.uploadBotAvatar(selectedBot.id, picked[0].id);
+                          await reloadBots();
+                          await bootstrapWorkspace();
+                          showToast("机器人头像已更新", "success");
+                        }}
+                        className="relative"
+                      >
+                        <Avatar
+                          name={selectedBot.name}
+                          src={selectedBot.avatarUrl}
+                          kind="bot"
+                          color={selectedBotColor}
+                          size={54}
+                        />
+                        <span className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center">
+                          <Camera size={11} />
+                        </span>
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[16px] font-bold text-[var(--dl-text)] truncate">
+                          {selectedBot.name}
+                        </div>
+                        <div className="flex items-center gap-3 mt-0.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedBot(null)}
+                            className="text-[12px] text-[var(--dl-accent)]"
+                          >
+                            ← 返回机器人列表
+                          </button>
+                          {selectedBot.avatarUrl && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await mobileApi.deleteBotAvatar(selectedBot.id);
+                                setSelectedBot({ ...selectedBot, avatarUrl: undefined });
+                                await reloadBots();
+                                await bootstrapWorkspace();
+                                showToast("已恢复默认彩色机器人图标", "success");
+                              }}
+                              className="text-[12px] text-[var(--dl-text-muted)]"
+                            >
+                              恢复默认图标
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Bot Theme Color Picker */}
+                    <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[12px] font-semibold text-[var(--dl-text)]">
+                          机器人主题色
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleSelectBotColor("")}
+                          className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
+                            !selectedBotColor
+                              ? "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold"
+                              : "text-[var(--dl-text-muted)]"
+                          }`}
+                        >
+                          自动分配
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-8 gap-2">
+                        {BOT_AVATAR_COLORS.map((preset) => {
+                          const active = selectedBotColor === preset.id;
+                          return (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              aria-label={preset.label}
+                              onClick={() => void handleSelectBotColor(preset.id)}
+                              style={{ backgroundImage: preset.gradient }}
+                              className={`aspect-square rounded-xl flex items-center justify-center text-white shadow-2xs transition ${
+                                active ? "ring-2 ring-offset-2 ring-[var(--dl-accent)] scale-105" : "opacity-88"
+                              }`}
+                            >
+                              {active && <Check size={13} />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
 
               <div className="grid grid-cols-2 gap-2.5">
                 <button

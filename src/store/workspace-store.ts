@@ -23,6 +23,7 @@ import {
 } from "@/shared/p2p-crypto";
 import { useEmoteStore } from "./emote-store";
 import { useNavStore } from "./nav-store";
+import { useUpdateStore } from "@/shared/updater";
 
 export interface V1User {
   id: string;
@@ -30,6 +31,7 @@ export interface V1User {
   handle?: string;
   role: "owner" | "admin" | "member" | "bot";
   avatarUrl?: string;
+  avatarColor?: string;
   description?: string;
 }
 
@@ -190,6 +192,7 @@ interface WorkspaceState {
   ) => Promise<void>;
   applyRealtimeEvent: (eventObj: Record<string, unknown>) => void;
   handleDeepLink: (rawUrl: string) => Promise<void>;
+  patchMemberLocal: (userId: string, patch: Partial<V1User>) => void;
 
   createP2PRoom: () => Promise<string>;
   joinP2PRoom: (roomId: string, keyStr: string) => Promise<void>;
@@ -205,6 +208,7 @@ interface WorkspaceState {
 }
 
 const SHELL_CACHE_KEY = "duallane:mobile:shell:v1";
+const MESSAGES_CACHE_KEY = "duallane:mobile:messages:v1";
 const DRAFTS_CACHE_KEY = "duallane:mobile:drafts:v1";
 
 function loadCachedDrafts(): Record<string, DraftEntry> {
@@ -214,6 +218,51 @@ function loadCachedDrafts(): Record<string, DraftEntry> {
   } catch {
     return {};
   }
+}
+
+function loadCachedMessages(): Record<string, V1Message[]> {
+  try {
+    const raw = window.localStorage.getItem(MESSAGES_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, V1Message[]> = {};
+    for (const [cid, list] of Object.entries(parsed)) {
+      if (Array.isArray(list)) {
+        out[cid] = list as V1Message[];
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+let persistMessagesTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersistMessages(
+  messagesByConv: Record<string, V1Message[]>,
+  conversationOrder: string[]
+) {
+  if (persistMessagesTimer) clearTimeout(persistMessagesTimer);
+  persistMessagesTimer = setTimeout(() => {
+    try {
+      const ids =
+        conversationOrder.length > 0
+          ? conversationOrder.slice(0, 28)
+          : Object.keys(messagesByConv).slice(0, 28);
+      const snapshot: Record<string, V1Message[]> = {};
+      for (const cid of ids) {
+        const list = messagesByConv[cid];
+        if (list && list.length > 0) {
+          snapshot[cid] = list.slice(-45);
+        }
+      }
+      window.localStorage.setItem(MESSAGES_CACHE_KEY, JSON.stringify(snapshot));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, 240);
 }
 
 function persistDrafts(drafts: Record<string, DraftEntry>) {
@@ -419,6 +468,12 @@ function upsertRawMemberRecord(
       ? m.avatarUrl.trim()
       : undefined
     : prev?.avatarUrl;
+  const hasExplicitColor = "avatarColor" in m;
+  const nextAvatarColor = hasExplicitColor
+    ? typeof m.avatarColor === "string" && m.avatarColor.trim()
+      ? m.avatarColor.trim().toLowerCase()
+      : undefined
+    : prev?.avatarColor;
   const nextDescription =
     typeof m.description === "string" ? m.description.trim() || undefined : prev?.description;
   target[id] = {
@@ -431,6 +486,7 @@ function upsertRawMemberRecord(
       : prev?.handle,
     role,
     avatarUrl: nextAvatarUrl,
+    avatarColor: nextAvatarColor,
     description: nextDescription,
   };
   return id;
@@ -771,7 +827,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     conversationOrder: [],
     pinnedConversationIds: [],
     userPreferences: {},
-    messagesByConv: {},
+    messagesByConv: loadCachedMessages(),
     members: {},
     threadsByRootId: {},
 
@@ -920,10 +976,26 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         useEmoteStore.getState().hydrateTabOrderFromPreferences(userPreferences.emoteTabOrder);
         void useEmoteStore.getState().refreshLibrary(true);
         connectRealtime(parsed.eventCursor);
+
+        // Background prefetch top conversations so tapping any chat renders 0ms with full history
+        const prefetchIds = parsed.conversationOrder
+          .filter((cid) => (mergedMessages[cid]?.length || 0) < 2)
+          .slice(0, 8);
+        if (prefetchIds.length > 0) {
+          void Promise.allSettled(
+            prefetchIds.map((cid) => get().loadConversationMessages(cid))
+          );
+        }
+
+        // Silent background update check once session is ready
+        setTimeout(() => {
+          void useUpdateStore.getState().checkForUpdates(true);
+        }, 1800);
       } catch (err) {
         if (err instanceof ApiClientError && err.status === 401) {
           teardownWorkspaceRealtime();
           window.localStorage.removeItem(SHELL_CACHE_KEY);
+          window.localStorage.removeItem(MESSAGES_CACHE_KEY);
           set({ authStatus: "unauthenticated", statusError: null });
           return;
         }
@@ -939,12 +1011,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       teardownWorkspaceRealtime();
       teardownP2P();
       window.localStorage.removeItem(SHELL_CACHE_KEY);
+      window.localStorage.removeItem(MESSAGES_CACHE_KEY);
       nativeBridge.logout();
       useNavStore.setState({
         entryLane: "welcome",
         activeTab: "chats",
         activeChatId: null,
         searchOpen: false,
+        directOverlayOpen: false,
       });
       set({
         authStatus: "unauthenticated",
@@ -1864,7 +1938,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       const p2p = parseP2PInviteInput(rawUrl);
       if (p2p) {
         if (get().authStatus === "authenticated") {
-          useNavStore.getState().setActiveTab("direct");
+          useNavStore.getState().setDirectOverlayOpen(true);
         } else {
           useNavStore.getState().setEntryLane("direct_guest");
         }
@@ -2084,5 +2158,32 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         ),
       }));
     },
+
+    patchMemberLocal: (userId, patch) => {
+      if (!userId) return;
+      set((s) => {
+        const existing = s.members[userId];
+        const updated: V1User = existing
+          ? { ...existing, ...patch }
+          : {
+              id: userId,
+              displayName: patch.displayName || userId,
+              role: patch.role || "bot",
+              ...patch,
+            };
+        return {
+          members: {
+            ...s.members,
+            [userId]: updated,
+          },
+        };
+      });
+    },
   };
+});
+
+useWorkspaceStore.subscribe((state, prevState) => {
+  if (state.messagesByConv !== prevState.messagesByConv && state.authStatus === "authenticated") {
+    schedulePersistMessages(state.messagesByConv, state.conversationOrder);
+  }
 });

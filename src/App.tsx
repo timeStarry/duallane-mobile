@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo } from "react";
-import { Lock, MessageCircle, User, Users } from "lucide-react";
+import { MessageCircle, User, Users } from "lucide-react";
 import { BrandLogo } from "./components/BrandLogo";
 import { MediaLightbox } from "./components/MediaLightbox";
 import { nativeBridge } from "./native/bridge";
@@ -13,6 +13,7 @@ import { MeTab } from "./screens/MeTab";
 import { SearchScreen } from "./screens/SearchScreen";
 import { StickerAndBotSheets } from "./screens/StickerAndBotSheets";
 import { ThreadAndDetailSheets } from "./screens/ThreadAndDetailSheets";
+import { useUpdateStore } from "./shared/updater";
 import { useNavStore, type MobileTabId } from "./store/nav-store";
 import { useWorkspaceStore } from "./store/workspace-store";
 
@@ -26,8 +27,11 @@ export function App() {
   const activeTab = useNavStore((s) => s.activeTab);
   const setActiveTab = useNavStore((s) => s.setActiveTab);
   const activeChatId = useNavStore((s) => s.activeChatId);
+  const directOverlayOpen = useNavStore((s) => s.directOverlayOpen);
+  const setDirectOverlayOpen = useNavStore((s) => s.setDirectOverlayOpen);
   const toast = useNavStore((s) => s.toast);
   const popBack = useNavStore((s) => s.popBack);
+  const hasUpdate = useUpdateStore((s) => s.hasUpdate);
 
   useEffect(() => {
     void bootstrapWorkspace();
@@ -104,12 +108,6 @@ export function App() {
       badge: totalUnread > 0 ? totalUnread : undefined,
     },
     {
-      id: "direct",
-      label: "直连",
-      icon: Lock,
-      badge: p2pRoom ? "dot" : undefined,
-    },
-    {
       id: "contacts",
       label: "通讯录",
       icon: Users,
@@ -118,6 +116,7 @@ export function App() {
       id: "me",
       label: "我",
       icon: User,
+      badge: hasUpdate || Boolean(p2pRoom) ? "dot" : undefined,
     },
   ];
 
@@ -126,18 +125,17 @@ export function App() {
       {/* Main Tab Viewport */}
       <main className="flex-1 min-h-0 overflow-hidden">
         {activeTab === "chats" && <ChatsTab />}
-        {activeTab === "direct" && <DirectTab />}
         {activeTab === "contacts" && <ContactsTab />}
         {activeTab === "me" && <MeTab />}
       </main>
 
-      {/* Bottom Tab Navigation (Hidden when inside full-screen ChatRoom or active P2P Room with keyboard) */}
-      {!activeChatId && (
+      {/* Bottom Tab Navigation (Hidden when inside full-screen ChatRoom or Direct Overlay) */}
+      {!activeChatId && !directOverlayOpen && (
         <nav
           aria-label="主导航栏"
           className="bg-[var(--dl-surface)] dl-glass border-t border-[var(--dl-border)] pb-[var(--safe-bottom)] shrink-0 z-20"
         >
-          <div className="h-14 grid grid-cols-4">
+          <div className="h-14 grid grid-cols-3">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const active = activeTab === tab.id;
@@ -167,6 +165,13 @@ export function App() {
             })}
           </div>
         </nav>
+      )}
+
+      {/* Full-Screen 1-on-1 Encrypted Direct Overlay */}
+      {directOverlayOpen && (
+        <div className="fixed inset-0 z-30 bg-[var(--dl-bg)]">
+          <DirectTab onClose={() => setDirectOverlayOpen(false)} />
+        </div>
       )}
 
       {/* Full-Screen Chat Room Stack */}

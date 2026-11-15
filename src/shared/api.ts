@@ -284,6 +284,7 @@ export interface MobileBotSummary {
   name: string;
   description?: string;
   avatarUrl?: string;
+  avatarColor?: string;
   status: string;
   connectionStatus?: string;
   createdAt?: string;
@@ -567,14 +568,20 @@ export const mobileApi = {
       body: JSON.stringify({ name }),
     }),
 
-  updateBotProfile: (botId: string, patch: { name?: string; description?: string }) =>
-    requestJSON<{ ok: boolean; name?: string; description?: string; avatarUrl?: string }>(
-      `/api/v1/bots/${encodeURIComponent(botId)}/profile`,
-      {
-        method: "PATCH",
-        body: JSON.stringify(patch),
-      }
-    ),
+  updateBotProfile: (
+    botId: string,
+    patch: { name?: string; description?: string; color?: string }
+  ) =>
+    requestJSON<{
+      ok?: boolean;
+      name?: string;
+      description?: string;
+      avatarUrl?: string;
+      avatarColor?: string;
+    }>(`/api/v1/bots/${encodeURIComponent(botId)}/profile`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
 
   uploadBotAvatar: (botId: string, pickedFileId: string) =>
     nativeBridge.uploadBinaryAvatar(

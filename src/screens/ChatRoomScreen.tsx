@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -74,25 +74,54 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const [stickerOpen, setStickerOpen] = useState(false);
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [loadingInitial, setLoadingInitial] = useState(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [botCommands, setBotCommands] = useState<BotCommandSpec[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
 
   const listRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastTypingSentRef = useRef<number>(0);
+  const pinnedConvRef = useRef<string>("");
+  const nearBottomRef = useRef<boolean>(true);
+  const prevTailMsgIdRef = useRef<string>("");
 
   const textValue = draft?.text || "";
   const replyToId = draft?.replyToMessageId;
 
+  const directPeer = useMemo(() => {
+    if (!conv || conv.kind !== "direct") return undefined;
+    const peerId = conv.memberIds.find((uid) => uid !== currentUser?.id);
+    return peerId ? members[peerId] : undefined;
+  }, [conv, members, currentUser]);
+
   const isBotConversation = useMemo(() => {
     if (!conv) return false;
-    return conv.memberIds.some((uid) => uid !== currentUser?.id && members[uid]?.role === "bot");
+    return conv.memberIds.some(
+      (uid) =>
+        uid !== currentUser?.id &&
+        (members[uid]?.role === "bot" ||
+          uid.startsWith("usr_bot_") ||
+          uid.startsWith("usr_system_"))
+    );
   }, [conv, members, currentUser]);
 
   useEffect(() => {
-    void loadConversationMessages(conversationId);
+    nearBottomRef.current = true;
+    setShowScrollBottom(false);
+    let cancelled = false;
+    if (messages.length === 0) {
+      setLoadingInitial(true);
+    }
+    void loadConversationMessages(conversationId).finally(() => {
+      if (!cancelled) setLoadingInitial(false);
+    });
     markRead(conversationId);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, loadConversationMessages, markRead]);
 
   useEffect(() => {
@@ -106,15 +135,50 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
       .catch(() => setBotCommands([]));
   }, [conversationId, isBotConversation]);
 
-  // Auto-scroll to bottom on new message
-  useEffect(() => {
+  // Synchronous pre-paint bottom pinning on conversation open & incoming/outgoing messages
+  const tailMsg = messages.length > 0 ? messages[messages.length - 1] : undefined;
+  const tailMsgId = tailMsg?.id || "";
+  useLayoutEffect(() => {
     const el = listRef.current;
-    if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distance < 260) {
+    if (!el || highlightedMessageId) return;
+
+    const isInitialForConv = pinnedConvRef.current !== conversationId;
+    const isOwnNewTail =
+      tailMsgId !== prevTailMsgIdRef.current && tailMsg?.senderId === currentUser?.id;
+
+    if (isInitialForConv || nearBottomRef.current || isOwnNewTail) {
       el.scrollTop = el.scrollHeight;
+      nearBottomRef.current = true;
+      setShowScrollBottom(false);
+      if (messages.length > 0) {
+        pinnedConvRef.current = conversationId;
+      }
     }
-  }, [messages.length, stickerOpen]);
+    prevTailMsgIdRef.current = tailMsgId;
+  }, [
+    conversationId,
+    messages.length,
+    tailMsgId,
+    tailMsg?.senderId,
+    currentUser?.id,
+    stickerOpen,
+    highlightedMessageId,
+  ]);
+
+  // Keep bottom locked when images/stickers decode or IME keyboard / drawer resizes viewport
+  useEffect(() => {
+    const listEl = listRef.current;
+    const contentEl = contentRef.current;
+    if (!listEl || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (nearBottomRef.current && !highlightedMessageId && listRef.current) {
+        listRef.current.scrollTop = listRef.current.scrollHeight;
+      }
+    });
+    observer.observe(listEl);
+    if (contentEl) observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [conversationId, highlightedMessageId]);
 
   // Scroll to highlighted message when jumping from search or pin
   useEffect(() => {
@@ -265,9 +329,10 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           >
             <Avatar
               name={conv.title}
-              src={conv.avatarUrl}
+              src={conv.avatarUrl || directPeer?.avatarUrl}
               emoji={conv.avatarEmoji}
               kind={avatarKind}
+              color={avatarKind === "bot" ? directPeer?.avatarColor : undefined}
               size={38}
             />
             <div className="min-w-0 flex-1">
@@ -338,44 +403,56 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
       {/* Message Stream */}
       <div
         ref={listRef}
+        data-testid="chat-message-scroll"
         onClick={() => {
           if (stickerOpen) setStickerOpen(false);
           if (slashOpen) setSlashOpen(false);
         }}
         onScroll={(e) => {
           const el = e.currentTarget;
-          setShowScrollBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 360);
+          const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+          nearBottomRef.current = dist < 140;
+          setShowScrollBottom(dist > 360);
         }}
         className="flex-1 overflow-y-auto py-2 overscroll-contain relative"
       >
-        {messages.map((msg, idx) => {
-          const prev = idx > 0 ? messages[idx - 1] : null;
-          const showDate = !prev || !isSameCalendarDay(prev.createdAt, msg.createdAt);
-          return (
-            <React.Fragment key={msg.id}>
-              {showDate && (
-                <div className="my-2.5 flex justify-center">
-                  <span className="px-3 py-0.5 rounded-full text-[11px] font-medium text-[var(--dl-text-muted)] bg-[var(--dl-card)]/85">
-                    {formatDateDivider(msg.createdAt)}
-                  </span>
-                </div>
-              )}
-              <MessageItem
-                msg={msg}
-                isOwn={msg.senderId === currentUser?.id}
-                isGroup={conv.kind === "group"}
-                replyTarget={msg.replyToId ? msgById.get(msg.replyToId) : undefined}
-                highlighted={highlightedMessageId === msg.id}
-                onQuickReply={(target) => {
-                  setEditingMessageId(null);
-                  setDraft(conversationId, textValue, target.id);
-                  textareaRef.current?.focus();
-                }}
-                onMentionSender={insertMention}
-              />
-            </React.Fragment>
-          );
-        })}
+        <div ref={contentRef} className="min-h-full flex flex-col justify-end">
+          {messages.length === 0 && loadingInitial ? (
+            <div className="py-12 text-center text-[12px] text-[var(--dl-text-muted)]">
+              正在同步近期消息…
+            </div>
+          ) : (
+            messages.map((msg, idx) => {
+              const prev = idx > 0 ? messages[idx - 1] : null;
+              const showDate = !prev || !isSameCalendarDay(prev.createdAt, msg.createdAt);
+              return (
+                <React.Fragment key={msg.id}>
+                  {showDate && (
+                    <div className="my-2.5 flex justify-center">
+                      <span className="px-3 py-0.5 rounded-full text-[11px] font-medium text-[var(--dl-text-muted)] bg-[var(--dl-card)]/85">
+                        {formatDateDivider(msg.createdAt)}
+                      </span>
+                    </div>
+                  )}
+                  <MessageItem
+                    msg={msg}
+                    isOwn={msg.senderId === currentUser?.id}
+                    isGroup={conv.kind === "group"}
+                    senderColor={members[msg.senderId]?.avatarColor}
+                    replyTarget={msg.replyToId ? msgById.get(msg.replyToId) : undefined}
+                    highlighted={highlightedMessageId === msg.id}
+                    onQuickReply={(target) => {
+                      setEditingMessageId(null);
+                      setDraft(conversationId, textValue, target.id);
+                      textareaRef.current?.focus();
+                    }}
+                    onMentionSender={insertMention}
+                  />
+                </React.Fragment>
+              );
+            })
+          )}
+        </div>
       </div>
 
       {/* Floating Scroll-to-Bottom Button */}
@@ -383,6 +460,8 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         <button
           type="button"
           onClick={() => {
+            nearBottomRef.current = true;
+            setShowScrollBottom(false);
             if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
           }}
           aria-label="回到底部"
@@ -406,6 +485,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                 name={u.displayName}
                 src={u.avatarUrl}
                 kind={u.role === "bot" ? "bot" : "user"}
+                color={u.avatarColor}
                 size={28}
               />
               <span className="text-[14px] font-medium text-[var(--dl-text)] truncate">

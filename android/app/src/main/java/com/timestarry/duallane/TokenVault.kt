@@ -204,8 +204,8 @@ class TokenVault(private val appContext: Context) {
     }
 
     private object BuildConfigFallback {
-        const val VERSION_NAME = "1.0.4"
-        const val VERSION_CODE = 10004
+        const val VERSION_NAME = "1.0.5"
+        const val VERSION_CODE = 10005
     }
 
     companion object {

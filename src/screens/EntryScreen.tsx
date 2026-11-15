@@ -46,7 +46,8 @@ export function EntryScreen() {
     );
   }
 
-  const currentOrigin = nativeBridge.getSessionSnapshot().apiOrigin;
+  const snap = nativeBridge.getSessionSnapshot();
+  const currentOrigin = snap.apiOrigin;
 
   const handleStartLogin = () => {
     setOauthBusy(true);
@@ -185,7 +186,7 @@ export function EntryScreen() {
 
       {/* Footer */}
       <div className="text-center text-[11px] text-[var(--dl-text-muted)]">
-        DualLane Android v1.0.4 · PKCE Keystore 安全会话
+        DualLane Android v{snap.appVersion} · PKCE Keystore 安全会话
       </div>
 
       {/* Server Node Sheet */}

@@ -44,6 +44,7 @@ export function MessageItem({
   msg,
   isOwn,
   isGroup,
+  senderColor,
   replyTarget,
   highlighted,
   onQuickReply,
@@ -52,6 +53,7 @@ export function MessageItem({
   msg: V1Message;
   isOwn: boolean;
   isGroup: boolean;
+  senderColor?: string;
   replyTarget?: V1Message;
   highlighted?: boolean;
   onQuickReply: (msg: V1Message) => void;
@@ -284,6 +286,7 @@ export function MessageItem({
             name={msg.senderName}
             src={msg.senderAvatarUrl}
             kind={msg.kind === "bot" ? "bot" : "user"}
+            color={senderColor}
             size={34}
           />
         </button>

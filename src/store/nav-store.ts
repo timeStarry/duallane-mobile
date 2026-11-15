@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { nativeBridge } from "@/native/bridge";
 
-export type MobileTabId = "chats" | "direct" | "contacts" | "me";
+export type MobileTabId = "chats" | "contacts" | "me";
 
 export interface ToastNotice {
   id: string;
@@ -26,6 +26,8 @@ interface NavState {
   activeTab: MobileTabId;
   activeChatId: string | null;
   searchOpen: boolean;
+  directOverlayOpen: boolean;
+  updateSheetOpen: boolean;
 
   // Sheets & Modals
   actionMessageId: string | null;
@@ -47,6 +49,8 @@ interface NavState {
   openChat: (conversationId: string) => void;
   closeChat: () => void;
   setSearchOpen: (open: boolean) => void;
+  setDirectOverlayOpen: (open: boolean) => void;
+  setUpdateSheetOpen: (open: boolean) => void;
 
   setActionMessageId: (messageId: string | null) => void;
   setThreadRootId: (rootId: string | null) => void;
@@ -76,6 +80,8 @@ export const useNavStore = create<NavState>((set, get) => ({
   activeTab: "chats",
   activeChatId: null,
   searchOpen: false,
+  directOverlayOpen: false,
+  updateSheetOpen: false,
 
   actionMessageId: null,
   threadRootId: null,
@@ -98,7 +104,7 @@ export const useNavStore = create<NavState>((set, get) => ({
 
   setActiveTab: (activeTab) => {
     nativeBridge.haptic("selection");
-    set({ activeTab, activeChatId: null, searchOpen: false });
+    set({ activeTab, activeChatId: null, searchOpen: false, directOverlayOpen: false });
     syncHardwareBack(get());
   },
 
@@ -107,6 +113,7 @@ export const useNavStore = create<NavState>((set, get) => ({
     set({
       activeChatId: conversationId,
       searchOpen: false,
+      directOverlayOpen: false,
       actionMessageId: null,
       chatDetailOpen: false,
       threadRootId: null,
@@ -118,15 +125,25 @@ export const useNavStore = create<NavState>((set, get) => ({
     set({
       activeChatId: null,
       actionMessageId: null,
-      chatDetailOpen: null as unknown as boolean,
+      chatDetailOpen: false,
       threadRootId: null,
     });
-    set({ chatDetailOpen: false });
     syncHardwareBack(get());
   },
 
   setSearchOpen: (searchOpen) => {
     set({ searchOpen });
+    syncHardwareBack(get());
+  },
+
+  setDirectOverlayOpen: (directOverlayOpen) => {
+    if (directOverlayOpen) nativeBridge.haptic("light");
+    set({ directOverlayOpen });
+    syncHardwareBack(get());
+  },
+
+  setUpdateSheetOpen: (updateSheetOpen) => {
+    set({ updateSheetOpen });
     syncHardwareBack(get());
   },
 
@@ -202,6 +219,7 @@ export const useNavStore = create<NavState>((set, get) => ({
     return Boolean(
       s.lightboxMedia ||
         s.serverConfigOpen ||
+        s.updateSheetOpen ||
         s.actionMessageId ||
         s.forwardingMessageIds ||
         s.sharedPackId ||
@@ -211,6 +229,7 @@ export const useNavStore = create<NavState>((set, get) => ({
         s.createChatMode ||
         s.threadRootId ||
         s.chatDetailOpen ||
+        s.directOverlayOpen ||
         s.activeChatId ||
         s.searchOpen ||
         s.activeTab !== "chats" ||
@@ -227,6 +246,11 @@ export const useNavStore = create<NavState>((set, get) => ({
     }
     if (s.serverConfigOpen) {
       set({ serverConfigOpen: false });
+      syncHardwareBack(get());
+      return true;
+    }
+    if (s.updateSheetOpen) {
+      set({ updateSheetOpen: false });
       syncHardwareBack(get());
       return true;
     }
@@ -272,6 +296,11 @@ export const useNavStore = create<NavState>((set, get) => ({
     }
     if (s.chatDetailOpen) {
       set({ chatDetailOpen: false });
+      syncHardwareBack(get());
+      return true;
+    }
+    if (s.directOverlayOpen) {
+      set({ directOverlayOpen: false });
       syncHardwareBack(get());
       return true;
     }

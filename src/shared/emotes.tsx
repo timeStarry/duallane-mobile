@@ -47,12 +47,16 @@ export function resolveAssetUrl(pathOrUrl: string | undefined): string {
   ) {
     return pathOrUrl;
   }
-  if (nativeBridge.isNativeAndroid()) {
+  const normalized = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
+  if (
+    nativeBridge.isNativeAndroid() &&
+    (normalized.startsWith("/api/") || normalized.startsWith("/emotes/"))
+  ) {
     // Native OkHttp shouldInterceptRequest proxies /api/* and /emotes/* with auth & disk cache!
-    return pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
+    return normalized;
   }
   const origin = nativeBridge.getSessionSnapshot().apiOrigin.replace(/\/+$/, "");
-  return `${origin}${pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`}`;
+  return `${origin}${normalized}`;
 }
 
 const rawPackList: RawEmotePack[] = Array.isArray(rawPacks)

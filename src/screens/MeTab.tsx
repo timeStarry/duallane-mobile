@@ -4,10 +4,14 @@ import {
   Camera,
   Check,
   ChevronRight,
+  Download,
+  ExternalLink,
   Laptop,
+  Lock,
   LogOut,
   Moon,
   Palette,
+  RefreshCw,
   Smartphone,
   Sparkles,
   Sun,
@@ -21,11 +25,13 @@ import type { UserDeviceSummary } from "@/shared/card-kit";
 import { formatBytes } from "@/shared/format";
 import { useThemeStore } from "@/shared/theme-store";
 import { ACCENT_IDS, DESIGN_TOKENS } from "@/shared/tokens";
+import { GITHUB_RELEASES_PAGE_URL, useUpdateStore } from "@/shared/updater";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
 
 export function MeTab() {
   const currentUser = useWorkspaceStore((s) => s.currentUser);
+  const p2pRoom = useWorkspaceStore((s) => s.p2pRoom);
   const quotaUsedBytes = useWorkspaceStore((s) => s.quotaUsedBytes);
   const quotaLimitBytes = useWorkspaceStore((s) => s.quotaLimitBytes);
   const bootstrapWorkspace = useWorkspaceStore((s) => s.bootstrapWorkspace);
@@ -40,7 +46,16 @@ export function MeTab() {
 
   const setStickerStudioOpen = useNavStore((s) => s.setStickerStudioOpen);
   const setBotManageOpen = useNavStore((s) => s.setBotManageOpen);
+  const setDirectOverlayOpen = useNavStore((s) => s.setDirectOverlayOpen);
+  const updateSheetOpen = useNavStore((s) => s.updateSheetOpen);
+  const setUpdateSheetOpen = useNavStore((s) => s.setUpdateSheetOpen);
   const showToast = useNavStore((s) => s.showToast);
+
+  const checkingUpdate = useUpdateStore((s) => s.checking);
+  const hasUpdate = useUpdateStore((s) => s.hasUpdate);
+  const latestRelease = useUpdateStore((s) => s.latestRelease);
+  const updateError = useUpdateStore((s) => s.error);
+  const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
 
   const [profileSheetOpen, setProfileSheetOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
@@ -159,7 +174,7 @@ export function MeTab() {
         <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 space-y-4 shadow-2xs">
           <div className="flex items-center gap-2 text-[14px] font-semibold text-[var(--dl-text)]">
             <Palette size={16} className="text-[var(--dl-accent)]" />
-            <span>外观与主题色（与 PC 端设计语言一致）</span>
+            <span>外观与主题</span>
           </div>
 
           <div className="grid grid-cols-3 gap-2">
@@ -239,6 +254,28 @@ export function MeTab() {
         <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] divide-y divide-[var(--dl-border)]/60 overflow-hidden shadow-2xs">
           <button
             type="button"
+            onClick={() => setDirectOverlayOpen(true)}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
+          >
+            <Lock size={19} className="text-[var(--dl-accent)]" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[15px] font-medium text-[var(--dl-text)]">
+                一对一加密直连
+              </div>
+              <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
+                免加好友临时房间 · 端到端加密传输
+              </div>
+            </div>
+            {p2pRoom && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 text-[11px] font-semibold">
+                进行中
+              </span>
+            )}
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
+          </button>
+
+          <button
+            type="button"
             onClick={() => setStickerStudioOpen(true)}
             className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
           >
@@ -270,6 +307,33 @@ export function MeTab() {
             <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
               在线设备与会话管理
             </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setUpdateSheetOpen(true);
+              void checkForUpdates(false);
+            }}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
+          >
+            <RefreshCw
+              size={19}
+              className={`text-[var(--dl-accent)] ${checkingUpdate ? "animate-spin" : ""}`}
+            />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              检查更新
+            </span>
+            {hasUpdate && latestRelease ? (
+              <span className="px-2 py-0.5 rounded-full bg-rose-500 text-white text-[11px] font-semibold">
+                新版本 v{latestRelease.version}
+              </span>
+            ) : (
+              <span className="text-[12px] text-[var(--dl-text-muted)] font-mono">
+                v{snap.appVersion}
+              </span>
+            )}
             <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
           </button>
         </div>
@@ -381,6 +445,111 @@ export function MeTab() {
               </div>
             ))
           )}
+        </div>
+      </BottomSheet>
+
+      {/* Check for Updates Sheet */}
+      <BottomSheet
+        open={updateSheetOpen}
+        onClose={() => setUpdateSheetOpen(false)}
+        title="检查版本更新"
+        subtitle={`当前安装版本 v${snap.appVersion} (${snap.versionCode})`}
+      >
+        <div className="p-4 space-y-4">
+          {checkingUpdate ? (
+            <div className="py-8 flex flex-col items-center justify-center gap-2.5 text-[var(--dl-text-muted)]">
+              <RefreshCw size={22} className="animate-spin text-[var(--dl-accent)]" />
+              <span className="text-[13px]">正在查询最新版本…</span>
+            </div>
+          ) : updateError ? (
+            <div className="p-4 rounded-2xl bg-rose-500/10 text-rose-600 dark:text-rose-300 text-[13px] space-y-2">
+              <div className="font-semibold">无法获取更新信息</div>
+              <div className="text-[12px] opacity-90">{updateError}</div>
+            </div>
+          ) : latestRelease ? (
+            <div className="space-y-3">
+              <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[15px] font-bold text-[var(--dl-text)]">
+                      {latestRelease.title || `v${latestRelease.version}`}
+                    </span>
+                    {hasUpdate ? (
+                      <span className="px-2 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-semibold">
+                        有可用更新
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-semibold">
+                        已是最新
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-[var(--dl-text-muted)] mt-1">
+                    最新版本 v{latestRelease.version}
+                    {latestRelease.apkSizeBytes > 0
+                      ? ` · 安装包 ${formatBytes(latestRelease.apkSizeBytes)}`
+                      : ""}
+                  </div>
+                </div>
+              </div>
+
+              {latestRelease.notes && (
+                <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] max-h-48 overflow-y-auto">
+                  <div className="text-[11px] font-semibold text-[var(--dl-text-muted)] mb-1.5">
+                    版本说明
+                  </div>
+                  <div className="text-[12.5px] leading-relaxed text-[var(--dl-text)] whitespace-pre-wrap">
+                    {latestRelease.notes}
+                  </div>
+                </div>
+              )}
+
+              {hasUpdate && (
+                <button
+                  type="button"
+                  onClick={() => nativeBridge.openExternalUrl(latestRelease.apkUrl)}
+                  className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 active:opacity-90"
+                >
+                  <Download size={16} />
+                  <span>
+                    立即下载安装包
+                    {latestRelease.apkSizeBytes > 0
+                      ? ` (${formatBytes(latestRelease.apkSizeBytes)})`
+                      : ""}
+                  </span>
+                </button>
+              )}
+            </div>
+          ) : null}
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              disabled={checkingUpdate}
+              onClick={async () => {
+                const res = await checkForUpdates(false);
+                if (!res.error && !res.hasUpdate) {
+                  showToast("当前已是最新版本", "success");
+                }
+              }}
+              className="py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[13px] flex items-center justify-center gap-1.5"
+            >
+              <RefreshCw size={14} className={checkingUpdate ? "animate-spin" : ""} />
+              <span>重新检查</span>
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                nativeBridge.openExternalUrl(
+                  latestRelease?.htmlUrl || GITHUB_RELEASES_PAGE_URL
+                )
+              }
+              className="py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text-muted)] font-semibold text-[13px] flex items-center justify-center gap-1.5"
+            >
+              <ExternalLink size={14} />
+              <span>历史发布页</span>
+            </button>
+          </div>
         </div>
       </BottomSheet>
     </div>

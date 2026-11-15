@@ -266,6 +266,7 @@ export function ThreadAndDetailSheets() {
                               name={name}
                               src={u?.avatarUrl}
                               kind={u?.role === "bot" ? "bot" : "user"}
+                              color={u?.avatarColor}
                               size={32}
                             />
                             <span className="text-[13px] font-medium text-[var(--dl-text)] truncate">

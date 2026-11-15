@@ -26,9 +26,11 @@ import { useWorkspaceStore } from "@/store/workspace-store";
 export function DirectTab({
   guestMode = false,
   onExitGuest,
+  onClose,
 }: {
   guestMode?: boolean;
   onExitGuest?: () => void;
+  onClose?: () => void;
 }) {
   const p2pRoom = useWorkspaceStore((s) => s.p2pRoom);
   const p2pMessages = useWorkspaceStore((s) => s.p2pMessages);
@@ -98,11 +100,11 @@ export function DirectTab({
           } bg-[var(--dl-surface)] border-b border-[var(--dl-border)] shrink-0`}
         >
           <div className="h-13 px-4 flex items-center gap-2.5">
-            {guestMode && onExitGuest && (
+            {(onClose || (guestMode && onExitGuest)) && (
               <button
                 type="button"
-                onClick={onExitGuest}
-                aria-label="返回欢迎页"
+                onClick={onClose || onExitGuest}
+                aria-label="返回"
                 className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--dl-text)] active:bg-[var(--dl-card)]"
               >
                 <ArrowLeft size={19} />
@@ -172,7 +174,17 @@ export function DirectTab({
         } bg-[var(--dl-surface)] border-b border-[var(--dl-border)] shrink-0`}
       >
         <div className="h-14 px-3 flex items-center justify-between gap-2">
-          <div className="min-w-0 flex items-center gap-2.5">
+          <div className="min-w-0 flex items-center gap-2">
+            {(onClose || (guestMode && onExitGuest)) && (
+              <button
+                type="button"
+                onClick={onClose || onExitGuest}
+                aria-label="返回"
+                className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--dl-text)] active:bg-[var(--dl-card)] shrink-0"
+              >
+                <ArrowLeft size={19} />
+              </button>
+            )}
             <div className="w-9 h-9 rounded-2xl bg-amber-500/15 text-amber-500 flex items-center justify-center shrink-0">
               <Lock size={18} />
             </div>
