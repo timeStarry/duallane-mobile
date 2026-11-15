@@ -290,6 +290,33 @@ export interface MobileBotSummary {
   createdAt?: string;
 }
 
+export interface SystemAnnouncementDTO {
+  id: string;
+  enabled: boolean;
+  displayMode: "once" | "always";
+  badge?: string;
+  title: string;
+  content: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  shouldShow?: boolean;
+}
+
+export interface EmailChallengeSummaryDTO {
+  challengeId: string;
+  maskedEmail: string;
+  expiresAt: string;
+  cooldownSec: number;
+}
+
+export interface BoundEmailStatusDTO {
+  bound: boolean;
+  email?: string;
+  verifiedAt?: string;
+}
+
 export const mobileApi = {
   getHealth: () =>
     requestJSON<{ ok?: boolean; workspace?: { enabled?: boolean } }>("/api/health"),
@@ -540,6 +567,39 @@ export const mobileApi = {
       `/api/v1/auth/qr/${encodeURIComponent(sessionId)}/approve`,
       { method: "POST" }
     ),
+
+  // System Announcement & Bound Login Email
+  ackAnnouncement: (id: string) =>
+    requestJSON<{ ok: boolean }>("/api/v1/announcement/ack", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
+
+  sendBindEmailCode: (email: string) =>
+    requestJSON<EmailChallengeSummaryDTO>("/api/v1/account/email/send-code", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  verifyBindEmail: (challengeId: string, code: string) =>
+    requestJSON<BoundEmailStatusDTO>("/api/v1/account/email/verify", {
+      method: "POST",
+      body: JSON.stringify({ challengeId, code }),
+    }),
+
+  unbindAccountEmail: () =>
+    requestJSON<{ ok: boolean }>("/api/v1/account/email", {
+      method: "DELETE",
+    }),
+
+  sendLoginEmailCode: (email: string) =>
+    requestJSON<EmailChallengeSummaryDTO>("/api/v1/auth/email/send-code", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  verifyLoginEmail: (email: string, challengeId: string, code: string) =>
+    nativeBridge.loginWithEmailCode(email, challengeId, code),
 
   // Personal Bot Management (No Space Governance Console)
   listBots: async (): Promise<MobileBotSummary[]> => {

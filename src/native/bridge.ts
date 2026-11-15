@@ -25,6 +25,7 @@ interface RawAndroidBridge {
   getBootstrapInfo(): string;
   setApiOrigin(origin: string): string;
   startGitHubOAuth(inviteCode: string): void;
+  loginWithEmailCode(callId: string, email: string, challengeId: string, code: string): void;
   logout(): void;
   httpRequest(callId: string, method: string, path: string, headersJson: string, bodyText: string): void;
   pickMedia(callId: string, mode: "image" | "file", multiple: boolean): void;
@@ -180,8 +181,8 @@ export const nativeBridge = {
         return {
           authenticated: Boolean(raw.authenticated),
           apiOrigin: raw.apiOrigin || DEFAULT_ORIGIN,
-          appVersion: raw.appVersion || "1.0.5",
-          versionCode: raw.versionCode || 10005,
+          appVersion: raw.appVersion || "1.0.6",
+          versionCode: raw.versionCode || 10006,
           platform: raw.platform || "android",
         };
       } catch {
@@ -193,8 +194,8 @@ export const nativeBridge = {
     return {
       authenticated: false,
       apiOrigin: storedOrigin || DEFAULT_ORIGIN,
-      appVersion: "1.0.5",
-      versionCode: 10005,
+      appVersion: "1.0.6",
+      versionCode: 10006,
       platform: "web",
     };
   },
@@ -239,6 +240,45 @@ export const nativeBridge = {
     const base = this.getSessionSnapshot().apiOrigin;
     const qs = cleanInvite ? `?invite=${encodeURIComponent(cleanInvite)}` : "";
     window.location.assign(`${base}/api/auth/github/start${qs}`);
+  },
+
+  async loginWithEmailCode(
+    email: string,
+    challengeId: string,
+    code: string
+  ): Promise<{ ok: boolean }> {
+    if (this.isNativeAndroid() && window.DualLaneNative) {
+      return invokeNativeAsync<{ ok: boolean }>((callId) => {
+        window.DualLaneNative!.loginWithEmailCode(
+          callId,
+          email.trim(),
+          challengeId.trim(),
+          code.trim()
+        );
+      });
+    }
+    const res = await this.request("POST", "/api/v1/auth/email/verify", {
+      body: JSON.stringify({
+        email: email.trim(),
+        challengeId: challengeId.trim(),
+        code: code.trim(),
+        client: "web",
+      }),
+    });
+    if (!res.ok) {
+      let msg = `验证码登录失败 (${res.status})`;
+      try {
+        const parsed = JSON.parse(res.bodyText || "{}") as {
+          error?: { message?: string };
+          message?: string;
+        };
+        msg = parsed.error?.message || parsed.message || msg;
+      } catch {
+        // keep fallback
+      }
+      throw new Error(msg);
+    }
+    return { ok: true };
   },
 
   logout(): void {

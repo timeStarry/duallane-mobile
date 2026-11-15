@@ -1,8 +1,18 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Check, Github, KeyRound, Lock, Server, ShieldCheck } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Github,
+  KeyRound,
+  Lock,
+  Mail,
+  Server,
+  ShieldCheck,
+} from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { BottomSheet } from "@/components/BottomSheet";
 import { nativeBridge } from "@/native/bridge";
+import { mobileApi } from "@/shared/api";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import { DirectTab } from "./DirectTab";
@@ -19,8 +29,17 @@ export function EntryScreen() {
   const statusError = useWorkspaceStore((s) => s.statusError);
   const bootstrapWorkspace = useWorkspaceStore((s) => s.bootstrapWorkspace);
 
+  const [loginMode, setLoginMode] = useState<"github" | "email">("github");
   const [inviteOpen, setInviteOpen] = useState(Boolean(pendingInviteCode));
   const [oauthBusy, setOauthBusy] = useState(false);
+
+  const [emailInput, setEmailInput] = useState("");
+  const [codeInput, setCodeInput] = useState("");
+  const [challengeId, setChallengeId] = useState("");
+  const [cooldown, setCooldown] = useState(0);
+  const [sendingCode, setSendingCode] = useState(false);
+  const [verifyingCode, setVerifyingCode] = useState(false);
+
   const [originDraft, setOriginDraft] = useState(
     () => nativeBridge.getSessionSnapshot().apiOrigin
   );
@@ -38,6 +57,14 @@ export function EntryScreen() {
     return off;
   }, [bootstrapWorkspace, showToast]);
 
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setInterval(() => {
+      setCooldown((c) => (c > 1 ? c - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldown]);
+
   if (entryLane === "direct_guest") {
     return (
       <div className="h-full flex flex-col bg-[var(--dl-bg)] pt-[var(--safe-top)] pb-[var(--safe-bottom)]">
@@ -54,6 +81,43 @@ export function EntryScreen() {
     nativeBridge.haptic("medium");
     nativeBridge.startGitHubOAuth(pendingInviteCode);
     setTimeout(() => setOauthBusy(false), 12000);
+  };
+
+  const handleSendEmailCode = async () => {
+    const cleanEmail = emailInput.trim();
+    if (!cleanEmail || !cleanEmail.includes("@")) {
+      showToast("请输入有效的邮箱地址", "warning");
+      return;
+    }
+    setSendingCode(true);
+    try {
+      const res = await mobileApi.sendLoginEmailCode(cleanEmail);
+      setChallengeId(res.challengeId);
+      setCooldown(Math.max(30, Number(res.cooldownSec || 60)));
+      nativeBridge.haptic("light");
+      showToast(`验证码已发送至 ${res.maskedEmail || cleanEmail}`, "success");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "发送验证码失败", "danger");
+    } finally {
+      setSendingCode(false);
+    }
+  };
+
+  const handleVerifyEmailLogin = async () => {
+    const cleanEmail = emailInput.trim();
+    const cleanCode = codeInput.trim();
+    if (!cleanEmail || !challengeId || cleanCode.length !== 6) return;
+    setVerifyingCode(true);
+    try {
+      await mobileApi.verifyLoginEmail(cleanEmail, challengeId, cleanCode);
+      nativeBridge.haptic("medium");
+      showToast("登录成功，正在同步空间…", "success");
+      await bootstrapWorkspace();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "验证码校验失败", "danger");
+    } finally {
+      setVerifyingCode(false);
+    }
   };
 
   const handleSaveOrigin = () => {
@@ -108,7 +172,7 @@ export function EntryScreen() {
 
         {/* Primary Shared Workspace Card */}
         <div className="mt-6 w-full max-w-[360px] rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3.5">
             <div>
               <div className="text-[15px] font-semibold text-[var(--dl-text)]">共享空间</div>
               <div className="text-[12px] text-[var(--dl-text-muted)]">
@@ -118,48 +182,136 @@ export function EntryScreen() {
             <ShieldCheck size={20} className="text-[var(--dl-accent)] shrink-0" />
           </div>
 
-          {inviteOpen && (
-            <div className="mb-3">
-              <label className="block text-[11px] font-medium text-[var(--dl-text-muted)] mb-1">
-                空间邀请码（首次加入空间时填写）
-              </label>
+          {/* Auth Mode Switcher */}
+          <div className="grid grid-cols-2 p-1 mb-3.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)]/70">
+            <button
+              type="button"
+              onClick={() => setLoginMode("github")}
+              className={`py-1.5 rounded-lg text-[12.5px] font-semibold flex items-center justify-center gap-1.5 transition ${
+                loginMode === "github"
+                  ? "bg-[var(--dl-surface)] text-[var(--dl-text)] shadow-2xs"
+                  : "text-[var(--dl-text-muted)]"
+              }`}
+            >
+              <Github size={13.5} />
+              <span>GitHub 登录</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setLoginMode("email")}
+              className={`py-1.5 rounded-lg text-[12.5px] font-semibold flex items-center justify-center gap-1.5 transition ${
+                loginMode === "email"
+                  ? "bg-[var(--dl-surface)] text-[var(--dl-text)] shadow-2xs"
+                  : "text-[var(--dl-text-muted)]"
+              }`}
+            >
+              <Mail size={13.5} />
+              <span>已绑定邮箱</span>
+            </button>
+          </div>
+
+          {loginMode === "github" ? (
+            <>
+              {inviteOpen && (
+                <div className="mb-3">
+                  <label className="block text-[11px] font-medium text-[var(--dl-text-muted)] mb-1">
+                    空间邀请码（首次加入空间时填写）
+                  </label>
+                  <div className="relative">
+                    <KeyRound
+                      size={15}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dl-text-muted)]"
+                    />
+                    <input
+                      type="text"
+                      value={pendingInviteCode}
+                      onChange={(e) => setPendingInviteCode(e.target.value)}
+                      placeholder="输入邀请码（选填）"
+                      className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={oauthBusy}
+                aria-label="使用 GitHub 登录"
+                onClick={handleStartLogin}
+                className="w-full py-3 px-4 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[15px] flex items-center justify-center gap-2 shadow-sm active:scale-[0.99] transition disabled:opacity-60"
+              >
+                <Github size={18} />
+                <span>{oauthBusy ? "正在唤起安全授权…" : "使用 GitHub 登录"}</span>
+              </button>
+
+              <div className="mt-3 flex items-center justify-between text-[12px]">
+                <span className="text-[var(--dl-text-muted)]">还没有账号？</span>
+                <button
+                  type="button"
+                  onClick={() => setInviteOpen((v) => !v)}
+                  className="text-[var(--dl-accent)] font-medium"
+                >
+                  {inviteOpen ? "收起邀请码" : "使用邀请码加入空间"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2.5">
               <div className="relative">
-                <KeyRound
+                <Mail
                   size={15}
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dl-text-muted)]"
                 />
                 <input
-                  type="text"
-                  value={pendingInviteCode}
-                  onChange={(e) => setPendingInviteCode(e.target.value)}
-                  placeholder="输入邀请码（选填）"
+                  type="email"
+                  aria-label="登录邮箱"
+                  value={emailInput}
+                  onChange={(e) => {
+                    setEmailInput(e.target.value);
+                    setChallengeId("");
+                  }}
+                  placeholder="输入已绑定的邮箱地址"
                   className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
                 />
               </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  aria-label="邮箱验证码"
+                  value={codeInput}
+                  onChange={(e) => setCodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="6 位数字验证码"
+                  className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] font-mono tracking-widest text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
+                />
+                <button
+                  type="button"
+                  disabled={sendingCode || cooldown > 0 || !emailInput.trim()}
+                  onClick={() => void handleSendEmailCode()}
+                  className="px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[12.5px] font-semibold text-[var(--dl-accent)] shrink-0 disabled:opacity-50"
+                >
+                  {sendingCode ? "发送中…" : cooldown > 0 ? `${cooldown}s` : "获取验证码"}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                disabled={
+                  verifyingCode || !emailInput.trim() || !challengeId || codeInput.trim().length !== 6
+                }
+                onClick={() => void handleVerifyEmailLogin()}
+                className="w-full py-3 px-4 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[15px] flex items-center justify-center gap-2 shadow-sm active:scale-[0.99] transition disabled:opacity-50"
+              >
+                <span>{verifyingCode ? "正在校验…" : "验证并进入空间"}</span>
+              </button>
+
+              <div className="pt-0.5 text-center text-[11.5px] text-[var(--dl-text-muted)]">
+                仅限已在个人设置绑定邮箱的成员登录
+              </div>
             </div>
           )}
-
-          <button
-            type="button"
-            disabled={oauthBusy}
-            aria-label="使用 GitHub 登录"
-            onClick={handleStartLogin}
-            className="w-full py-3 px-4 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[15px] flex items-center justify-center gap-2 shadow-sm active:scale-[0.99] transition disabled:opacity-60"
-          >
-            <Github size={18} />
-            <span>{oauthBusy ? "正在唤起安全授权…" : "使用 GitHub 登录"}</span>
-          </button>
-
-          <div className="mt-3 flex items-center justify-between text-[12px]">
-            <span className="text-[var(--dl-text-muted)]">还没有账号？</span>
-            <button
-              type="button"
-              onClick={() => setInviteOpen((v) => !v)}
-              className="text-[var(--dl-accent)] font-medium"
-            >
-              {inviteOpen ? "收起邀请码" : "使用邀请码加入空间"}
-            </button>
-          </div>
         </div>
 
         {/* Secondary Zero-Login Private Direct P2P Card */}

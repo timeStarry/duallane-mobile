@@ -89,6 +89,18 @@ class NativeBridge(
     }
 
     @JavascriptInterface
+    fun loginWithEmailCode(callId: String, email: String, challengeId: String, code: String) {
+        ioExecutor.execute {
+            try {
+                val res = networkGateway.loginWithEmailCode(email, challengeId, code)
+                resolveCall(callId, true, res.toString())
+            } catch (err: Throwable) {
+                resolveCall(callId, false, err.message ?: "验证码登录失败")
+            }
+        }
+    }
+
+    @JavascriptInterface
     fun logout() {
         realtimeManager.closeAll()
         ioExecutor.execute {

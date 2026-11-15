@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo } from "react";
 import { MessageCircle, User, Users } from "lucide-react";
+import { AnnouncementModal } from "./components/AnnouncementModal";
 import { BrandLogo } from "./components/BrandLogo";
 import { MediaLightbox } from "./components/MediaLightbox";
 import { nativeBridge } from "./native/bridge";
@@ -184,6 +185,7 @@ export function App() {
       <CreateAndForwardSheets />
       <ThreadAndDetailSheets />
       <StickerAndBotSheets />
+      <AnnouncementModal />
       <MediaLightbox />
       {renderToast()}
     </div>

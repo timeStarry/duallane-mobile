@@ -20,8 +20,9 @@ import { App } from "@/App";
 import { nativeBridge } from "@/native/bridge";
 import { compareSemver, useUpdateStore } from "@/shared/updater";
 import { Avatar } from "@/components/Avatar";
+import { mobileApi } from "@/shared/api";
 
-describe("DualLane Mobile Clean-Room v1.0.5 Core", () => {
+describe("DualLane Mobile Clean-Room v1.0.6 Core", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useNavStore.setState({
@@ -37,6 +38,15 @@ describe("DualLane Mobile Clean-Room v1.0.5 Core", () => {
       stickerStudioOpen: false,
       sharedPackId: null,
       botManageOpen: false,
+    });
+    useWorkspaceStore.setState({
+      conversations: {},
+      conversationOrder: [],
+      messagesByConv: {},
+      members: {},
+      boundEmail: "",
+      systemAnnouncement: null,
+      dismissedAnnouncementKey: null,
     });
     useUpdateStore.setState({
       checking: false,
@@ -252,9 +262,9 @@ describe("DualLane Mobile Clean-Room v1.0.5 Core", () => {
   });
 
   it("renders bot avatar theme colors and detects new GitHub APK releases", async () => {
-    expect(compareSemver("1.0.5", "1.0.5")).toBe(0);
-    expect(compareSemver("v1.0.6", "1.0.5")).toBe(1);
-    expect(compareSemver("1.0.4", "1.0.5")).toBe(-1);
+    expect(compareSemver("1.0.6", "1.0.6")).toBe(0);
+    expect(compareSemver("v1.0.7", "1.0.6")).toBe(1);
+    expect(compareSemver("1.0.5", "1.0.6")).toBe(-1);
 
     const { container } = render(<Avatar name="Astra" kind="bot" color="violet" />);
     const tile = container.querySelector('[data-avatar-kind="bot"]');
@@ -264,17 +274,17 @@ describe("DualLane Mobile Clean-Room v1.0.5 Core", () => {
       ok: true,
       status: 200,
       bodyText: JSON.stringify({
-        tag_name: "v1.0.6",
-        name: "DualLane Mobile v1.0.6",
+        tag_name: "v1.0.7",
+        name: "DualLane Mobile v1.0.7",
         body: "- 新增功能与性能优化",
         published_at: "2026-11-15T12:00:00Z",
-        html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.6",
+        html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.7",
         assets: [
           {
             name: "app-release.apk",
             size: 162000,
             browser_download_url:
-              "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.6/app-release.apk",
+              "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.7/app-release.apk",
           },
         ],
       }),
@@ -282,8 +292,141 @@ describe("DualLane Mobile Clean-Room v1.0.5 Core", () => {
 
     const result = await useUpdateStore.getState().checkForUpdates(false);
     expect(result.hasUpdate).toBe(true);
-    expect(result.release?.version).toBe("1.0.6");
+    expect(result.release?.version).toBe("1.0.7");
     expect(result.release?.apkSizeBytes).toBe(162000);
     reqSpy.mockRestore();
+  });
+
+  it("supports bound email verification code login on EntryScreen", async () => {
+    const sendSpy = vi.spyOn(mobileApi, "sendLoginEmailCode").mockResolvedValue({
+      challengeId: "chal_mob_1",
+      maskedEmail: "t***@tsio.top",
+      expiresAt: "2026-11-15T16:00:00Z",
+      cooldownSec: 60,
+    });
+    const verifySpy = vi.spyOn(mobileApi, "verifyLoginEmail").mockResolvedValue({ ok: true });
+    const bootSpy = vi
+      .spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace")
+      .mockResolvedValue();
+
+    render(<EntryScreen />);
+    fireEvent.click(screen.getByText("已绑定邮箱"));
+    expect(screen.getByText("仅限已在个人设置绑定邮箱的成员登录")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("登录邮箱"), {
+      target: { value: "team@tsio.top" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("获取验证码"));
+    });
+    expect(sendSpy).toHaveBeenCalledWith("team@tsio.top");
+
+    fireEvent.change(screen.getByLabelText("邮箱验证码"), {
+      target: { value: "839201" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("验证并进入空间"));
+    });
+    expect(verifySpy).toHaveBeenCalledWith("team@tsio.top", "chal_mob_1", "839201");
+    expect(bootSpy).toHaveBeenCalled();
+
+    sendSpy.mockRestore();
+    verifySpy.mockRestore();
+    bootSpy.mockRestore();
+  });
+
+  it("renders post-login AnnouncementModal and handles once vs always display modes", async () => {
+    const ackSpy = vi.spyOn(mobileApi, "ackAnnouncement").mockResolvedValue({ ok: true });
+    vi.spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace").mockResolvedValue();
+
+    const parsed = parseBootstrapPayload({
+      auth: {
+        enabled: true,
+        boundEmail: "owner@tsio.top",
+        currentUser: { id: "u_owner", displayName: "星辰", role: "owner" },
+      },
+      announcement: {
+        id: "ann_mobile_106",
+        enabled: true,
+        displayMode: "once",
+        badge: "v1.0.6 更新",
+        title: "DualLane Android v1.0.6 已发布",
+        content: "支持已绑定邮箱验证码登录与跨端系统通告。",
+        ctaLabel: "立即下载",
+        ctaUrl: "https://github.com/timeStarry/duallane-mobile/releases/latest",
+        updatedAt: "2026-11-15T15:30:00Z",
+        shouldShow: true,
+      },
+      conversations: [],
+    });
+
+    expect(parsed.boundEmail).toBe("owner@tsio.top");
+    expect(parsed.systemAnnouncement?.id).toBe("ann_mobile_106");
+
+    useWorkspaceStore.setState({
+      authStatus: "authenticated",
+      currentUser: parsed.currentUser,
+      boundEmail: parsed.boundEmail,
+      systemAnnouncement: parsed.systemAnnouncement,
+      dismissedAnnouncementKey: null,
+      userPreferences: {},
+    });
+
+    render(<App />);
+    expect(screen.getByTestId("mobile-announcement-modal")).toBeInTheDocument();
+    expect(screen.getByText("DualLane Android v1.0.6 已发布")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("我知道了"));
+    });
+    expect(ackSpy).toHaveBeenCalledWith("ann_mobile_106");
+    expect(screen.queryByTestId("mobile-announcement-modal")).not.toBeInTheDocument();
+
+    // Realtime broadcast with same ID in "once" mode remains hidden because ackAnnouncementId matches
+    act(() => {
+      useWorkspaceStore.getState().applyRealtimeEvent({
+        type: "workspace.announcement_updated",
+        payload: {
+          announcement: {
+            id: "ann_mobile_106",
+            enabled: true,
+            displayMode: "once",
+            title: "DualLane Android v1.0.6 已发布",
+            content: "同 ID 不重复弹框",
+            updatedAt: "2026-11-15T15:35:00Z",
+          },
+        },
+      });
+    });
+    expect(screen.queryByTestId("mobile-announcement-modal")).not.toBeInTheDocument();
+
+    // Realtime broadcast with "always" mode (new updatedAt) shows immediately
+    act(() => {
+      useWorkspaceStore.getState().applyRealtimeEvent({
+        type: "workspace.announcement_updated",
+        payload: {
+          announcement: {
+            id: "ann_mobile_106",
+            enabled: true,
+            displayMode: "always",
+            title: "强提示通告",
+            content: "每次会话均会提示",
+            updatedAt: "2026-11-15T15:40:00Z",
+          },
+        },
+      });
+    });
+    expect(screen.getByTestId("mobile-announcement-modal")).toBeInTheDocument();
+    expect(screen.getByText("强提示通告")).toBeInTheDocument();
+
+    // Verify MeTab displays boundEmail
+    await act(async () => {
+      fireEvent.click(screen.getByText("我知道了"));
+    });
+    fireEvent.click(screen.getByText("我"));
+    expect(screen.getByText("登录邮箱")).toBeInTheDocument();
+    expect(screen.getByText("owner@tsio.top")).toBeInTheDocument();
+
+    ackSpy.mockRestore();
   });
 });

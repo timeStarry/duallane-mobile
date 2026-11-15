@@ -9,6 +9,7 @@ import {
   Laptop,
   Lock,
   LogOut,
+  Mail,
   Moon,
   Palette,
   RefreshCw,
@@ -31,6 +32,8 @@ import { useWorkspaceStore } from "@/store/workspace-store";
 
 export function MeTab() {
   const currentUser = useWorkspaceStore((s) => s.currentUser);
+  const boundEmail = useWorkspaceStore((s) => s.boundEmail);
+  const setBoundEmailLocal = useWorkspaceStore((s) => s.setBoundEmailLocal);
   const p2pRoom = useWorkspaceStore((s) => s.p2pRoom);
   const quotaUsedBytes = useWorkspaceStore((s) => s.quotaUsedBytes);
   const quotaLimitBytes = useWorkspaceStore((s) => s.quotaLimitBytes);
@@ -58,12 +61,28 @@ export function MeTab() {
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
 
   const [profileSheetOpen, setProfileSheetOpen] = useState(false);
+  const [emailSheetOpen, setEmailSheetOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [nicknameDraft, setNicknameDraft] = useState(currentUser?.displayName || "");
   const [devices, setDevices] = useState<UserDeviceSummary[]>([]);
   const [savingProfile, setSavingProfile] = useState(false);
 
+  const [changingEmail, setChangingEmail] = useState(false);
+  const [emailDraft, setEmailDraft] = useState("");
+  const [emailCodeDraft, setEmailCodeDraft] = useState("");
+  const [emailChallengeId, setEmailChallengeId] = useState("");
+  const [emailCooldown, setEmailCooldown] = useState(0);
+  const [emailBusy, setEmailBusy] = useState(false);
+
   const snap = nativeBridge.getSessionSnapshot();
+
+  useEffect(() => {
+    if (emailCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setEmailCooldown((c) => (c > 1 ? c - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [emailCooldown]);
 
   useEffect(() => {
     if (devicesOpen) {
@@ -119,6 +138,65 @@ export function MeTab() {
       showToast("已移除该登录设备", "success");
     } catch {
       showToast("移除设备失败", "warning");
+    }
+  };
+
+  const openEmailSheet = () => {
+    setChangingEmail(!boundEmail);
+    setEmailDraft("");
+    setEmailCodeDraft("");
+    setEmailChallengeId("");
+    setEmailSheetOpen(true);
+  };
+
+  const handleSendBindCode = async () => {
+    const clean = emailDraft.trim();
+    if (!clean || !clean.includes("@")) {
+      showToast("请输入有效的邮箱地址", "warning");
+      return;
+    }
+    setEmailBusy(true);
+    try {
+      const res = await mobileApi.sendBindEmailCode(clean);
+      setEmailChallengeId(res.challengeId);
+      setEmailCooldown(Math.max(30, Number(res.cooldownSec || 60)));
+      showToast(`验证码已发送至 ${res.maskedEmail || clean}`, "success");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "发送验证码失败", "danger");
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  const handleConfirmBindEmail = async () => {
+    const clean = emailDraft.trim();
+    const code = emailCodeDraft.trim();
+    if (!clean || !emailChallengeId || code.length !== 6) return;
+    setEmailBusy(true);
+    try {
+      const res = await mobileApi.verifyBindEmail(emailChallengeId, code);
+      setBoundEmailLocal(res.email || clean);
+      setChangingEmail(false);
+      setEmailSheetOpen(false);
+      showToast("登录邮箱已绑定", "success");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "验证码校验失败", "danger");
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  const handleUnbindEmail = async () => {
+    setEmailBusy(true);
+    try {
+      await mobileApi.unbindAccountEmail();
+      setBoundEmailLocal("");
+      setChangingEmail(true);
+      showToast("已解绑登录邮箱", "success");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "解绑失败", "danger");
+    } finally {
+      setEmailBusy(false);
     }
   };
 
@@ -300,6 +378,21 @@ export function MeTab() {
 
           <button
             type="button"
+            onClick={openEmailSheet}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
+          >
+            <Mail size={19} className="text-[var(--dl-accent)]" />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              登录邮箱
+            </span>
+            <span className="text-[12px] text-[var(--dl-text-muted)] truncate max-w-[155px]">
+              {boundEmail || "未绑定"}
+            </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
+          </button>
+
+          <button
+            type="button"
             onClick={() => setDevicesOpen(true)}
             className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
           >
@@ -399,6 +492,120 @@ export function MeTab() {
               {savingProfile ? "保存中…" : "保存昵称"}
             </button>
           </div>
+        </div>
+      </BottomSheet>
+
+      {/* Bound Login Email Sheet */}
+      <BottomSheet
+        open={emailSheetOpen}
+        onClose={() => setEmailSheetOpen(false)}
+        title="登录邮箱"
+        subtitle="绑定后可使用邮箱验证码快捷登录"
+      >
+        <div className="p-4 space-y-4">
+          {boundEmail && !changingEmail ? (
+            <div className="space-y-3">
+              <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] text-[var(--dl-text-muted)]">当前绑定邮箱</div>
+                  <div className="text-[14.5px] font-semibold text-[var(--dl-text)] truncate mt-0.5">
+                    {boundEmail}
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[11px] font-semibold shrink-0">
+                  已绑定
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  disabled={emailBusy}
+                  onClick={() => {
+                    setChangingEmail(true);
+                    setEmailDraft("");
+                    setEmailCodeDraft("");
+                    setEmailChallengeId("");
+                  }}
+                  className="py-2.5 rounded-xl bg-[var(--dl-card)] text-[var(--dl-text)] text-[13px] font-semibold"
+                >
+                  更换邮箱
+                </button>
+                <button
+                  type="button"
+                  disabled={emailBusy}
+                  onClick={() => void handleUnbindEmail()}
+                  className="py-2.5 rounded-xl bg-rose-500/12 text-rose-600 dark:text-rose-400 text-[13px] font-semibold"
+                >
+                  {emailBusy ? "处理中…" : "解绑邮箱"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[12px] font-medium text-[var(--dl-text-muted)] mb-1.5">
+                  邮箱地址
+                </label>
+                <input
+                  type="email"
+                  value={emailDraft}
+                  onChange={(e) => {
+                    setEmailDraft(e.target.value);
+                    setEmailChallengeId("");
+                  }}
+                  placeholder="name@example.com"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={emailCodeDraft}
+                  onChange={(e) =>
+                    setEmailCodeDraft(e.target.value.replace(/\D/g, "").slice(0, 6))
+                  }
+                  placeholder="6 位数字验证码"
+                  className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] font-mono tracking-widest text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
+                />
+                <button
+                  type="button"
+                  disabled={emailBusy || emailCooldown > 0 || !emailDraft.trim()}
+                  onClick={() => void handleSendBindCode()}
+                  className="px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[12.5px] font-semibold text-[var(--dl-accent)] shrink-0 disabled:opacity-50"
+                >
+                  {emailCooldown > 0 ? `${emailCooldown}s` : "获取验证码"}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                {boundEmail && (
+                  <button
+                    type="button"
+                    onClick={() => setChangingEmail(false)}
+                    className="px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] text-[13px] font-medium text-[var(--dl-text-muted)]"
+                  >
+                    取消
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={
+                    emailBusy ||
+                    !emailDraft.trim() ||
+                    !emailChallengeId ||
+                    emailCodeDraft.trim().length !== 6
+                  }
+                  onClick={() => void handleConfirmBindEmail()}
+                  className="flex-1 py-2.5 px-4 rounded-xl bg-[var(--dl-accent)] text-white text-[13.5px] font-semibold disabled:opacity-50"
+                >
+                  {emailBusy ? "校验中…" : "确认绑定"}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </BottomSheet>
 

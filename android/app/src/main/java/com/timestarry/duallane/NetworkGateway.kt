@@ -178,6 +178,41 @@ class NetworkGateway(
         }
     }
 
+    fun loginWithEmailCode(email: String, challengeId: String, code: String): JSONObject {
+        val bodyJson = JSONObject().apply {
+            put("email", email.trim())
+            put("challengeId", challengeId.trim())
+            put("code", code.trim())
+            put("client", "mobile")
+        }
+
+        val req = Request.Builder()
+            .url("${tokenVault.getApiOrigin()}/api/v1/auth/email/verify")
+            .post(bodyJson.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .header("Accept", "application/json")
+            .build()
+
+        httpClient.newCall(req).execute().use { res ->
+            val raw = res.body?.string().orEmpty()
+            if (!res.isSuccessful) {
+                throw IllegalStateException(extractApiErrorMessage(raw, "验证码登录失败 (${res.code})"))
+            }
+            val json = JSONObject(raw)
+            val accessToken = json.optString("accessToken")
+            val refreshToken = json.optString("refreshToken")
+            if (accessToken.isBlank() || refreshToken.isBlank()) {
+                throw IllegalStateException("凭证响应缺少有效令牌")
+            }
+            tokenVault.saveTokens(
+                accessToken = accessToken,
+                refreshToken = refreshToken,
+                accessExpiresIso = json.optString("accessTokenExpiresAt", ""),
+                refreshExpiresIso = json.optString("refreshTokenExpiresAt", ""),
+            )
+            return JSONObject().put("ok", true)
+        }
+    }
+
     fun logout() {
         val refreshToken = tokenVault.getRefreshToken()
         tokenVault.clearTokens()
