@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  BatteryCharging,
+  Bell,
   Bot,
   Camera,
   Check,
   ChevronRight,
   Download,
+  EyeOff,
   ExternalLink,
   Laptop,
   Lock,
@@ -13,6 +16,7 @@ import {
   Moon,
   Palette,
   RefreshCw,
+  ShieldCheck,
   Smartphone,
   Sparkles,
   Sun,
@@ -21,15 +25,48 @@ import {
 import { Avatar } from "@/components/Avatar";
 import { BottomSheet } from "@/components/BottomSheet";
 import { MarkdownContent } from "@/components/MarkdownContent";
-import { nativeBridge } from "@/native/bridge";
+import { nativeBridge, type BackgroundPushStatus } from "@/native/bridge";
 import { mobileApi } from "@/shared/api";
 import type { UserDeviceSummary } from "@/shared/card-kit";
 import { formatBytes } from "@/shared/format";
 import { useThemeStore } from "@/shared/theme-store";
 import { ACCENT_IDS, DESIGN_TOKENS } from "@/shared/tokens";
 import { useUpdateStore } from "@/shared/updater";
+import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
+
+function ToggleSwitch({
+  checked,
+  disabled,
+  onChange,
+  ariaLabel,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-45 ${
+        checked ? "bg-[var(--dl-accent)]" : "bg-[var(--dl-card)] border border-[var(--dl-border)]"
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-xs transition-transform ${
+          checked ? "translate-x-5" : "translate-x-0"
+        }`}
+      />
+    </button>
+  );
+}
 
 export function MeTab() {
   const currentUser = useWorkspaceStore((s) => s.currentUser);
@@ -38,8 +75,13 @@ export function MeTab() {
   const p2pRoom = useWorkspaceStore((s) => s.p2pRoom);
   const quotaUsedBytes = useWorkspaceStore((s) => s.quotaUsedBytes);
   const quotaLimitBytes = useWorkspaceStore((s) => s.quotaLimitBytes);
+  const collapsePrefs = useWorkspaceStore((s) => s.collapsePrefs);
+  const updateCollapsePreferences = useWorkspaceStore((s) => s.updateCollapsePreferences);
   const bootstrapWorkspace = useWorkspaceStore((s) => s.bootstrapWorkspace);
   const logout = useWorkspaceStore((s) => s.logout);
+
+  const replyAutoMention = useEmoteStore((s) => s.settings?.replyAutoMention !== false);
+  const setReplyAutoMention = useEmoteStore((s) => s.setReplyAutoMention);
 
   const preference = useThemeStore((s) => s.preference);
   const accent = useThemeStore((s) => s.accent);
@@ -84,7 +126,48 @@ export function MeTab() {
   const [emailCooldown, setEmailCooldown] = useState(0);
   const [emailBusy, setEmailBusy] = useState(false);
 
+  const [bgPushStatus, setBgPushStatus] = useState<BackgroundPushStatus>(() =>
+    nativeBridge.getBackgroundPushStatus()
+  );
+  const [offlineEmailEnabled, setOfflineEmailEnabled] = useState(false);
+  const [offlineEmailFieldKey, setOfflineEmailFieldKey] = useState("offlineEmailEnabled");
+  const [offlineEmailBusy, setOfflineEmailBusy] = useState(false);
+
   const snap = nativeBridge.getSessionSnapshot();
+  const isNative = nativeBridge.isNativeAndroid();
+
+  const refreshPushStatus = useCallback(() => {
+    setBgPushStatus(nativeBridge.getBackgroundPushStatus());
+  }, []);
+
+  useEffect(() => {
+    refreshPushStatus();
+    const offResume = nativeBridge.onAppResumed(refreshPushStatus);
+    const onVis = () => {
+      if (document.visibilityState === "visible") refreshPushStatus();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      offResume();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [refreshPushStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void mobileApi
+      .getMyNotificationSettings()
+      .then((res) => {
+        if (!cancelled) {
+          setOfflineEmailEnabled(res.offlineEmailEnabled);
+          setOfflineEmailFieldKey(res.fieldKey);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (emailCooldown <= 0) return;
@@ -102,6 +185,45 @@ export function MeTab() {
         .catch(() => {});
     }
   }, [devicesOpen]);
+
+  const handleToggleKeepAlive = (next: boolean) => {
+    const updated = nativeBridge.setKeepAliveEnabled(next);
+    setBgPushStatus(updated);
+    showToast(
+      next ? "已开启后台常驻实时连接" : "已关闭后台常驻守护",
+      "info"
+    );
+  };
+
+  const handleToggleOfflineEmail = async (next: boolean) => {
+    if (offlineEmailBusy) return;
+    if (next && !boundEmail) {
+      showToast("请先绑定登录邮箱以接收离线通知", "warning");
+      openEmailSheet();
+      return;
+    }
+    const prev = offlineEmailEnabled;
+    setOfflineEmailEnabled(next);
+    setOfflineEmailBusy(true);
+    try {
+      const saved = await mobileApi.updateMyNotificationSettings(next, offlineEmailFieldKey);
+      setOfflineEmailEnabled(saved.offlineEmailEnabled);
+      showToast(next ? "离线邮件提醒已开启" : "离线邮件提醒已关闭", "success");
+    } catch {
+      setOfflineEmailEnabled(prev);
+      showToast("更新离线邮件提醒失败", "danger");
+    } finally {
+      setOfflineEmailBusy(false);
+    }
+  };
+
+  const handleToggleReplyMention = async (next: boolean) => {
+    try {
+      await setReplyAutoMention(next);
+    } catch {
+      showToast("保存回复设置失败", "danger");
+    }
+  };
 
   const handleSaveNickname = async () => {
     const trimmed = nicknameDraft.trim();
@@ -201,6 +323,7 @@ export function MeTab() {
     try {
       await mobileApi.unbindAccountEmail();
       setBoundEmailLocal("");
+      setOfflineEmailEnabled(false);
       setChangingEmail(true);
       showToast("已解绑登录邮箱", "success");
     } catch (err) {
@@ -256,6 +379,170 @@ export function MeTab() {
           >
             编辑
           </button>
+        </div>
+
+        {/* Notifications & Native Background Keep-Alive Card */}
+        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 space-y-3.5 shadow-2xs">
+          <div className="flex items-center gap-2 text-[14px] font-semibold text-[var(--dl-text)]">
+            <Bell size={16} className="text-[var(--dl-accent)]" />
+            <span>消息通知与后台常驻</span>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[13.5px] font-medium text-[var(--dl-text)]">
+                后台常驻实时连接
+              </div>
+              <div className="text-[11px] text-[var(--dl-text-muted)]">
+                静音守护连接，锁屏或切换网络时即时送达消息
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={bgPushStatus.keepAliveEnabled}
+              onChange={handleToggleKeepAlive}
+              ariaLabel="后台常驻实时连接"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
+            <div className="min-w-0 flex items-center gap-2">
+              <ShieldCheck size={15} className="text-[var(--dl-accent)] shrink-0" />
+              <div>
+                <div className="text-[13.5px] font-medium text-[var(--dl-text)]">系统通知权限</div>
+                <div className="text-[11px] text-[var(--dl-text-muted)]">
+                  在后台收到新消息或 @提及 时弹出系统通知
+                </div>
+              </div>
+            </div>
+            {bgPushStatus.notificationsGranted ? (
+              <span className="px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[11px] font-semibold shrink-0">
+                已开启
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => nativeBridge.requestNotificationPermission()}
+                className="px-3 py-1.5 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[12px] font-semibold shrink-0 active:opacity-80"
+              >
+                去开启
+              </button>
+            )}
+          </div>
+
+          {isNative && (
+            <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
+              <div className="min-w-0 flex items-center gap-2">
+                <BatteryCharging size={15} className="text-[var(--dl-accent)] shrink-0" />
+                <div>
+                  <div className="text-[13.5px] font-medium text-[var(--dl-text)]">
+                    加入省电白名单（防杀后台）
+                  </div>
+                  <div className="text-[11px] text-[var(--dl-text-muted)]">
+                    避免系统休眠冻结后台实时推送通道
+                  </div>
+                </div>
+              </div>
+              {bgPushStatus.ignoringBatteryOptimizations ? (
+                <span className="px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[11px] font-semibold shrink-0">
+                  已豁免
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => nativeBridge.requestIgnoreBatteryOptimizations()}
+                  className="px-3 py-1.5 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[12px] font-semibold shrink-0 active:opacity-80"
+                >
+                  一键加入
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
+            <div className="min-w-0">
+              <div className="text-[13.5px] font-medium text-[var(--dl-text)]">
+                离线邮件提醒
+              </div>
+              <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
+                {boundEmail
+                  ? `全端离线时发送提醒至 ${boundEmail}`
+                  : "绑定登录邮箱后可开启离线邮件兜底提醒"}
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={offlineEmailEnabled}
+              disabled={offlineEmailBusy}
+              onChange={(next) => void handleToggleOfflineEmail(next)}
+              ariaLabel="离线邮件提醒"
+            />
+          </div>
+        </div>
+
+        {/* Chat Reading & Boss-Key Auto-Collapse Card (A1 + A5) */}
+        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 space-y-3 shadow-2xs">
+          <div className="flex items-center gap-2 text-[14px] font-semibold text-[var(--dl-text)]">
+            <EyeOff size={16} className="text-[var(--dl-accent)]" />
+            <span>聊天阅读与自动折叠</span>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[13.5px] font-medium text-[var(--dl-text)]">
+                群聊回复自动 @对方
+              </div>
+              <div className="text-[11px] text-[var(--dl-text-muted)]">
+                左滑或长按引用群消息时自动带入 @提及
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={replyAutoMention}
+              onChange={(next) => void handleToggleReplyMention(next)}
+              ariaLabel="群聊回复自动 @对方"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
+            <span className="text-[13.5px] font-medium text-[var(--dl-text)]">折叠图片</span>
+            <ToggleSwitch
+              checked={collapsePrefs.collapseImages}
+              onChange={(next) => void updateCollapsePreferences({ collapseImages: next })}
+              ariaLabel="折叠图片"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[13.5px] font-medium text-[var(--dl-text)]">折叠贴纸</span>
+            <ToggleSwitch
+              checked={collapsePrefs.collapseStickers}
+              onChange={(next) => void updateCollapsePreferences({ collapseStickers: next })}
+              ariaLabel="折叠贴纸"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[13.5px] font-medium text-[var(--dl-text)]">
+              折叠超长消息 (&gt;12行)
+            </span>
+            <ToggleSwitch
+              checked={collapsePrefs.collapseLongMessages}
+              onChange={(next) => void updateCollapsePreferences({ collapseLongMessages: next })}
+              ariaLabel="折叠超长消息 (>12行)"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
+            <div>
+              <div className="text-[13px] font-medium text-[var(--dl-text)]">仅本机生效</div>
+              <div className="text-[11px] text-[var(--dl-text-muted)]">
+                开启后折叠开关不同步到其他已登录设备
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={collapsePrefs.localOnly}
+              onChange={(next) => void updateCollapsePreferences({ localOnly: next })}
+              ariaLabel="仅本机生效"
+            />
+          </div>
         </div>
 
         {/* Appearance & Liquid Vibrancy */}

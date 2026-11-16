@@ -1,5 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
 import {
+  AtSign,
+  Bell,
+  BellOff,
   Bookmark,
   CheckCheck,
   ChevronRight,
@@ -19,7 +22,12 @@ import { nativeBridge } from "@/native/bridge";
 import { formatConversationPreviewText } from "@/shared/emotes";
 import { formatConversationTime } from "@/shared/format";
 import { useNavStore } from "@/store/nav-store";
-import { useWorkspaceStore, type V1Conversation } from "@/store/workspace-store";
+import {
+  computeTotalBadgeUnread,
+  useWorkspaceStore,
+  type ConversationNotificationLevel,
+  type V1Conversation,
+} from "@/store/workspace-store";
 
 type ChatFilter = "all" | "unread" | "mention" | "group" | "bot";
 
@@ -34,6 +42,9 @@ export function ChatsTab() {
   const connectionStatus = useWorkspaceStore((s) => s.connectionStatus);
   const p2pRoom = useWorkspaceStore((s) => s.p2pRoom);
   const togglePinConversation = useWorkspaceStore((s) => s.togglePinConversation);
+  const setConversationNotificationLevel = useWorkspaceStore(
+    (s) => s.setConversationNotificationLevel
+  );
   const markRead = useWorkspaceStore((s) => s.markRead);
   const leaveGroup = useWorkspaceStore((s) => s.leaveGroup);
 
@@ -42,10 +53,13 @@ export function ChatsTab() {
   const setCreateChatMode = useNavStore((s) => s.setCreateChatMode);
   const setBotManageOpen = useNavStore((s) => s.setBotManageOpen);
   const setDirectOverlayOpen = useNavStore((s) => s.setDirectOverlayOpen);
+  const showToast = useNavStore((s) => s.showToast);
 
   const [filter, setFilter] = useState<ChatFilter>("all");
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
-  const [contextConv, setContextConv] = useState<V1Conversation | null>(null);
+  const [contextConvId, setContextConvId] = useState<string | null>(null);
+
+  const contextConv = contextConvId ? conversations[contextConvId] || null : null;
 
   const isBotDirect = useCallback(
     (conv: V1Conversation) => {
@@ -82,7 +96,7 @@ export function ChatsTab() {
   }, [conversations, conversationOrder, pinnedConversationIds, filter, isBotDirect]);
 
   const totalUnread = useMemo(
-    () => Object.values(conversations).reduce((acc, c) => acc + (c.unreadCount || 0), 0),
+    () => computeTotalBadgeUnread(conversations),
     [conversations]
   );
 
@@ -90,6 +104,56 @@ export function ChatsTab() {
     () => Object.values(conversations).find((c) => c.kind === "saved"),
     [conversations]
   );
+
+  const formatRowPreview = (conv: V1Conversation): string => {
+    const previewText = formatConversationPreviewText(conv.lastMessageText);
+    if (!conv.lastMessageText || previewText === "暂无消息") {
+      return previewText;
+    }
+    const isRecalled = Boolean(
+      conv.lastMessageRecalled ||
+        previewText === "消息已撤回" ||
+        previewText.endsWith("撤回了一条消息")
+    );
+    if (isRecalled) {
+      return previewText;
+    }
+    if (conv.kind === "group") {
+      const senderLabel =
+        conv.lastMessageSenderId && conv.lastMessageSenderId === currentUser?.id
+          ? "我"
+          : (conv.lastMessageSenderId
+              ? members[conv.lastMessageSenderId]?.displayName
+              : undefined) || conv.lastMessageSenderName;
+      if (senderLabel && !previewText.startsWith(`${senderLabel}: `)) {
+        return `${senderLabel}: ${previewText}`;
+      }
+      return previewText;
+    }
+    if (
+      conv.kind === "direct" &&
+      conv.lastMessageSenderId &&
+      conv.lastMessageSenderId === currentUser?.id &&
+      !previewText.startsWith("我: ")
+    ) {
+      return `我: ${previewText}`;
+    }
+    return previewText;
+  };
+
+  const handleSelectMuteLevel = async (
+    convId: string,
+    level: ConversationNotificationLevel
+  ) => {
+    try {
+      await setConversationNotificationLevel(convId, level);
+      const label =
+        level === "muted" ? "免打扰" : level === "mentions" ? "仅 @我 提醒" : "全部消息提醒";
+      showToast(`已设为「${label}」`, "success");
+    } catch {
+      showToast("更新会话提醒设置失败", "danger");
+    }
+  };
 
   return (
     <div className="h-full flex flex-col bg-[var(--dl-bg)]">
@@ -202,6 +266,8 @@ export function ChatsTab() {
         ) : (
           sortedConversations.map((conv) => {
             const isPinned = pinnedConversationIds.includes(conv.id);
+            const isMuted = conv.notificationLevel === "muted";
+            const isMentionsOnly = conv.notificationLevel === "mentions";
             const draft = drafts[conv.id];
             const typers = typingByConv[conv.id] || [];
             const botChat = isBotDirect(conv);
@@ -210,6 +276,10 @@ export function ChatsTab() {
                 ? conv.memberIds.find((id) => id !== currentUser?.id)
                 : undefined;
             const directPeer = peerId ? members[peerId] : undefined;
+            const displayTitle =
+              conv.kind === "direct" && directPeer?.displayName
+                ? directPeer.displayName
+                : conv.title;
             const avatarKind =
               conv.kind === "saved"
                 ? "saved"
@@ -228,7 +298,7 @@ export function ChatsTab() {
                 onTouchStart={() => {
                   longPressTimer = setTimeout(() => {
                     nativeBridge.haptic("medium");
-                    setContextConv(conv);
+                    setContextConvId(conv.id);
                   }, 450);
                 }}
                 onTouchEnd={() => {
@@ -239,14 +309,14 @@ export function ChatsTab() {
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  setContextConv(conv);
+                  setContextConvId(conv.id);
                 }}
                 className={`px-4 py-3 flex items-center gap-3 active:bg-[var(--dl-card)] transition-colors select-none ${
                   isPinned ? "bg-[var(--dl-card)]/35" : "bg-[var(--dl-surface)]"
                 }`}
               >
                 <Avatar
-                  name={conv.title}
+                  name={displayTitle}
                   src={conv.avatarUrl || directPeer?.avatarUrl}
                   emoji={conv.avatarEmoji}
                   kind={avatarKind}
@@ -258,12 +328,26 @@ export function ChatsTab() {
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="text-[15px] font-semibold text-[var(--dl-text)] truncate">
-                        {conv.title}
+                        {displayTitle}
                       </span>
                       {botChat && (
                         <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] shrink-0">
                           BOT
                         </span>
+                      )}
+                      {isMuted && (
+                        <BellOff
+                          size={13}
+                          aria-label="已开启免打扰"
+                          className="text-[var(--dl-text-muted)] opacity-75 shrink-0"
+                        />
+                      )}
+                      {isMentionsOnly && (
+                        <AtSign
+                          size={12}
+                          aria-label="仅 @我 提醒"
+                          className="text-[var(--dl-text-muted)] opacity-75 shrink-0"
+                        />
                       )}
                     </div>
                     <div className="flex items-center gap-1 text-[11px] text-[var(--dl-text-muted)] shrink-0">
@@ -290,15 +374,21 @@ export function ChatsTab() {
                           {conv.mentionCount > 0 && (
                             <span className="text-rose-500 font-semibold mr-1">[有人@我]</span>
                           )}
-                          <span>{formatConversationPreviewText(conv.lastMessageText)}</span>
+                          <span>{formatRowPreview(conv)}</span>
                         </>
                       )}
                     </div>
 
                     {conv.unreadCount > 0 && (
                       <span
+                        data-testid={`conv-unread-${conv.id}`}
+                        data-muted={isMuted ? "true" : "false"}
                         className={`px-1.5 min-w-[20px] h-5 rounded-full text-[11px] font-bold flex items-center justify-center text-white shrink-0 ${
-                          conv.mentionCount > 0 ? "bg-rose-500" : "bg-[var(--dl-accent)]"
+                          conv.mentionCount > 0
+                            ? "bg-rose-500"
+                            : isMuted
+                            ? "bg-slate-400/80 dark:bg-slate-600"
+                            : "bg-[var(--dl-accent)]"
                         }`}
                       >
                         {conv.unreadCount > 99 ? "99+" : conv.unreadCount}
@@ -367,49 +457,90 @@ export function ChatsTab() {
       {/* Long-Press Conversation Context Sheet */}
       <BottomSheet
         open={Boolean(contextConv)}
-        onClose={() => setContextConv(null)}
+        onClose={() => setContextConvId(null)}
         title={contextConv?.title}
       >
         {contextConv && (
-          <div className="p-3 space-y-1">
-            <button
-              type="button"
-              onClick={() => {
-                void togglePinConversation(contextConv.id);
-                setContextConv(null);
-              }}
-              className="w-full px-4 py-3 rounded-2xl flex items-center gap-3 text-[15px] font-medium text-[var(--dl-text)] active:bg-[var(--dl-card)]"
-            >
-              <Pin size={18} className="text-[var(--dl-accent)]" />
-              <span>
-                {pinnedConversationIds.includes(contextConv.id) ? "取消置顶会话" : "置顶该会话"}
-              </span>
-            </button>
-            {contextConv.unreadCount > 0 && (
+          <div className="p-3 space-y-2">
+            {contextConv.kind !== "saved" && (
+              <div className="p-2.5 rounded-2xl bg-[var(--dl-card)] space-y-2">
+                <div className="px-1 text-[11px] font-semibold text-[var(--dl-text-muted)]">
+                  消息提醒方式
+                </div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      { id: "all", label: "全部提醒", icon: Bell },
+                      { id: "mentions", label: "仅 @我", icon: AtSign },
+                      { id: "muted", label: "免打扰", icon: BellOff },
+                    ] as const
+                  ).map((opt) => {
+                    const Icon = opt.icon;
+                    const curLevel = contextConv.notificationLevel || "all";
+                    const active = curLevel === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          void handleSelectMuteLevel(contextConv.id, opt.id);
+                          setContextConvId(null);
+                        }}
+                        className={`py-2 px-2 rounded-xl text-[12px] font-medium flex items-center justify-center gap-1 border transition ${
+                          active
+                            ? "border-[var(--dl-accent)] bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold"
+                            : "border-[var(--dl-border)] bg-[var(--dl-surface)] text-[var(--dl-text-muted)]"
+                        }`}
+                      >
+                        <Icon size={13} />
+                        <span>{opt.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1">
               <button
                 type="button"
                 onClick={() => {
-                  markRead(contextConv.id);
-                  setContextConv(null);
+                  void togglePinConversation(contextConv.id);
+                  setContextConvId(null);
                 }}
                 className="w-full px-4 py-3 rounded-2xl flex items-center gap-3 text-[15px] font-medium text-[var(--dl-text)] active:bg-[var(--dl-card)]"
               >
-                <CheckCheck size={18} className="text-emerald-500" />
-                <span>标为已读</span>
+                <Pin size={18} className="text-[var(--dl-accent)]" />
+                <span>
+                  {pinnedConversationIds.includes(contextConv.id) ? "取消置顶会话" : "置顶该会话"}
+                </span>
               </button>
-            )}
-            {contextConv.kind === "group" && (
-              <button
-                type="button"
-                onClick={() => {
-                  void leaveGroup(contextConv.id);
-                  setContextConv(null);
-                }}
-                className="w-full px-4 py-3 rounded-2xl flex items-center gap-3 text-[15px] font-medium text-rose-500 active:bg-rose-500/10"
-              >
-                <span>退出群聊</span>
-              </button>
-            )}
+              {contextConv.unreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    markRead(contextConv.id);
+                    setContextConvId(null);
+                  }}
+                  className="w-full px-4 py-3 rounded-2xl flex items-center gap-3 text-[15px] font-medium text-[var(--dl-text)] active:bg-[var(--dl-card)]"
+                >
+                  <CheckCheck size={18} className="text-emerald-500" />
+                  <span>标为已读</span>
+                </button>
+              )}
+              {contextConv.kind === "group" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void leaveGroup(contextConv.id);
+                    setContextConvId(null);
+                  }}
+                  className="w-full px-4 py-3 rounded-2xl flex items-center gap-3 text-[15px] font-medium text-rose-500 active:bg-rose-500/10"
+                >
+                  <span>退出群聊</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
       </BottomSheet>

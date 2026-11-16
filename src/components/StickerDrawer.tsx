@@ -6,6 +6,34 @@ import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
 
+const RECENT_EMOJIS_KEY = "duallane:mobile:recent-emojis:v1";
+const MAX_RECENT_EMOJIS = 8;
+
+function loadRecentEmojis(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_EMOJIS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((x) => String(x || "").trim())
+      .filter(Boolean)
+      .slice(0, MAX_RECENT_EMOJIS);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentEmojis(list: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RECENT_EMOJIS_KEY, JSON.stringify(list.slice(0, MAX_RECENT_EMOJIS)));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export function StickerDrawer({
   open,
   conversationId,
@@ -29,6 +57,7 @@ export function StickerDrawer({
   const tabs = getOrderedTabs();
   const [selectedTabId, setSelectedTabId] = useState<string>("favorites");
   const [reorderMode, setReorderMode] = useState(false);
+  const [recentEmojis, setRecentEmojis] = useState<string[]>(() => loadRecentEmojis());
 
   if (!open) return null;
 
@@ -39,6 +68,15 @@ export function StickerDrawer({
     if (!activeTab) return;
     const nextOrder = moveTab(activeTab.id, dir);
     void updateUserPreferences({ emoteTabOrder: nextOrder });
+  };
+
+  const handlePickUnicodeEmoji = (val: string) => {
+    const clean = val.trim();
+    if (!clean) return;
+    const next = [clean, ...recentEmojis.filter((x) => x !== clean)].slice(0, MAX_RECENT_EMOJIS);
+    setRecentEmojis(next);
+    saveRecentEmojis(next);
+    onInsertToken(clean);
   };
 
   const handleSendStickerItem = (em: CustomEmoteDTO) => {
@@ -238,17 +276,45 @@ export function StickerDrawer({
           if (!pack) return null;
           if (pack.kind === "unicode") {
             return (
-              <div className="grid grid-cols-8 gap-1">
-                {pack.items.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => onInsertToken(item.value || item.token)}
-                    className="aspect-square rounded-xl text-[22px] flex items-center justify-center active:bg-[var(--dl-card)] active:scale-90 transition"
-                  >
-                    {item.value}
-                  </button>
-                ))}
+              <div className="space-y-2">
+                {recentEmojis.length > 0 && (
+                  <div data-testid="recent-emojis-section">
+                    <div className="px-1 mb-1 text-[11px] font-medium text-[var(--dl-text-muted)]">
+                      最近使用
+                    </div>
+                    <div className="grid grid-cols-8 gap-1 pb-1.5 border-b border-[var(--dl-border)]/60">
+                      {recentEmojis.map((emoji) => (
+                        <button
+                          key={`recent_${emoji}`}
+                          type="button"
+                          onClick={() => handlePickUnicodeEmoji(emoji)}
+                          className="aspect-square rounded-xl text-[22px] flex items-center justify-center active:bg-[var(--dl-card)] active:scale-90 transition"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  {recentEmojis.length > 0 && (
+                    <div className="px-1 mb-1 text-[11px] font-medium text-[var(--dl-text-muted)]">
+                      全部表情
+                    </div>
+                  )}
+                  <div className="grid grid-cols-8 gap-1">
+                    {pack.items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => handlePickUnicodeEmoji(item.value || item.token)}
+                        className="aspect-square rounded-xl text-[22px] flex items-center justify-center active:bg-[var(--dl-card)] active:scale-90 transition"
+                      >
+                        {item.value}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             );
           }

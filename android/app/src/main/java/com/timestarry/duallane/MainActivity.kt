@@ -2,6 +2,7 @@ package com.timestarry.duallane
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -9,6 +10,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
@@ -22,6 +24,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
@@ -30,12 +33,12 @@ import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
 import java.io.File
-import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
-    private val ioExecutor = Executors.newCachedThreadPool()
+    private lateinit var ioExecutor: ExecutorService
     private lateinit var tokenVault: TokenVault
     private lateinit var networkGateway: NetworkGateway
     private lateinit var realtimeManager: RealtimeManager
@@ -90,9 +93,22 @@ class MainActivity : ComponentActivity() {
         cb?.invoke(uris)
     }
 
+    private var lastPermRequestLaunchMs = 0L
+    private var openSettingsOnFastDeny = false
+
     private val requestNotificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { _ -> }
+    ) { granted ->
+        val fastDenied = !granted && openSettingsOnFastDeny &&
+            (System.currentTimeMillis() - lastPermRequestLaunchMs) < 350L
+        openSettingsOnFastDeny = false
+        if (fastDenied) {
+            openAppNotificationSettings()
+        }
+        if (isPageLoaded) {
+            nativeBridge.emitAppResumed()
+        }
+    }
 
     private val requestInstallPackagesLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -111,18 +127,19 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        tokenVault = TokenVault(applicationContext)
-        networkGateway = NetworkGateway(applicationContext, tokenVault)
-        appUpdateManager = AppUpdateManager(applicationContext, networkGateway)
+        val hub = RealtimeHub.getInstance(applicationContext)
+        ioExecutor = hub.ioExecutor
+        tokenVault = hub.tokenVault
+        networkGateway = hub.networkGateway
+        appUpdateManager = hub.appUpdateManager
         appUpdateManager.prepareBootState()
         realtimeManager = RealtimeManager(
-            appContext = applicationContext,
-            networkGateway = networkGateway,
-            ioExecutor = ioExecutor,
+            hub = hub,
             emitWsEvent = { socketId, eventType, payload ->
                 nativeBridge.emitWsEvent(socketId, eventType, payload)
             }
         )
+        realtimeManager.isForeground = true
         nativeBridge = NativeBridge(
             activity = this,
             webViewProvider = { webView },
@@ -225,6 +242,7 @@ class MainActivity : ComponentActivity() {
 
         if (tokenVault.isAuthenticated()) {
             maybePromptNotificationPermission()
+            PushKeepAliveService.syncServiceState(applicationContext)
         }
     }
 
@@ -250,6 +268,9 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         realtimeManager.isForeground = true
         webView?.onResume()
+        if (isPageLoaded) {
+            nativeBridge.emitAppResumed()
+        }
     }
 
     override fun onPause() {
@@ -259,13 +280,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        realtimeManager.closeAll()
+        realtimeManager.detachUi()
         webView?.apply {
             removeJavascriptInterface("DualLaneNative")
             destroy()
         }
         webView = null
-        ioExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -279,6 +299,7 @@ class MainActivity : ComponentActivity() {
             ioExecutor.execute {
                 try {
                     networkGateway.completeGitHubOAuth(uri)
+                    PushKeepAliveService.syncServiceState(applicationContext)
                     nativeBridge.emitOAuthResult(true, "")
                     runOnUiThread { maybePromptNotificationPermission() }
                 } catch (err: Throwable) {
@@ -453,6 +474,76 @@ class MainActivity : ComponentActivity() {
             webView?.apply {
                 clearCache(true)
                 loadUrl(START_ASSET_URL)
+            }
+        }
+    }
+
+    fun isNotificationsGranted(): Boolean {
+        val appEnabled = NotificationManagerCompat.from(this).areNotificationsEnabled()
+        if (!appEnabled) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+        return true
+    }
+
+    fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    @SuppressLint("BatteryLife")
+    fun requestIgnoreBatteryOptimizations() {
+        if (isIgnoringBatteryOptimizations()) return
+        runCatching {
+            val intent = Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+        }.onFailure {
+            runCatching {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+        }
+    }
+
+    fun requestNotificationPermissionOrSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val permGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!permGranted) {
+                lastPermRequestLaunchMs = System.currentTimeMillis()
+                openSettingsOnFastDeny = true
+                val launched = runCatching {
+                    requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }.isSuccess
+                if (launched) return
+                openSettingsOnFastDeny = false
+            }
+        }
+        openAppNotificationSettings()
+    }
+
+    private fun openAppNotificationSettings() {
+        runCatching {
+            val settingsIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            }
+            startActivity(settingsIntent)
+        }.onFailure {
+            runCatching {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:$packageName")
+                    )
+                )
             }
         }
     }

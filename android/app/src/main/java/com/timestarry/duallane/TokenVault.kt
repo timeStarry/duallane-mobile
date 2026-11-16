@@ -118,7 +118,35 @@ class TokenVault(private val appContext: Context) {
             .remove(KEY_REFRESH_EXP_MS)
             .remove(KEY_PKCE_VERIFIER)
             .remove(KEY_PKCE_STATE)
+            .remove(KEY_NOTIFICATION_CONTEXT)
+            .remove(KEY_LAST_WORKSPACE_SEQ)
             .apply()
+    }
+
+    @Synchronized
+    fun isKeepAliveEnabled(): Boolean = prefs.getBoolean(KEY_KEEP_ALIVE_ENABLED, true)
+
+    @Synchronized
+    fun setKeepAliveEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_KEEP_ALIVE_ENABLED, enabled).apply()
+    }
+
+    @Synchronized
+    fun getNotificationContextJson(): String? = prefs.getString(KEY_NOTIFICATION_CONTEXT, null)
+
+    @Synchronized
+    fun setNotificationContextJson(json: String) {
+        prefs.edit().putString(KEY_NOTIFICATION_CONTEXT, json).apply()
+    }
+
+    @Synchronized
+    fun getLastWorkspaceSeq(): Long = prefs.getLong(KEY_LAST_WORKSPACE_SEQ, 0L)
+
+    @Synchronized
+    fun setLastWorkspaceSeq(seq: Long) {
+        if (seq >= 0L) {
+            prefs.edit().putLong(KEY_LAST_WORKSPACE_SEQ, seq).apply()
+        }
     }
 
     @Synchronized
@@ -204,7 +232,7 @@ class TokenVault(private val appContext: Context) {
     }
 
     private object BuildConfigFallback {
-        const val VERSION_NAME = "1.0.9"
+        const val VERSION_NAME = "1.0.10"
         const val VERSION_CODE = 10009
     }
 
@@ -222,5 +250,8 @@ class TokenVault(private val appContext: Context) {
         private const val KEY_REFRESH_EXP_MS = "refresh_exp_ms"
         private const val KEY_PKCE_VERIFIER = "enc_pkce_verifier"
         private const val KEY_PKCE_STATE = "pkce_state"
+        private const val KEY_KEEP_ALIVE_ENABLED = "keep_alive_enabled"
+        private const val KEY_NOTIFICATION_CONTEXT = "notification_context_json"
+        private const val KEY_LAST_WORKSPACE_SEQ = "last_workspace_seq"
     }
 }

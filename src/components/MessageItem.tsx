@@ -1,13 +1,18 @@
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
   CheckCheck,
+  ChevronDown,
+  ChevronUp,
   Clock,
+  Eye,
   FileText,
+  Image as ImageIcon,
   MessageSquareText,
   Package,
   Reply,
+  Smile,
 } from "lucide-react";
 import { nativeBridge } from "@/native/bridge";
 import {
@@ -16,15 +21,50 @@ import {
   getBuiltInEmote,
   isSingleBuiltInSticker,
   ReactionGlyph,
-  renderRichTextTokens,
   resolveAssetUrl,
 } from "@/shared/emotes";
 import { formatBytes, formatMessageClock } from "@/shared/format";
+import { ChatMarkdown, type MarkdownMentionTarget } from "@/shared/markdown";
 import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
-import { useWorkspaceStore, type V1Message } from "@/store/workspace-store";
+import {
+  useWorkspaceStore,
+  type CollapsePreferences,
+  type V1Message,
+} from "@/store/workspace-store";
 import { Avatar } from "./Avatar";
 import { CardKitView } from "./CardKitView";
+
+export function isLongChatMessageText(text: string): boolean {
+  if (!text) return false;
+  const lineCount = text.replace(/\r\n/g, "\n").split("\n").length;
+  return lineCount > 12 || text.length > 720;
+}
+
+export function isMessageEffectivelyCollapsed(
+  msg: V1Message,
+  collapsePrefs: CollapsePreferences,
+  overrides: Record<string, boolean>
+): boolean {
+  const manual = overrides[msg.id];
+  if (typeof manual === "boolean") return manual;
+
+  const emojiBlock =
+    msg.blocks?.length === 1 && msg.blocks[0].type === "emoji" ? msg.blocks[0] : null;
+  const isSticker = Boolean(
+    !msg.attachments?.length &&
+      (emojiBlock || isSingleBuiltInSticker(msg.plainText))
+  );
+  if (isSticker && collapsePrefs.collapseStickers) return true;
+
+  const hasImages = (msg.attachments || []).some((a) => a.mimeType.startsWith("image/"));
+  if (hasImages && collapsePrefs.collapseImages) return true;
+
+  if (collapsePrefs.collapseLongMessages && isLongChatMessageText(msg.plainText)) {
+    return true;
+  }
+  return false;
+}
 
 function DeliveryStatusIcon({
   status,
@@ -84,6 +124,9 @@ export function MessageItem({
   const customSrcMap = useEmoteStore((s) => s.customSrcMap);
   const members = useWorkspaceStore((s) => s.members);
   const recalledDrafts = useWorkspaceStore((s) => s.recalledDrafts);
+  const collapsePrefs = useWorkspaceStore((s) => s.collapsePrefs);
+  const manualOverride = useWorkspaceStore((s) => s.messageCollapseOverrides[msg.id]);
+  const setLocalMessageCollapsed = useWorkspaceStore((s) => s.setLocalMessageCollapsed);
   const restoreRecalledDraft = useWorkspaceStore((s) => s.restoreRecalledDraft);
   const toggleReaction = useWorkspaceStore((s) => s.toggleReaction);
   const setActionMessageId = useNavStore((s) => s.setActionMessageId);
@@ -94,6 +137,9 @@ export function MessageItem({
   // Touch gestures: long-press for action sheet, swipe-left for reply, tap for Feishu-style time reveal
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [showTime, setShowTime] = useState(false);
+  const [mediaExpandedSession, setMediaExpandedSession] = useState(false);
+  const [longTextExpanded, setLongTextExpanded] = useState(false);
+
   const touchState = useRef<{
     startX: number;
     startY: number;
@@ -107,6 +153,34 @@ export function MessageItem({
       touchState.current.longPressTimer = null;
     }
   };
+
+  const { markdownSource, mentionTargets } = useMemo(() => {
+    const targets: MarkdownMentionTarget[] = [];
+    if (msg.blocks && msg.blocks.length > 0) {
+      let rebuilt = "";
+      for (const b of msg.blocks) {
+        if (b.type === "text") {
+          rebuilt += b.text;
+        } else if (b.type === "mention") {
+          const resolved =
+            b.userId === "all" || b.label === "所有人"
+              ? "所有人"
+              : members[b.userId]?.displayName ||
+                (b.label.startsWith("__duallane_") ? "机器人" : b.label);
+          targets.push({ userId: b.userId, label: resolved });
+          rebuilt += `@${resolved}`;
+        } else if (b.type === "link") {
+          rebuilt += b.label && b.label !== b.url ? `[${b.label}](${b.url})` : b.url;
+        } else if (b.type === "emoji" && msg.blocks.length > 1) {
+          rebuilt += `[${b.shortcode}]`;
+        }
+      }
+      if (rebuilt.trim()) {
+        return { markdownSource: rebuilt, mentionTargets: targets };
+      }
+    }
+    return { markdownSource: msg.plainText, mentionTargets: targets };
+  }, [msg.blocks, msg.plainText, members]);
 
   if (msg.kind === "system") {
     return (
@@ -171,7 +245,6 @@ export function MessageItem({
       !packShareId
   );
 
-  // User explicitly asked for standalone single images & stickers to be frameless!
   const isFramelessSticker = Boolean(
     (builtInSticker || customStickerSrc) && !msg.replyToId && !msg.card && !fileAttachments.length
   );
@@ -182,7 +255,46 @@ export function MessageItem({
       !msg.replyToId &&
       !msg.card
   );
-  const isFrameless = isFramelessSticker || isFramelessSingleImage;
+
+  // Collapse logic (A1: Boss-Key Auto-Hide + Local Per-Message Collapse)
+  const manuallyCollapsed = manualOverride === true;
+  const manuallyExpanded = manualOverride === false;
+
+  const stickerCollapsed =
+    manuallyCollapsed ||
+    (!manuallyExpanded &&
+      !mediaExpandedSession &&
+      collapsePrefs.collapseStickers &&
+      Boolean(builtInSticker || customStickerSrc));
+
+  const imagesCollapsed =
+    manuallyCollapsed ||
+    (!manuallyExpanded &&
+      !mediaExpandedSession &&
+      collapsePrefs.collapseImages &&
+      imageAttachments.length > 0);
+
+  const isLongText = hasCaptionText && isLongChatMessageText(markdownSource);
+  const shouldClampLongText =
+    !manuallyExpanded &&
+    !longTextExpanded &&
+    collapsePrefs.collapseLongMessages &&
+    isLongText;
+
+  const isWholeCapsuleCollapsed =
+    manuallyCollapsed ||
+    (isFramelessSticker && stickerCollapsed) ||
+    (isFramelessSingleImage && imagesCollapsed);
+
+  const isFrameless = !isWholeCapsuleCollapsed && (isFramelessSticker || isFramelessSingleImage);
+
+  const handleExpandCollapsedCapsule = (ev: React.MouseEvent) => {
+    ev.stopPropagation();
+    if (manuallyCollapsed) {
+      setLocalMessageCollapsed(msg.id, false);
+    }
+    setMediaExpandedSession(true);
+  };
 
   const handleTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0];
@@ -225,58 +337,6 @@ export function MessageItem({
   const reactionEntries = Object.entries(msg.reactions || {}).filter(([, v]) => v.count > 0);
   const clockStr = formatMessageClock(msg.createdAt);
 
-  const renderMessageRichBody = () => {
-    if (msg.blocks && msg.blocks.length > 0) {
-      return msg.blocks.map((b, i) => {
-        if (b.type === "mention") {
-          const resolvedLabel =
-            members[b.userId]?.displayName ||
-            (b.label.startsWith("__duallane_") ? "机器人" : b.label);
-          return (
-            <span
-              key={i}
-              onClick={(ev) => {
-                ev.stopPropagation();
-                onMentionSender(b.userId, resolvedLabel);
-              }}
-              className={`inline font-semibold px-1 py-0.5 rounded-md mx-0.5 break-all [overflow-wrap:anywhere] ${
-                isOwn
-                  ? "bg-white/20 text-white"
-                  : "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]"
-              }`}
-            >
-              @{resolvedLabel}
-            </span>
-          );
-        }
-        if (b.type === "link") {
-          return (
-            <button
-              key={i}
-              type="button"
-              onClick={(ev) => {
-                ev.stopPropagation();
-                nativeBridge.openExternalUrl(b.url);
-              }}
-              className="inline underline break-all [overflow-wrap:anywhere] text-left"
-            >
-              {b.label || b.url}
-            </button>
-          );
-        }
-        if (b.type === "text") {
-          return (
-            <React.Fragment key={i}>
-              {renderRichTextTokens(b.text, `${msg.id}_${i}`)}
-            </React.Fragment>
-          );
-        }
-        return null;
-      });
-    }
-    return renderRichTextTokens(msg.plainText, msg.id);
-  };
-
   const bubbleRadiusCls = isOwn
     ? groupedWithPrev
       ? "rounded-[18px] rounded-tr-[6px] rounded-br-[6px]"
@@ -284,6 +344,13 @@ export function MessageItem({
     : groupedWithPrev
     ? "rounded-[18px] rounded-tl-[6px] rounded-bl-[6px]"
     : "rounded-[18px] rounded-bl-[6px]";
+
+  const wholeCapsuleLabel =
+    builtInSticker || customStickerSrc
+      ? "[贴纸 · 点击展开]"
+      : imageAttachments.length > 0 && !hasCaptionText
+      ? "[图片 · 点击展开]"
+      : "[消息已折叠 · 点击展开]";
 
   return (
     <div
@@ -351,7 +418,7 @@ export function MessageItem({
         {!isOwn && isGroup && !groupedWithPrev && (
           <div className="flex items-center gap-1.5 mb-1 pl-0.5 max-w-full min-w-0">
             <span className="text-[12px] font-medium text-[var(--dl-text-muted)] truncate max-w-[150px]">
-              {msg.senderName}
+              {members[msg.senderId]?.displayName || msg.senderName}
             </span>
             {msg.kind === "bot" && (
               <span className="px-1.5 py-0.2 rounded text-[10px] font-medium bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] shrink-0">
@@ -360,8 +427,13 @@ export function MessageItem({
             )}
             <button
               type="button"
-              onClick={() => onMentionSender(msg.senderId, msg.senderName)}
-              aria-label={`提及 ${msg.senderName}`}
+              onClick={() =>
+                onMentionSender(
+                  msg.senderId,
+                  members[msg.senderId]?.displayName || msg.senderName
+                )
+              }
+              aria-label={`提及 ${members[msg.senderId]?.displayName || msg.senderName}`}
               className="px-1.5 py-0.2 rounded-full text-[11px] font-medium text-[var(--dl-accent)] bg-[var(--dl-accent-soft)] active:scale-95 shrink-0"
             >
               @TA
@@ -379,8 +451,31 @@ export function MessageItem({
           </div>
         )}
 
-        {/* FRAMELESS STANDALONE STICKER OR SINGLE IMAGE */}
-        {isFrameless ? (
+        {/* COLLAPSED CAPSULE (Auto-Hide / Boss-Key / Local Collapse) */}
+        {isWholeCapsuleCollapsed ? (
+          <div className="flex items-end gap-1.5 min-w-0 max-w-full">
+            {isOwn && (
+              <span className="shrink-0 mb-1 flex items-center gap-1">
+                <DeliveryStatusIcon status={msg.status} external />
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleExpandCollapsedCapsule}
+              className="px-3 py-1.5 rounded-full border border-dashed border-[var(--dl-border)] bg-[var(--dl-surface)] text-[12.5px] font-medium text-[var(--dl-text-muted)] flex items-center gap-1.5 active:scale-95 transition"
+            >
+              {builtInSticker || customStickerSrc ? (
+                <Smile size={14} className="text-[var(--dl-accent)] shrink-0" />
+              ) : imageAttachments.length > 0 ? (
+                <ImageIcon size={14} className="text-[var(--dl-accent)] shrink-0" />
+              ) : (
+                <Eye size={14} className="text-[var(--dl-accent)] shrink-0" />
+              )}
+              <span>{wholeCapsuleLabel}</span>
+            </button>
+          </div>
+        ) : isFrameless ? (
+          /* FRAMELESS STANDALONE STICKER OR SINGLE IMAGE */
           <div className="relative inline-block max-w-full group">
             {isFramelessSticker ? (
               <img
@@ -533,7 +628,9 @@ export function MessageItem({
                     }`}
                   >
                     <span className={`font-medium ${isOwn ? "text-white/90" : "text-[var(--dl-text)]/80"}`}>
-                      {replyTarget ? `回复 ${replyTarget.senderName}：` : "引用消息："}
+                      {replyTarget
+                        ? `回复 ${members[replyTarget.senderId]?.displayName || replyTarget.senderName}：`
+                        : "引用消息："}
                     </span>
                     <span>
                       {replyTarget
@@ -544,30 +641,75 @@ export function MessageItem({
                 </div>
               )}
 
+              {/* Sticker inside replied bubble */}
+              {(builtInSticker || customStickerSrc) && (
+                <div className="mb-1">
+                  {stickerCollapsed ? (
+                    <button
+                      type="button"
+                      onClick={handleExpandCollapsedCapsule}
+                      className={`px-2.5 py-1 rounded-full text-[12px] font-medium flex items-center gap-1 ${
+                        isOwn ? "bg-black/20 text-white" : "bg-[var(--dl-card)] text-[var(--dl-text-muted)]"
+                      }`}
+                    >
+                      <Smile size={13} />
+                      <span>[贴纸 · 点击展开]</span>
+                    </button>
+                  ) : (
+                    <img
+                      src={resolveAssetUrl(builtInSticker?.src || customStickerSrc || "")}
+                      alt={builtInSticker?.label || "贴纸"}
+                      className="w-24 h-24 object-contain"
+                    />
+                  )}
+                </div>
+              )}
+
               {/* Multi-image or captioned image grid */}
               {imageAttachments.length > 0 && (
-                <div
-                  className={`mb-1.5 grid gap-1.5 ${
-                    imageAttachments.length > 1 ? "grid-cols-2" : "grid-cols-1"
-                  }`}
-                >
-                  {imageAttachments.map((img) => (
-                    <img
-                      key={img.id}
-                      src={resolveAssetUrl(img.url)}
-                      alt={img.fileName}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setLightboxMedia({
-                          src: resolveAssetUrl(img.url),
-                          title: img.fileName,
-                          downloadUrl: resolveAssetUrl(img.downloadUrl || img.url),
-                          favoriteInput: { messageId: msg.id, attachmentId: img.id },
-                        });
-                      }}
-                      className="max-h-48 w-full max-w-full rounded-xl object-cover"
-                    />
-                  ))}
+                <div className="mb-1.5">
+                  {imagesCollapsed ? (
+                    <button
+                      type="button"
+                      onClick={handleExpandCollapsedCapsule}
+                      className={`px-3 py-1.5 rounded-xl text-[12.5px] font-medium flex items-center gap-1.5 ${
+                        isOwn
+                          ? "bg-black/20 text-white"
+                          : "bg-[var(--dl-card)] text-[var(--dl-text-muted)] border border-dashed border-[var(--dl-border)]"
+                      }`}
+                    >
+                      <ImageIcon size={14} />
+                      <span>
+                        {imageAttachments.length > 1
+                          ? `[图片 ×${imageAttachments.length} · 点击展开]`
+                          : "[图片 · 点击展开]"}
+                      </span>
+                    </button>
+                  ) : (
+                    <div
+                      className={`grid gap-1.5 ${
+                        imageAttachments.length > 1 ? "grid-cols-2" : "grid-cols-1"
+                      }`}
+                    >
+                      {imageAttachments.map((img) => (
+                        <img
+                          key={img.id}
+                          src={resolveAssetUrl(img.url)}
+                          alt={img.fileName}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setLightboxMedia({
+                              src: resolveAssetUrl(img.url),
+                              title: img.fileName,
+                              downloadUrl: resolveAssetUrl(img.downloadUrl || img.url),
+                              favoriteInput: { messageId: msg.id, attachmentId: img.id },
+                            });
+                          }}
+                          className="max-h-48 w-full max-w-full rounded-xl object-cover"
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -596,12 +738,63 @@ export function MessageItem({
                 </div>
               )}
 
-              {/* Rich text */}
+              {/* Rich Markdown & Auto-Link Body */}
               {hasCaptionText && (
-                <div className="text-[15px] leading-[1.45] whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-w-full min-w-0">
-                  {renderMessageRichBody()}
+                <div className="text-[15px] max-w-full min-w-0">
+                  <div
+                    className={
+                      shouldClampLongText ? "max-h-[216px] overflow-hidden relative" : ""
+                    }
+                  >
+                    <ChatMarkdown
+                      text={markdownSource}
+                      tone={isOwn ? "own" : "peer"}
+                      lane="workspace"
+                      mentions={mentionTargets}
+                      onMentionClick={(uid, label) => {
+                        if (uid === "all" && !isGroup) return;
+                        onMentionSender(uid, label);
+                      }}
+                    />
+                  </div>
+                  {shouldClampLongText && (
+                    <button
+                      type="button"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setLongTextExpanded(true);
+                      }}
+                      className={`mt-1.5 px-2.5 py-1 rounded-lg text-[12px] font-semibold flex items-center gap-1 ${
+                        isOwn
+                          ? "bg-white/20 text-white"
+                          : "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]"
+                      }`}
+                    >
+                      <ChevronDown size={13} />
+                      <span>展开全文</span>
+                    </button>
+                  )}
+                  {!shouldClampLongText && longTextExpanded && isLongText && (
+                    <button
+                      type="button"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setLongTextExpanded(false);
+                      }}
+                      className={`mt-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium flex items-center gap-1 ${
+                        isOwn
+                          ? "bg-white/15 text-white/90"
+                          : "bg-[var(--dl-card)] text-[var(--dl-text-muted)]"
+                      }`}
+                    >
+                      <ChevronUp size={13} />
+                      <span>收起长文</span>
+                    </button>
+                  )}
                   {msg.editedAt && (
-                    <span className="ml-1.5 text-[11px] opacity-65 select-none">(已编辑)</span>
+                    <span className="mt-0.5 inline-block text-[11px] opacity-65 select-none">
+                      (已编辑)
+                    </span>
                   )}
                 </div>
               )}

@@ -710,6 +710,107 @@ class NetworkGateway(
         }
     }
 
+    fun uploadConversationBytes(
+        conversationId: String,
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray,
+    ): JSONObject {
+        val reserveBody = JSONObject().apply {
+            put("fileName", fileName)
+            put("mimeType", mimeType)
+            put("byteSize", bytes.size.toLong())
+            put("visibility", "conversation")
+            put("conversationId", conversationId)
+        }
+        val reserveResp = executeApiCall(
+            method = "POST",
+            path = "/api/workspace/files/uploads/reserve",
+            headersJson = "{}",
+            bodyText = reserveBody.toString(),
+        )
+        val reserveJson = runCatching { JSONObject(reserveResp.optString("bodyText")) }.getOrNull() ?: JSONObject()
+        if (!reserveResp.optBoolean("ok") || reserveJson.optString("status") == "rejected") {
+            throw IllegalStateException(
+                extractApiErrorMessage(reserveResp.optString("bodyText"), "文件上传配额不足或初始化失败")
+            )
+        }
+        val uploadObj = reserveJson.optJSONObject("upload")
+            ?: throw IllegalStateException("未获取到上传会话标识")
+        val uploadId = uploadObj.optString("id")
+        if (uploadId.isBlank()) throw IllegalStateException("上传会话 ID 为空")
+
+        val mode = uploadObj.optString("mode", "single")
+        val partCount = uploadObj.optInt("partCount", 1)
+        val partSize = uploadObj.optInt("partSize", 4 * 1024 * 1024).coerceAtLeast(256 * 1024)
+        var finalAttachment = reserveJson.optJSONObject("attachment")
+        var finalUsedToday: Long? = if (reserveJson.has("usedToday")) reserveJson.optLong("usedToday") else null
+        val encodedUploadId = URLEncoder.encode(uploadId, "UTF-8")
+
+        if (mode == "chunked" && partCount > 1) {
+            ByteArrayInputStream(bytes).use { stream ->
+                for (partNumber in 1..partCount) {
+                    val buffer = readChunkExactOrEof(stream, partSize)
+                    val shaHex = sha256Hex(buffer)
+                    executeBinaryUpload(
+                        method = "PUT",
+                        path = "/api/workspace/files/uploads/$encodedUploadId/parts/$partNumber",
+                        contentType = "application/octet-stream",
+                        bytes = buffer,
+                        extraHeaders = mapOf("X-Content-SHA256" to shaHex),
+                    )
+                }
+            }
+            val completeResp = executeApiCall(
+                method = "POST",
+                path = "/api/workspace/files/uploads/$encodedUploadId/complete",
+                headersJson = "{}",
+                bodyText = "",
+            )
+            if (!completeResp.optBoolean("ok")) {
+                throw IllegalStateException("分片文件合并失败")
+            }
+            val completeJson = runCatching { JSONObject(completeResp.optString("bodyText")) }.getOrNull()
+            completeJson?.optJSONObject("attachment")?.let { finalAttachment = it }
+            if (completeJson?.has("usedToday") == true) {
+                finalUsedToday = completeJson.optLong("usedToday")
+            }
+        } else {
+            val putJson = executeBinaryUpload(
+                method = "PUT",
+                path = "/api/workspace/files/uploads/$encodedUploadId/content",
+                contentType = "application/octet-stream",
+                bytes = bytes,
+            )
+            putJson.optJSONObject("attachment")?.let { finalAttachment = it }
+            if (putJson.has("usedToday")) {
+                finalUsedToday = putJson.optLong("usedToday")
+            }
+        }
+
+        val attId = finalAttachment?.optString("id").orEmpty()
+        if (attId.isBlank()) throw IllegalStateException("上传完成但未返回附件 ID")
+        val encodedAttId = URLEncoder.encode(attId, "UTF-8")
+        val finalMime = finalAttachment?.optString("mimeType").takeUnless { it.isNullOrBlank() } ?: mimeType
+        val downloadUrl = "/api/workspace/files/$encodedAttId/download"
+        val previewUrl = if (finalMime.startsWith("image/")) {
+            "/api/workspace/files/$encodedAttId/preview"
+        } else {
+            downloadUrl
+        }
+        return JSONObject().apply {
+            put("id", attId)
+            put("fileName", finalAttachment?.optString("fileName").takeUnless { it.isNullOrBlank() } ?: fileName)
+            put("mimeType", finalMime)
+            put("byteSize", finalAttachment?.optLong("byteSize", bytes.size.toLong()) ?: bytes.size.toLong())
+            put("url", previewUrl)
+            put("downloadUrl", downloadUrl)
+            if (finalUsedToday != null) {
+                put("usedToday", finalUsedToday)
+            }
+        }
+    }
+
     fun uploadCustomEmote(
         media: PickedMediaEntry,
         collectionId: String,

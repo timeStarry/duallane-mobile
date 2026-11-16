@@ -317,6 +317,11 @@ export interface BoundEmailStatusDTO {
   verifiedAt?: string;
 }
 
+export interface MyNotificationSettingsDTO {
+  offlineEmailEnabled: boolean;
+  fieldKey: string;
+}
+
 export const mobileApi = {
   getHealth: () =>
     requestJSON<{ ok?: boolean; workspace?: { enabled?: boolean } }>("/api/health"),
@@ -514,6 +519,76 @@ export const mobileApi = {
       `/api/v1/conversations/${encodeURIComponent(conversationId)}/read`,
       { method: "POST" }
     ),
+
+  updateConversationNotification: (
+    conversationId: string,
+    level: "all" | "mentions" | "muted"
+  ) =>
+    requestJSON<{ ok?: boolean; level?: string; notificationLevel?: string }>(
+      `/api/workspace/conversations/${encodeURIComponent(conversationId)}/notification`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ level }),
+      }
+    ),
+
+  setMemberRemark: (userId: string, remark: string) => {
+    const clean = remark.trim();
+    const path = `/api/workspace/members/${encodeURIComponent(userId)}/remark`;
+    if (!clean) {
+      return requestJSON<{ ok?: boolean; member?: Record<string, unknown> }>(path, {
+        method: "DELETE",
+      });
+    }
+    return requestJSON<{ ok?: boolean; remark?: string; member?: Record<string, unknown> }>(path, {
+      method: "PUT",
+      body: JSON.stringify({ remark: clean }),
+    });
+  },
+
+  getMyNotificationSettings: async (): Promise<MyNotificationSettingsDTO> => {
+    const raw = await requestJSON<Record<string, unknown>>("/api/workspace/me/notifications");
+    const container =
+      raw.notifications && typeof raw.notifications === "object" && !Array.isArray(raw.notifications)
+        ? (raw.notifications as Record<string, unknown>)
+        : raw.settings && typeof raw.settings === "object" && !Array.isArray(raw.settings)
+        ? (raw.settings as Record<string, unknown>)
+        : raw;
+    const candidateKeys = [
+      "offlineEmailEnabled",
+      "emailEnabled",
+      "offlineEmail",
+      "emailOfflineEnabled",
+      "offlineEmailNotifications",
+      "enabled",
+    ];
+    for (const k of candidateKeys) {
+      if (typeof container[k] === "boolean") {
+        return { offlineEmailEnabled: container[k] as boolean, fieldKey: k };
+      }
+    }
+    return { offlineEmailEnabled: false, fieldKey: "offlineEmailEnabled" };
+  },
+
+  updateMyNotificationSettings: async (
+    offlineEmailEnabled: boolean,
+    fieldKey = "offlineEmailEnabled"
+  ): Promise<MyNotificationSettingsDTO> => {
+    const key = fieldKey || "offlineEmailEnabled";
+    const raw = await requestJSON<Record<string, unknown>>("/api/workspace/me/notifications", {
+      method: "PATCH",
+      body: JSON.stringify({ [key]: offlineEmailEnabled }),
+    });
+    const container =
+      raw.notifications && typeof raw.notifications === "object" && !Array.isArray(raw.notifications)
+        ? (raw.notifications as Record<string, unknown>)
+        : raw.settings && typeof raw.settings === "object" && !Array.isArray(raw.settings)
+        ? (raw.settings as Record<string, unknown>)
+        : raw;
+    const resolved =
+      typeof container[key] === "boolean" ? (container[key] as boolean) : offlineEmailEnabled;
+    return { offlineEmailEnabled: resolved, fieldKey: key };
+  },
 
   sendConversationTyping: (conversationId: string, state: "typing" | "thinking" = "typing") =>
     requestJSON<{ ok: boolean }>(

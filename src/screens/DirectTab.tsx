@@ -17,8 +17,9 @@ import {
 } from "lucide-react";
 import { StickerDrawer } from "@/components/StickerDrawer";
 import { nativeBridge } from "@/native/bridge";
-import { isSingleBuiltInSticker, renderRichTextTokens, resolveAssetUrl } from "@/shared/emotes";
+import { isSingleBuiltInSticker, resolveAssetUrl } from "@/shared/emotes";
 import { formatBytes, formatMessageClock } from "@/shared/format";
+import { ChatMarkdown } from "@/shared/markdown";
 import { parseP2PInviteInput, safeInlineImageMime } from "@/shared/p2p-crypto";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
@@ -364,8 +365,12 @@ export function DirectTab({
                       </div>
                     )}
                     {m.text && (
-                      <div className="text-[15px] leading-[1.45] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                        {renderRichTextTokens(m.text, m.id)}
+                      <div className="text-[15px] max-w-full min-w-0">
+                        <ChatMarkdown
+                          text={m.text}
+                          tone={m.isOwn ? "own" : "peer"}
+                          lane="direct"
+                        />
                       </div>
                     )}
                   </div>

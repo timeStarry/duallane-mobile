@@ -2,8 +2,13 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import {
   ArrowDown,
   ArrowLeft,
+  AtSign,
+  BellOff,
   Copy,
   Edit3,
+  Eye,
+  EyeOff,
+  FileText,
   Forward,
   Image as ImageIcon,
   MessageSquareText,
@@ -20,12 +25,12 @@ import {
 } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { BottomSheet } from "@/components/BottomSheet";
-import { MessageItem } from "@/components/MessageItem";
+import { isMessageEffectivelyCollapsed, MessageItem } from "@/components/MessageItem";
 import { StickerDrawer } from "@/components/StickerDrawer";
 import { nativeBridge } from "@/native/bridge";
 import { mobileApi, type BotCommandSpec } from "@/shared/api";
 import { isSingleBuiltInSticker } from "@/shared/emotes";
-import { formatDateDivider, isSameCalendarDay } from "@/shared/format";
+import { formatBytes, formatDateDivider, isSameCalendarDay } from "@/shared/format";
 import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import {
@@ -38,6 +43,16 @@ import {
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "🔥", "👀"];
 const EMPTY_MESSAGES: V1Message[] = [];
 const EMPTY_TYPERS: TypingIndicatorEntry[] = [];
+const HUGE_PASTE_CHAR_THRESHOLD = 6000;
+
+interface MentionCandidateItem {
+  id: string;
+  displayName: string;
+  isAll?: boolean;
+  avatarUrl?: string;
+  avatarColor?: string;
+  role?: "owner" | "admin" | "member" | "bot";
+}
 
 export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const conv = useWorkspaceStore((s) => s.conversations[conversationId]);
@@ -50,11 +65,14 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const editingMessageId = useWorkspaceStore((s) => s.editingMessageId);
   const highlightedMessageId = useWorkspaceStore((s) => s.highlightedMessageId);
   const typers = useWorkspaceStore((s) => s.typingByConv[conversationId] || EMPTY_TYPERS);
+  const collapsePrefs = useWorkspaceStore((s) => s.collapsePrefs);
+  const messageCollapseOverrides = useWorkspaceStore((s) => s.messageCollapseOverrides);
 
   const loadConversationMessages = useWorkspaceStore((s) => s.loadConversationMessages);
   const markRead = useWorkspaceStore((s) => s.markRead);
   const setDraft = useWorkspaceStore((s) => s.setDraft);
   const setEditingMessageId = useWorkspaceStore((s) => s.setEditingMessageId);
+  const setLocalMessageCollapsed = useWorkspaceStore((s) => s.setLocalMessageCollapsed);
   const sendWorkspaceMessage = useWorkspaceStore((s) => s.sendWorkspaceMessage);
   const editWorkspaceMessage = useWorkspaceStore((s) => s.editWorkspaceMessage);
   const recallWorkspaceMessage = useWorkspaceStore((s) => s.recallWorkspaceMessage);
@@ -62,6 +80,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const togglePinMessage = useWorkspaceStore((s) => s.togglePinMessage);
 
   const favoriteFromMessage = useEmoteStore((s) => s.favoriteFromMessage);
+  const replyAutoMention = useEmoteStore((s) => s.settings?.replyAutoMention !== false);
 
   const closeChat = useNavStore((s) => s.closeChat);
   const actionMessageId = useNavStore((s) => s.actionMessageId);
@@ -78,6 +97,11 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [botCommands, setBotCommands] = useState<BotCommandSpec[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
+  const [hugePaste, setHugePaste] = useState<{
+    text: string;
+    charCount: number;
+    byteSize: number;
+  } | null>(null);
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -110,6 +134,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   useEffect(() => {
     nearBottomRef.current = true;
     setShowScrollBottom(false);
+    setHugePaste(null);
     let cancelled = false;
     if (messages.length === 0) {
       setLoadingInitial(true);
@@ -199,20 +224,33 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const latestPinnedId = conv?.pinnedMessageIds?.[0];
   const latestPinnedMsg = latestPinnedId ? msgById.get(latestPinnedId) : undefined;
 
-  // @Mention Candidate Detection
+  // @Mention Candidate Detection (including @所有人 at top of group chats!)
   const mentionQuery = useMemo(() => {
     if (!conv || conv.kind !== "group") return null;
     const m = textValue.match(/(?:^|\s)@([^\s@]*)$/);
     return m ? m[1].toLowerCase() : null;
   }, [conv, textValue]);
 
-  const mentionCandidates = useMemo(() => {
-    if (mentionQuery === null || !conv) return [];
-    return conv.memberIds
+  const mentionCandidates = useMemo<MentionCandidateItem[]>(() => {
+    if (mentionQuery === null || !conv || conv.kind !== "group") return [];
+    const includeAll =
+      !mentionQuery || "所有人".includes(mentionQuery) || "all".includes(mentionQuery);
+    const memberHits: MentionCandidateItem[] = conv.memberIds
       .filter((uid) => uid !== currentUser?.id && Boolean(members[uid]))
       .map((uid) => members[uid])
       .filter((u) => u.displayName.toLowerCase().includes(mentionQuery))
-      .slice(0, 6);
+      .slice(0, 6)
+      .map((u) => ({
+        id: u.id,
+        displayName: u.displayName,
+        avatarUrl: u.avatarUrl,
+        avatarColor: u.avatarColor,
+        role: u.role,
+      }));
+    if (includeAll) {
+      return [{ id: "all", displayName: "所有人", isAll: true }, ...memberHits];
+    }
+    return memberHits;
   }, [mentionQuery, conv, members, currentUser]);
 
   const insertMention = (userId: string, displayName: string) => {
@@ -223,6 +261,26 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         : `${textValue}${textValue && !textValue.endsWith(" ") ? " " : ""}@${displayName} `;
     setDraft(conversationId, replaced, replyToId);
     textareaRef.current?.focus();
+  };
+
+  const startReplyToMessage = (target: V1Message) => {
+    setEditingMessageId(null);
+    let nextDraft = textValue;
+    if (
+      conv?.kind === "group" &&
+      replyAutoMention &&
+      target.senderId &&
+      target.senderId !== currentUser?.id
+    ) {
+      const targetName = members[target.senderId]?.displayName || target.senderName;
+      if (targetName && !nextDraft.includes(`@${targetName}`)) {
+        nextDraft = nextDraft
+          ? `@${targetName} ${nextDraft.replace(/^\s+/, "")}`
+          : `@${targetName} `;
+      }
+    }
+    setDraft(conversationId, nextDraft, target.id);
+    setTimeout(() => textareaRef.current?.focus(), 40);
   };
 
   const handleTextChange = (val: string) => {
@@ -236,6 +294,46 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     if (val.trim() && now - lastTypingSentRef.current > 3200) {
       lastTypingSentRef.current = now;
       void mobileApi.sendConversationTyping(conversationId, "typing").catch(() => {});
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = e.clipboardData?.getData("text/plain") || "";
+    if (pasted.length > HUGE_PASTE_CHAR_THRESHOLD) {
+      e.preventDefault();
+      setHugePaste({
+        text: pasted,
+        charCount: pasted.length,
+        byteSize: new TextEncoder().encode(pasted).byteLength,
+      });
+    }
+  };
+
+  const handleSendHugePasteAsTxt = async () => {
+    if (!hugePaste || uploading) return;
+    const payload = hugePaste;
+    setHugePaste(null);
+    setUploading(true);
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const fileName = `pasted-${stamp}.txt`;
+      const att = await nativeBridge.uploadTextAttachment(conversationId, fileName, payload.text);
+      await sendWorkspaceMessage(conversationId, textValue, replyToId, [
+        {
+          id: att.id,
+          fileName: att.fileName,
+          mimeType: att.mimeType,
+          byteSize: att.byteSize,
+          url: att.url,
+          downloadUrl: att.downloadUrl,
+        },
+      ]);
+      showToast("长文本已转为 .txt 附件发送", "success");
+    } catch (err) {
+      setHugePaste(payload);
+      showToast(err instanceof Error ? err.message : "上传文本附件失败", "danger");
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -279,6 +377,9 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
   if (!conv) return null;
 
+  const displayConvTitle =
+    conv.kind === "direct" && directPeer?.displayName ? directPeer.displayName : conv.title;
+
   const avatarKind =
     conv.kind === "saved"
       ? "saved"
@@ -308,6 +409,10 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     return null;
   };
 
+  const actionMsgCollapsed = actionMsg
+    ? isMessageEffectivelyCollapsed(actionMsg, collapsePrefs, messageCollapseOverrides)
+    : false;
+
   return (
     <div className="fixed inset-0 z-30 flex flex-col bg-[var(--dl-bg)] pb-[var(--ime-height)]">
       {/* Sticky Glass Chat Header */}
@@ -328,7 +433,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             className="flex-1 min-w-0 flex items-center gap-2.5 text-left active:opacity-80"
           >
             <Avatar
-              name={conv.title}
+              name={displayConvTitle}
               src={conv.avatarUrl || directPeer?.avatarUrl}
               emoji={conv.avatarEmoji}
               kind={avatarKind}
@@ -336,8 +441,13 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
               size={38}
             />
             <div className="min-w-0 flex-1">
-              <div className="text-[15px] font-bold text-[var(--dl-text)] truncate">
-                {conv.title}
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[15px] font-bold text-[var(--dl-text)] truncate">
+                  {displayConvTitle}
+                </span>
+                {conv.notificationLevel === "muted" && (
+                  <BellOff size={13} className="text-[var(--dl-text-muted)] shrink-0" />
+                )}
               </div>
               <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
                 {typers.length > 0 ? (
@@ -468,11 +578,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                     highlighted={highlightedMessageId === msg.id}
                     groupedWithPrev={groupedWithPrev}
                     groupedWithNext={groupedWithNext}
-                    onQuickReply={(target) => {
-                      setEditingMessageId(null);
-                      setDraft(conversationId, textValue, target.id);
-                      textareaRef.current?.focus();
-                    }}
+                    onQuickReply={startReplyToMessage}
                     onMentionSender={insertMention}
                     onJumpToMessage={(targetId) => {
                       const el = document.getElementById(`msg-${targetId}`);
@@ -504,7 +610,10 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
       {/* Floating @Mention Candidate Bar */}
       {mentionCandidates.length > 0 && (
-        <div className="mx-3 mb-1.5 rounded-2xl bg-[var(--dl-surface)] border border-[var(--dl-border)] shadow-lg overflow-hidden divide-y divide-[var(--dl-border)]/50 max-h-48 overflow-y-auto z-20">
+        <div
+          data-testid="mention-candidate-bar"
+          className="mx-3 mb-1.5 rounded-2xl bg-[var(--dl-surface)] border border-[var(--dl-border)] shadow-lg overflow-hidden divide-y divide-[var(--dl-border)]/50 max-h-48 overflow-y-auto z-20"
+        >
           {mentionCandidates.map((u) => (
             <button
               key={u.id}
@@ -512,16 +621,27 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
               onClick={() => insertMention(u.id, u.displayName)}
               className="w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left active:bg-[var(--dl-card)]"
             >
-              <Avatar
-                name={u.displayName}
-                src={u.avatarUrl}
-                kind={u.role === "bot" ? "bot" : "user"}
-                color={u.avatarColor}
-                size={28}
-              />
+              {u.isAll ? (
+                <div className="w-7 h-7 rounded-full bg-amber-500/18 text-amber-600 dark:text-amber-300 flex items-center justify-center shrink-0">
+                  <AtSign size={15} />
+                </div>
+              ) : (
+                <Avatar
+                  name={u.displayName}
+                  src={u.avatarUrl}
+                  kind={u.role === "bot" ? "bot" : "user"}
+                  color={u.avatarColor}
+                  size={28}
+                />
+              )}
               <span className="text-[14px] font-medium text-[var(--dl-text)] truncate">
-                {u.displayName}
+                {u.isAll ? "@所有人" : u.displayName}
               </span>
+              {u.isAll && (
+                <span className="ml-auto text-[11px] text-[var(--dl-text-muted)] shrink-0">
+                  提醒全体群成员
+                </span>
+              )}
               {u.role === "bot" && (
                 <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]">
                   BOT
@@ -558,6 +678,56 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         </div>
       )}
 
+      {/* Huge Paste -> .txt Attachment Prompt Banner */}
+      {hugePaste && (
+        <div
+          data-testid="huge-paste-banner"
+          className="px-3.5 py-2.5 bg-[var(--dl-surface)] border-t border-[var(--dl-border)] flex items-center justify-between gap-2 shrink-0"
+        >
+          <div className="min-w-0 flex-1 flex items-center gap-2">
+            <FileText size={16} className="text-[var(--dl-accent)] shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[12.5px] font-semibold text-[var(--dl-text)] truncate">
+                检测到长文本粘贴（{hugePaste.charCount.toLocaleString()} 字 ·{" "}
+                {formatBytes(hugePaste.byteSize)}）
+              </div>
+              <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
+                建议转为 .txt 附件发送，保持群聊清晰易读
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                const text = hugePaste.text;
+                setHugePaste(null);
+                setDraft(conversationId, textValue + text, replyToId);
+              }}
+              className="px-2.5 py-1.5 rounded-xl bg-[var(--dl-card)] text-[11.5px] font-medium text-[var(--dl-text-muted)]"
+            >
+              直接粘贴
+            </button>
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={() => void handleSendHugePasteAsTxt()}
+              className="px-2.5 py-1.5 rounded-xl bg-[var(--dl-accent)] text-white text-[11.5px] font-semibold disabled:opacity-50"
+            >
+              转为 .txt 发送
+            </button>
+            <button
+              type="button"
+              aria-label="忽略长文本提示"
+              onClick={() => setHugePaste(null)}
+              className="p-1 text-[var(--dl-text-muted)]"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Feishu-Inspired Lightweight Reply / Edit Banner */}
       {(replyTarget || editingMsg) && (
         <div className="px-3.5 py-2 bg-[var(--dl-surface)] border-t border-[var(--dl-border)] flex items-center justify-between gap-2 shrink-0 overflow-hidden">
@@ -573,7 +743,13 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             />
             <div className="min-w-0 flex-1 truncate text-[12.5px] leading-snug text-[var(--dl-text-muted)]">
               <span className="font-medium text-[var(--dl-text)]/80">
-                {editingMsg ? "编辑消息：" : `回复 ${replyTarget?.senderName}：`}
+                {editingMsg
+                  ? "编辑消息："
+                  : `回复 ${
+                      replyTarget
+                        ? members[replyTarget.senderId]?.displayName || replyTarget.senderName
+                        : ""
+                    }：`}
               </span>
               <span>
                 {(editingMsg ? editingMsg.plainText : replyTarget?.plainText) || "[媒体消息]"}
@@ -634,6 +810,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           rows={1}
           value={textValue}
           onFocus={() => setStickerOpen(false)}
+          onPaste={handlePaste}
           onChange={(e) => handleTextChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -641,7 +818,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
               void handleSend();
             }
           }}
-          placeholder={uploading ? "正在上传附件…" : `发送消息到 ${conv.title}…`}
+          placeholder={uploading ? "正在上传附件…" : `发送消息到 ${displayConvTitle}…`}
           className="flex-1 max-h-28 py-2 px-3.5 rounded-2xl bg-[var(--dl-card)] text-[15px] text-[var(--dl-text)] outline-none resize-none leading-snug"
         />
 
@@ -733,8 +910,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
               <button
                 type="button"
                 onClick={() => {
-                  setEditingMessageId(null);
-                  setDraft(conversationId, textValue, actionMsg.id);
+                  startReplyToMessage(actionMsg);
                   setActionMessageId(null);
                 }}
                 className="p-3 rounded-2xl bg-[var(--dl-card)] flex flex-col items-center gap-1.5 text-[12px] font-medium text-[var(--dl-text)]"
@@ -786,6 +962,18 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                 <span>
                   {conv.pinnedMessageIds.includes(actionMsg.id) ? "取消置顶" : "置顶"}
                 </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setLocalMessageCollapsed(actionMsg.id, !actionMsgCollapsed);
+                  setActionMessageId(null);
+                }}
+                className="p-3 rounded-2xl bg-[var(--dl-card)] flex flex-col items-center gap-1.5 text-[12px] font-medium text-[var(--dl-text)]"
+              >
+                {actionMsgCollapsed ? <Eye size={18} /> : <EyeOff size={18} />}
+                <span>{actionMsgCollapsed ? "在本机展开" : "在本机折叠"}</span>
               </button>
 
               {(() => {

@@ -33,6 +33,21 @@ export interface NativeUpdateProgressEvent {
   totalBytes: number;
 }
 
+export interface BackgroundPushStatus {
+  keepAliveEnabled: boolean;
+  notificationsGranted: boolean;
+  ignoringBatteryOptimizations: boolean;
+}
+
+export interface NotificationContextPayload {
+  currentUserId: string;
+  currentUserDisplayName: string;
+  muteMap: Record<string, "all" | "mentions" | "muted">;
+  memberNames: Record<string, string>;
+  convTitles?: Record<string, string>;
+  convKinds?: Record<string, string>;
+}
+
 interface RawAndroidBridge {
   getBootstrapInfo(): string;
   setApiOrigin(origin: string): string;
@@ -42,12 +57,24 @@ interface RawAndroidBridge {
   httpRequest(callId: string, method: string, path: string, headersJson: string, bodyText: string): void;
   pickMedia(callId: string, mode: "image" | "file", multiple: boolean): void;
   uploadConversationFile(callId: string, conversationId: string, pickedFileId: string): void;
+  uploadTextAttachment?(
+    callId: string,
+    conversationId: string,
+    fileName: string,
+    content: string
+  ): void;
   uploadCustomEmote(callId: string, pickedFileId: string, collectionId: string, addToLibrary: boolean): void;
   uploadBinaryAvatar(callId: string, targetPath: string, pickedFileId: string): void;
   readPickedFileBase64(callId: string, pickedFileId: string): void;
   wsConnect(socketId: string, path: string, authenticated: boolean): void;
   wsSend(socketId: string, data: string): void;
   wsClose(socketId: string): void;
+  syncNotificationContext?(json: string): void;
+  clearConversationNotification?(conversationId: string): void;
+  getBackgroundPushStatus?(): string;
+  setKeepAliveEnabled?(enabled: boolean): string;
+  requestIgnoreBatteryOptimizations?(): void;
+  requestNotificationPermission?(): void;
   haptic(kind: "light" | "medium" | "heavy" | "selection"): void;
   shareText(title: string, text: string): void;
   copyText(text: string): void;
@@ -81,6 +108,7 @@ declare global {
     __duallaneSetInsets?: (safeTop: number, safeBottom: number, imeHeight: number) => void;
     __duallaneOnSystemTheme?: (mode: string) => void;
     __duallaneOnUpdateProgress?: (payloadJson: string) => void;
+    __duallaneOnAppResumed?: () => void;
   }
 }
 
@@ -106,6 +134,7 @@ let oauthListeners: Array<(res: { ok: boolean; error?: string }) => void> = [];
 let deepLinkListeners: Array<(url: string) => void> = [];
 let systemThemeListeners: Array<(mode: "light" | "dark") => void> = [];
 let updateProgressListeners: Array<(ev: NativeUpdateProgressEvent) => void> = [];
+let appResumeListeners: Array<() => void> = [];
 let backPressHandler: (() => boolean) | null = null;
 
 function ensureGlobalCallbacks() {
@@ -193,6 +222,14 @@ function ensureGlobalCallbacks() {
       }
     };
   }
+
+  if (!window.__duallaneOnAppResumed) {
+    window.__duallaneOnAppResumed = () => {
+      for (const cb of appResumeListeners) {
+        cb();
+      }
+    };
+  }
 }
 
 ensureGlobalCallbacks();
@@ -220,6 +257,7 @@ function invokeNativeAsync<T>(fn: (callId: string) => void): Promise<T> {
 
 const DEFAULT_ORIGIN = "https://duallane.tsio.top";
 const BROWSER_ORIGIN_KEY = "duallane:mobile:api-origin";
+const BROWSER_KEEPALIVE_KEY = "duallane:mobile:keepalive-enabled";
 
 export const nativeBridge = {
   isNativeAndroid(): boolean {
@@ -233,9 +271,9 @@ export const nativeBridge = {
         return {
           authenticated: Boolean(raw.authenticated),
           apiOrigin: raw.apiOrigin || DEFAULT_ORIGIN,
-          appVersion: raw.appVersion || "1.0.9",
-          nativeVersion: raw.nativeVersion || raw.appVersion || "1.0.9",
-          versionCode: raw.versionCode || 10009,
+          appVersion: raw.appVersion || "1.0.10",
+          nativeVersion: raw.nativeVersion || raw.appVersion || "1.0.10",
+          versionCode: raw.versionCode || 10010,
           otaActive: Boolean(raw.otaActive),
           otaBundleId: raw.otaBundleId ? String(raw.otaBundleId) : undefined,
           platform: raw.platform || "android",
@@ -253,9 +291,9 @@ export const nativeBridge = {
     return {
       authenticated: false,
       apiOrigin: storedOrigin || DEFAULT_ORIGIN,
-      appVersion: "1.0.9",
-      nativeVersion: "1.0.9",
-      versionCode: 10009,
+      appVersion: "1.0.10",
+      nativeVersion: "1.0.10",
+      versionCode: 10010,
       otaActive: false,
       platform: "web",
     };
@@ -485,6 +523,78 @@ export const nativeBridge = {
     };
   },
 
+  async uploadTextAttachment(
+    conversationId: string,
+    fileName: string,
+    content: string
+  ): Promise<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    byteSize: number;
+    url: string;
+    downloadUrl: string;
+    usedToday?: number;
+  }> {
+    const cleanName = fileName.trim() || "pasted.txt";
+    if (this.isNativeAndroid() && window.DualLaneNative?.uploadTextAttachment) {
+      return invokeNativeAsync((callId) => {
+        window.DualLaneNative!.uploadTextAttachment!(callId, conversationId, cleanName, content);
+      });
+    }
+    const byteSize = new TextEncoder().encode(content).byteLength;
+    const mimeType = "text/plain; charset=utf-8";
+    const reserveRes = await this.request("POST", "/api/workspace/files/uploads/reserve", {
+      body: JSON.stringify({
+        fileName: cleanName,
+        mimeType,
+        byteSize,
+        visibility: "conversation",
+        conversationId,
+      }),
+    });
+    const reserved = JSON.parse(reserveRes.bodyText || "{}") as {
+      upload?: { id: string };
+      attachment?: { id: string; fileName: string; mimeType: string; byteSize: number };
+      error?: { message?: string };
+      message?: string;
+    };
+    if (!reserveRes.ok || !reserved.upload?.id) {
+      throw new Error(
+        reserved.error?.message || reserved.message || "长文本附件上传配额不足或初始化失败"
+      );
+    }
+    const putRes = await this.request(
+      "PUT",
+      `/api/workspace/files/uploads/${encodeURIComponent(reserved.upload.id)}/content`,
+      {
+        headers: { "Content-Type": "application/octet-stream" },
+        body: content,
+      }
+    );
+    if (!putRes.ok) {
+      throw new Error("长文本附件上传失败");
+    }
+    const done = JSON.parse(putRes.bodyText || "{}") as {
+      usedToday?: number;
+      attachment?: { id: string; fileName: string; mimeType: string; byteSize: number };
+    };
+    const att = done.attachment || reserved.attachment;
+    if (!att?.id) {
+      throw new Error("长文本附件上传未返回附件标识");
+    }
+    const downloadUrl = `/api/workspace/files/${encodeURIComponent(att.id)}/download`;
+    return {
+      id: att.id,
+      fileName: att.fileName || cleanName,
+      mimeType: att.mimeType || mimeType,
+      byteSize: att.byteSize || byteSize,
+      url: downloadUrl,
+      downloadUrl,
+      usedToday: done.usedToday,
+    };
+  },
+
   async uploadCustomEmote(
     pickedFileId: string,
     collectionId = "",
@@ -650,6 +760,98 @@ export const nativeBridge = {
     if (this.isNativeAndroid() && window.DualLaneNative) {
       window.DualLaneNative.setCanGoBack(canGoBack);
     }
+  },
+
+  syncNotificationContext(payload: NotificationContextPayload): void {
+    if (!this.isNativeAndroid() || !window.DualLaneNative?.syncNotificationContext) return;
+    try {
+      window.DualLaneNative.syncNotificationContext(JSON.stringify(payload));
+    } catch {
+      // non-fatal
+    }
+  },
+
+  clearConversationNotification(conversationId: string): void {
+    if (!this.isNativeAndroid() || !window.DualLaneNative?.clearConversationNotification) return;
+    try {
+      window.DualLaneNative.clearConversationNotification(conversationId);
+    } catch {
+      // non-fatal
+    }
+  },
+
+  getBackgroundPushStatus(): BackgroundPushStatus {
+    if (this.isNativeAndroid() && window.DualLaneNative?.getBackgroundPushStatus) {
+      try {
+        const parsed = JSON.parse(
+          window.DualLaneNative.getBackgroundPushStatus()
+        ) as Partial<BackgroundPushStatus>;
+        return {
+          keepAliveEnabled: parsed.keepAliveEnabled !== false,
+          notificationsGranted: Boolean(parsed.notificationsGranted),
+          ignoringBatteryOptimizations: Boolean(parsed.ignoringBatteryOptimizations),
+        };
+      } catch {
+        // fallback below
+      }
+    }
+    const stored =
+      typeof window !== "undefined" ? window.localStorage.getItem(BROWSER_KEEPALIVE_KEY) : null;
+    const browserNotifGranted =
+      typeof Notification !== "undefined" && Notification.permission === "granted";
+    return {
+      keepAliveEnabled: stored !== "false",
+      notificationsGranted: browserNotifGranted,
+      ignoringBatteryOptimizations: !this.isNativeAndroid(),
+    };
+  },
+
+  setKeepAliveEnabled(enabled: boolean): BackgroundPushStatus {
+    if (this.isNativeAndroid() && window.DualLaneNative?.setKeepAliveEnabled) {
+      try {
+        const parsed = JSON.parse(
+          window.DualLaneNative.setKeepAliveEnabled(enabled)
+        ) as Partial<BackgroundPushStatus>;
+        return {
+          keepAliveEnabled: parsed.keepAliveEnabled ?? enabled,
+          notificationsGranted: Boolean(parsed.notificationsGranted),
+          ignoringBatteryOptimizations: Boolean(parsed.ignoringBatteryOptimizations),
+        };
+      } catch {
+        // fallback below
+      }
+    }
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(BROWSER_KEEPALIVE_KEY, enabled ? "true" : "false");
+    }
+    return {
+      ...this.getBackgroundPushStatus(),
+      keepAliveEnabled: enabled,
+    };
+  },
+
+  requestIgnoreBatteryOptimizations(): void {
+    if (this.isNativeAndroid() && window.DualLaneNative?.requestIgnoreBatteryOptimizations) {
+      window.DualLaneNative.requestIgnoreBatteryOptimizations();
+    }
+  },
+
+  requestNotificationPermission(): void {
+    if (this.isNativeAndroid() && window.DualLaneNative?.requestNotificationPermission) {
+      window.DualLaneNative.requestNotificationPermission();
+      return;
+    }
+    if (typeof Notification !== "undefined" && Notification.requestPermission) {
+      void Notification.requestPermission();
+    }
+  },
+
+  onAppResumed(cb: () => void): () => void {
+    ensureGlobalCallbacks();
+    appResumeListeners.push(cb);
+    return () => {
+      appResumeListeners = appResumeListeners.filter((x) => x !== cb);
+    };
   },
 
   prefetchMedia(urls: string[]): void {

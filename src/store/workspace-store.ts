@@ -29,6 +29,8 @@ import { useUpdateStore } from "@/shared/updater";
 export interface V1User {
   id: string;
   displayName: string;
+  rawDisplayName?: string;
+  remark?: string;
   handle?: string;
   role: "owner" | "admin" | "member" | "bot";
   avatarUrl?: string;
@@ -95,6 +97,15 @@ export interface V1Message {
   card?: DualLaneCardKitDocument;
 }
 
+export type ConversationNotificationLevel = "all" | "mentions" | "muted";
+
+export interface CollapsePreferences {
+  collapseImages: boolean;
+  collapseStickers: boolean;
+  collapseLongMessages: boolean;
+  localOnly: boolean;
+}
+
 export interface V1Conversation {
   id: string;
   kind: "saved" | "direct" | "group";
@@ -107,6 +118,10 @@ export interface V1Conversation {
   memberIds: string[];
   lastMessageText?: string;
   lastMessageAt?: string;
+  lastMessageSenderId?: string;
+  lastMessageSenderName?: string;
+  lastMessageRecalled?: boolean;
+  notificationLevel?: ConversationNotificationLevel;
   peerLastReadAt?: string;
 }
 
@@ -131,6 +146,8 @@ interface WorkspaceState {
   conversationOrder: string[];
   pinnedConversationIds: string[];
   userPreferences: Record<string, unknown>;
+  collapsePrefs: CollapsePreferences;
+  messageCollapseOverrides: Record<string, boolean>;
   messagesByConv: Record<string, V1Message[]>;
   members: Record<string, V1User>;
   threadsByRootId: Record<string, ThreadViewResponse>;
@@ -176,6 +193,13 @@ interface WorkspaceState {
   toggleReaction: (conversationId: string, messageId: string, emoji: string) => Promise<void>;
   togglePinMessage: (conversationId: string, messageId: string) => Promise<void>;
   togglePinConversation: (conversationId: string) => Promise<void>;
+  setConversationNotificationLevel: (
+    conversationId: string,
+    level: ConversationNotificationLevel
+  ) => Promise<void>;
+  setMemberRemark: (userId: string, remark: string) => Promise<void>;
+  updateCollapsePreferences: (patch: Partial<CollapsePreferences>) => Promise<void>;
+  setLocalMessageCollapsed: (messageId: string, collapsed: boolean | null) => void;
   updateUserPreferences: (patch: Record<string, unknown>) => Promise<void>;
   startDirectChatWithUser: (userId: string) => Promise<string | null>;
   createGroup: (title: string, memberIds: string[], avatar?: string) => Promise<string | null>;
@@ -217,6 +241,146 @@ interface WorkspaceState {
 const SHELL_CACHE_KEY = "duallane:mobile:shell:v1";
 const MESSAGES_CACHE_KEY = "duallane:mobile:messages:v1";
 const DRAFTS_CACHE_KEY = "duallane:mobile:drafts:v1";
+const COLLAPSE_PREFS_KEY = "duallane:mobile:collapse-prefs:v1";
+const MSG_COLLAPSE_OVERRIDES_KEY = "duallane:mobile:msg-collapse-overrides:v1";
+
+const DEFAULT_COLLAPSE_PREFS: CollapsePreferences = {
+  collapseImages: false,
+  collapseStickers: false,
+  collapseLongMessages: false,
+  localOnly: true,
+};
+
+function loadLocalCollapsePrefs(): CollapsePreferences {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSE_PREFS_KEY);
+    if (!raw) return { ...DEFAULT_COLLAPSE_PREFS };
+    const parsed = JSON.parse(raw) as Partial<CollapsePreferences>;
+    return {
+      collapseImages: Boolean(parsed.collapseImages),
+      collapseStickers: Boolean(parsed.collapseStickers),
+      collapseLongMessages: Boolean(parsed.collapseLongMessages),
+      localOnly: parsed.localOnly !== false,
+    };
+  } catch {
+    return { ...DEFAULT_COLLAPSE_PREFS };
+  }
+}
+
+function saveLocalCollapsePrefs(prefs: CollapsePreferences) {
+  try {
+    window.localStorage.setItem(COLLAPSE_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // ignore
+  }
+}
+
+function mergeRemoteCollapsePrefs(
+  local: CollapsePreferences,
+  userPrefs: Record<string, unknown>
+): CollapsePreferences {
+  if (local.localOnly) return local;
+  const nested =
+    userPrefs.autoCollapse && typeof userPrefs.autoCollapse === "object"
+      ? (userPrefs.autoCollapse as Record<string, unknown>)
+      : {};
+  return {
+    collapseImages:
+      typeof userPrefs.collapseImages === "boolean"
+        ? userPrefs.collapseImages
+        : typeof nested.collapseImages === "boolean"
+        ? nested.collapseImages
+        : local.collapseImages,
+    collapseStickers:
+      typeof userPrefs.collapseStickers === "boolean"
+        ? userPrefs.collapseStickers
+        : typeof nested.collapseStickers === "boolean"
+        ? nested.collapseStickers
+        : local.collapseStickers,
+    collapseLongMessages:
+      typeof userPrefs.collapseLongMessages === "boolean"
+        ? userPrefs.collapseLongMessages
+        : typeof nested.collapseLongMessages === "boolean"
+        ? nested.collapseLongMessages
+        : local.collapseLongMessages,
+    localOnly: false,
+  };
+}
+
+function loadMsgCollapseOverrides(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(MSG_COLLAPSE_OVERRIDES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "boolean") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveMsgCollapseOverrides(overrides: Record<string, boolean>) {
+  try {
+    const entries = Object.entries(overrides).slice(-240);
+    window.localStorage.setItem(MSG_COLLAPSE_OVERRIDES_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // ignore
+  }
+}
+
+export function normalizeNotificationLevel(raw: unknown): ConversationNotificationLevel {
+  if (raw === "muted" || raw === "mute") return "muted";
+  if (raw === "mentions" || raw === "mention") return "mentions";
+  return "all";
+}
+
+export function computeTotalBadgeUnread(conversations: Record<string, V1Conversation>): number {
+  let sum = 0;
+  for (const c of Object.values(conversations)) {
+    if (c.notificationLevel === "muted") {
+      if (c.mentionCount > 0) {
+        sum += c.mentionCount;
+      }
+    } else {
+      sum += c.unreadCount || 0;
+    }
+  }
+  return sum;
+}
+
+function syncNativeNotificationState(state: {
+  currentUser: V1User | null;
+  conversations: Record<string, V1Conversation>;
+  members: Record<string, V1User>;
+}) {
+  if (!state.currentUser?.id) return;
+  const muteMap: Record<string, ConversationNotificationLevel> = {};
+  const convTitles: Record<string, string> = {};
+  const convKinds: Record<string, string> = {};
+  for (const c of Object.values(state.conversations)) {
+    muteMap[c.id] = c.notificationLevel || "all";
+    if (c.title) convTitles[c.id] = c.title;
+    convKinds[c.id] = c.kind;
+  }
+  const memberNames: Record<string, string> = {};
+  for (const m of Object.values(state.members)) {
+    if (m.id && m.displayName) {
+      memberNames[m.id] = m.displayName;
+    }
+  }
+  nativeBridge.syncNotificationContext({
+    currentUserId: state.currentUser.id,
+    currentUserDisplayName: state.currentUser.displayName || "我",
+    muteMap,
+    memberNames,
+    convTitles,
+    convKinds,
+  });
+}
 
 function loadCachedDrafts(): Record<string, DraftEntry> {
   try {
@@ -309,11 +473,13 @@ export function buildTextAndMentionBlocks(
 ): Array<Record<string, unknown>> {
   if (!text) return [];
   const candidateIds = conv?.memberIds || [];
-  const candidates = candidateIds
-    .filter((uid) => Boolean(uid && uid !== currentUserId && members[uid]?.displayName))
-    .map((uid) => ({ id: uid, displayName: members[uid].displayName.trim() }))
-    .filter((item) => item.displayName.length > 0)
-    .sort((a, b) => b.displayName.length - a.displayName.length);
+  const candidates = [
+    ...(conv?.kind === "group" ? [{ id: "all", displayName: "所有人" }] : []),
+    ...candidateIds
+      .filter((uid) => Boolean(uid && uid !== currentUserId && members[uid]?.displayName))
+      .map((uid) => ({ id: uid, displayName: members[uid].displayName.trim() }))
+      .filter((item) => item.displayName.length > 0),
+  ].sort((a, b) => b.displayName.length - a.displayName.length);
 
   if (candidates.length === 0 || !text.includes("@")) {
     return [{ type: "text", text }];
@@ -381,7 +547,10 @@ function sanitizeSyntheticMentionsInText(
     for (const b of blocks) {
       if (b.type === "text") rebuilt += b.text;
       else if (b.type === "mention") {
-        const resolved = members[b.userId]?.displayName || sanitizeSyntheticHandle(b.label) || "机器人";
+        const resolved =
+          b.userId === "all"
+            ? "所有人"
+            : members[b.userId]?.displayName || sanitizeSyntheticHandle(b.label) || "机器人";
         rebuilt += `@${resolved}`;
       } else if (b.type === "link") rebuilt += b.label || b.url;
       else if (b.type === "emoji") rebuilt += `[${b.shortcode}]`;
@@ -407,9 +576,11 @@ function mapRawBlocks(
       const uid = String(b.userId);
       const rawLabel = typeof b.label === "string" ? b.label.replace(/^@+/, "").trim() : "";
       const resolvedLabel =
-        members?.[uid]?.displayName ||
-        sanitizeSyntheticHandle(rawLabel) ||
-        (uid.startsWith("usr_bot_") ? "机器人" : uid);
+        uid === "all" || rawLabel === "所有人"
+          ? "所有人"
+          : members?.[uid]?.displayName ||
+            sanitizeSyntheticHandle(rawLabel) ||
+            (uid.startsWith("usr_bot_") ? "机器人" : uid);
       out.push({
         type: "mention",
         userId: uid,
@@ -501,13 +672,18 @@ function upsertRawMemberRecord(
       : "member";
   const cleanGithubLogin = sanitizeSyntheticHandle(m.githubLogin);
   const cleanHandle = sanitizeSyntheticHandle(m.handle);
-  const candidateName =
-    sanitizeSyntheticHandle(m.remark) ||
+  const hasExplicitRemark = "remark" in m;
+  const cleanRemark = hasExplicitRemark
+    ? sanitizeSyntheticHandle(m.remark)
+    : prev?.remark;
+  const baseName =
     sanitizeSyntheticHandle(m.nickname) ||
     sanitizeSyntheticHandle(m.displayName) ||
     sanitizeSyntheticHandle(m.name) ||
     cleanGithubLogin ||
-    cleanHandle;
+    cleanHandle ||
+    prev?.rawDisplayName;
+  const candidateName = cleanRemark || baseName;
   const resolvedName = candidateName
     ? String(candidateName)
     : prev?.displayName && !prev.displayName.startsWith("usr_") && !prev.displayName.startsWith("__duallane_")
@@ -515,6 +691,7 @@ function upsertRawMemberRecord(
     : role === "bot"
     ? "机器人"
     : id;
+  const resolvedRawName = baseName ? String(baseName) : prev?.rawDisplayName || resolvedName;
   const hasExplicitAvatar = "avatarUrl" in m;
   const nextAvatarUrl = hasExplicitAvatar
     ? typeof m.avatarUrl === "string" && m.avatarUrl.trim()
@@ -534,6 +711,8 @@ function upsertRawMemberRecord(
   target[id] = {
     id,
     displayName: resolvedName,
+    rawDisplayName: resolvedRawName,
+    remark: cleanRemark ? String(cleanRemark) : undefined,
     handle: cleanGithubLogin || cleanHandle || prev?.handle,
     role,
     avatarUrl: nextAvatarUrl,
@@ -751,6 +930,68 @@ export function parseBootstrapPayload(raw: Record<string, unknown>) {
       typeof c.peerLastReadAt === "string" && c.peerLastReadAt.trim()
         ? c.peerLastReadAt.trim()
         : undefined;
+    const rawMsgs = Array.isArray(c.latestMessages)
+      ? c.latestMessages
+      : Array.isArray(c.messages)
+      ? c.messages
+      : [];
+    const mappedConvMsgs = rawMsgs.map((msg) =>
+      mapRawMessage(id, msg as Record<string, unknown>, members, {
+        currentUserId: currentUser?.id,
+        convKind: kind,
+        peerLastReadAt,
+      })
+    );
+    messagesByConv[id] = mappedConvMsgs;
+
+    const tailMsg = mappedConvMsgs.length > 0 ? mappedConvMsgs[mappedConvMsgs.length - 1] : undefined;
+    const lastAuthorObj =
+      lastMsg.author && typeof lastMsg.author === "object"
+        ? (lastMsg.author as Record<string, unknown>)
+        : undefined;
+    const rawLastSenderId = String(
+      c.lastMessageSenderId ||
+        c.lastMessageAuthorId ||
+        lastMsg.authorId ||
+        lastMsg.senderId ||
+        lastAuthorObj?.id ||
+        tailMsg?.senderId ||
+        ""
+    ).trim();
+    const resolvedLastSenderName =
+      (rawLastSenderId ? members[rawLastSenderId]?.displayName : undefined) ||
+      sanitizeSyntheticHandle(c.lastMessageSenderName) ||
+      sanitizeSyntheticHandle(c.lastMessageAuthorName) ||
+      sanitizeSyntheticHandle(lastMsg.authorRemark) ||
+      sanitizeSyntheticHandle(lastMsg.authorNickname) ||
+      sanitizeSyntheticHandle(lastMsg.authorName) ||
+      sanitizeSyntheticHandle(lastAuthorObj?.displayName) ||
+      sanitizeSyntheticHandle(lastMsg.senderName) ||
+      tailMsg?.senderName ||
+      undefined;
+    const rawNotificationLevel =
+      c.notificationLevel ?? c.muteLevel ?? (c.muted === true ? "muted" : undefined);
+    const resolvedLastText = c.lastMessagePlainText
+      ? sanitizeSyntheticMentionsInText(String(c.lastMessagePlainText), members)
+      : c.lastMessageText
+      ? sanitizeSyntheticMentionsInText(String(c.lastMessageText), members)
+      : lastMsg.plainText
+      ? sanitizeSyntheticMentionsInText(String(lastMsg.plainText), members)
+      : tailMsg
+      ? tailMsg.recalledAt
+        ? tailMsg.senderId === currentUser?.id
+          ? "你撤回了一条消息"
+          : `${tailMsg.senderName} 撤回了一条消息`
+        : tailMsg.plainText
+      : undefined;
+    const resolvedRecalled = Boolean(
+      c.lastMessageRecalled ||
+        lastMsg.recalledAt ||
+        (tailMsg?.recalledAt && !c.lastMessagePlainText && !c.lastMessageText) ||
+        resolvedLastText === "消息已撤回" ||
+        (resolvedLastText && resolvedLastText.endsWith("撤回了一条消息"))
+    );
+
     conversations[id] = {
       id,
       kind,
@@ -764,32 +1005,18 @@ export function parseBootstrapPayload(raw: Record<string, unknown>) {
       mentionCount: Number(c.mentionCount || 0),
       pinnedMessageIds: Array.isArray(c.pinnedMessageIds) ? c.pinnedMessageIds.map(String) : [],
       memberIds: cleanedMemberIds,
-      lastMessageText: c.lastMessagePlainText
-        ? sanitizeSyntheticMentionsInText(String(c.lastMessagePlainText), members)
-        : c.lastMessageText
-        ? sanitizeSyntheticMentionsInText(String(c.lastMessageText), members)
-        : lastMsg.plainText
-        ? sanitizeSyntheticMentionsInText(String(lastMsg.plainText), members)
-        : undefined,
+      lastMessageText: resolvedLastText,
       lastMessageAt: c.lastMessageAt
         ? String(c.lastMessageAt)
         : lastMsg.createdAt
         ? String(lastMsg.createdAt)
-        : undefined,
+        : tailMsg?.createdAt,
+      lastMessageSenderId: rawLastSenderId || undefined,
+      lastMessageSenderName: resolvedLastSenderName,
+      lastMessageRecalled: resolvedRecalled,
+      notificationLevel: normalizeNotificationLevel(rawNotificationLevel),
       peerLastReadAt,
     };
-    const rawMsgs = Array.isArray(c.latestMessages)
-      ? c.latestMessages
-      : Array.isArray(c.messages)
-      ? c.messages
-      : [];
-    messagesByConv[id] = rawMsgs.map((msg) =>
-      mapRawMessage(id, msg as Record<string, unknown>, members, {
-        currentUserId: currentUser?.id,
-        convKind: kind,
-        peerLastReadAt,
-      })
-    );
   }
 
   const eventCursor = Number(raw.eventCursor || 0);
@@ -912,6 +1139,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     conversationOrder: [],
     pinnedConversationIds: [],
     userPreferences: {},
+    collapsePrefs: loadLocalCollapsePrefs(),
+    messageCollapseOverrides: loadMsgCollapseOverrides(),
     messagesByConv: loadCachedMessages(),
     members: {},
     threadsByRootId: {},
@@ -1043,8 +1272,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           conversationOrder: parsed.conversationOrder,
           pinnedConversationIds,
           userPreferences,
+          collapsePrefs: mergeRemoteCollapsePrefs(prev.collapsePrefs, userPreferences),
           messagesByConv: mergedMessages,
         }));
+
+        syncNativeNotificationState({
+          currentUser: parsed.currentUser,
+          conversations: parsed.conversations,
+          members: parsed.members,
+        });
 
         try {
           window.localStorage.setItem(
@@ -1165,6 +1401,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     },
 
     markRead: (conversationId) => {
+      nativeBridge.clearConversationNotification(conversationId);
       const conv = get().conversations[conversationId];
       if (!conv) return;
       if (conv.unreadCount > 0 || conv.mentionCount > 0) {
@@ -1249,6 +1486,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           ...s.messagesByConv,
           [conversationId]: [...(s.messagesByConv[conversationId] || []), optimistic],
         },
+        conversations: s.conversations[conversationId]
+          ? {
+              ...s.conversations,
+              [conversationId]: {
+                ...s.conversations[conversationId],
+                lastMessageText: displayPlain,
+                lastMessageAt: optimistic.createdAt,
+                lastMessageSenderId: user.id,
+                lastMessageSenderName: user.displayName,
+                lastMessageRecalled: false,
+              },
+            }
+          : s.conversations,
       }));
       get().setDraft(conversationId, "", "");
 
@@ -1293,16 +1543,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
               );
           return {
             messagesByConv: { ...s.messagesByConv, [conversationId]: nextList },
-            conversations: s.conversations[conversationId]
-              ? {
-                  ...s.conversations,
-                  [conversationId]: {
-                    ...s.conversations[conversationId],
-                    lastMessageText: serverMapped?.plainText || displayPlain,
-                    lastMessageAt: optimistic.createdAt,
-                  },
-                }
-              : s.conversations,
+                conversations: s.conversations[conversationId]
+                  ? {
+                      ...s.conversations,
+                      [conversationId]: {
+                        ...s.conversations[conversationId],
+                        lastMessageText: serverMapped?.plainText || displayPlain,
+                        lastMessageAt: serverMapped?.createdAt || optimistic.createdAt,
+                        lastMessageSenderId: user.id,
+                        lastMessageSenderName: user.displayName,
+                        lastMessageRecalled: false,
+                      },
+                    }
+                  : s.conversations,
           };
         });
       } catch {
@@ -1344,6 +1597,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           ...s.messagesByConv,
           [conversationId]: [...(s.messagesByConv[conversationId] || []), optimistic],
         },
+        conversations: s.conversations[conversationId]
+          ? {
+              ...s.conversations,
+              [conversationId]: {
+                ...s.conversations[conversationId],
+                lastMessageText: "[表情]",
+                lastMessageAt: optimistic.createdAt,
+                lastMessageSenderId: user.id,
+                lastMessageSenderName: user.displayName,
+                lastMessageRecalled: false,
+              },
+            }
+          : s.conversations,
       }));
       if (replyToId) get().setDraft(conversationId, get().drafts[conversationId]?.text || "", "");
 
@@ -1418,6 +1684,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           ...s.messagesByConv,
           [conversationId]: [...(s.messagesByConv[conversationId] || []), optimistic],
         },
+        conversations: s.conversations[conversationId]
+          ? {
+              ...s.conversations,
+              [conversationId]: {
+                ...s.conversations[conversationId],
+                lastMessageText: displayPlain,
+                lastMessageAt: optimistic.createdAt,
+                lastMessageSenderId: user.id,
+                lastMessageSenderName: user.displayName,
+                lastMessageRecalled: false,
+              },
+            }
+          : s.conversations,
       }));
       try {
         const res = await mobileApi.sendMessage(conversationId, displayPlain, {
@@ -1499,23 +1778,39 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       }
       await mobileApi.recallMessage(messageId);
       const nowIso = new Date().toISOString();
-      set((s) => ({
-        messagesByConv: {
-          ...s.messagesByConv,
-          [conversationId]: (s.messagesByConv[conversationId] || []).map((m) =>
-            m.id === messageId
+      set((s) => {
+        const list = s.messagesByConv[conversationId] || [];
+        const isTail = list.length > 0 && list[list.length - 1].id === messageId;
+        const prevConv = s.conversations[conversationId];
+        return {
+          messagesByConv: {
+            ...s.messagesByConv,
+            [conversationId]: list.map((m) =>
+              m.id === messageId
+                ? {
+                    ...m,
+                    recalledAt: nowIso,
+                    blocks: [],
+                    reactions: {},
+                    attachments: undefined,
+                    card: undefined,
+                  }
+                : m
+            ),
+          },
+          conversations:
+            isTail && prevConv
               ? {
-                  ...m,
-                  recalledAt: nowIso,
-                  blocks: [],
-                  reactions: {},
-                  attachments: undefined,
-                  card: undefined,
+                  ...s.conversations,
+                  [conversationId]: {
+                    ...prevConv,
+                    lastMessageText: "你撤回了一条消息",
+                    lastMessageRecalled: true,
+                  },
                 }
-              : m
-          ),
-        },
-      }));
+              : s.conversations,
+        };
+      });
     },
 
     restoreRecalledDraft: (conversationId, messageId) => {
@@ -1574,6 +1869,117 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         ? cur.filter((id) => id !== conversationId)
         : [conversationId, ...cur];
       await get().updateUserPreferences({ pinnedConversationIds: next });
+    },
+
+    setConversationNotificationLevel: async (conversationId, level) => {
+      const prev = get().conversations[conversationId];
+      if (!prev) return;
+      const prevLevel = prev.notificationLevel || "all";
+      set((s) => ({
+        conversations: {
+          ...s.conversations,
+          [conversationId]: {
+            ...s.conversations[conversationId],
+            notificationLevel: level,
+          },
+        },
+      }));
+      try {
+        await mobileApi.updateConversationNotification(conversationId, level);
+      } catch (err) {
+        set((s) => ({
+          conversations: s.conversations[conversationId]
+            ? {
+                ...s.conversations,
+                [conversationId]: {
+                  ...s.conversations[conversationId],
+                  notificationLevel: prevLevel,
+                },
+              }
+            : s.conversations,
+        }));
+        throw err;
+      }
+    },
+
+    setMemberRemark: async (userId, remark) => {
+      const clean = remark.trim();
+      await mobileApi.setMemberRemark(userId, clean);
+      set((s) => {
+        const prevUser = s.members[userId];
+        if (!prevUser) return s;
+        const baseName = prevUser.rawDisplayName || prevUser.displayName;
+        const nextDisplayName = clean || baseName;
+        const updatedUser: V1User = {
+          ...prevUser,
+          displayName: nextDisplayName,
+          rawDisplayName: baseName,
+          remark: clean || undefined,
+        };
+        const nextConvs = { ...s.conversations };
+        for (const [cid, conv] of Object.entries(nextConvs)) {
+          let changed = false;
+          let nextTitle = conv.title;
+          let nextLastSenderName = conv.lastMessageSenderName;
+          if (conv.kind === "direct" && conv.memberIds.includes(userId)) {
+            nextTitle = nextDisplayName;
+            changed = true;
+          }
+          if (conv.lastMessageSenderId === userId) {
+            nextLastSenderName = nextDisplayName;
+            changed = true;
+          }
+          if (changed) {
+            nextConvs[cid] = {
+              ...conv,
+              title: nextTitle,
+              lastMessageSenderName: nextLastSenderName,
+            };
+          }
+        }
+        return {
+          members: {
+            ...s.members,
+            [userId]: updatedUser,
+          },
+          conversations: nextConvs,
+        };
+      });
+    },
+
+    updateCollapsePreferences: async (patch) => {
+      const next: CollapsePreferences = {
+        ...get().collapsePrefs,
+        ...patch,
+      };
+      saveLocalCollapsePrefs(next);
+      set({ collapsePrefs: next });
+      if (!next.localOnly) {
+        await get().updateUserPreferences({
+          collapseImages: next.collapseImages,
+          collapseStickers: next.collapseStickers,
+          collapseLongMessages: next.collapseLongMessages,
+          autoCollapse: {
+            collapseImages: next.collapseImages,
+            collapseStickers: next.collapseStickers,
+            collapseLongMessages: next.collapseLongMessages,
+          },
+        });
+      }
+    },
+
+    setLocalMessageCollapsed: (messageId, collapsed) => {
+      if (!messageId) return;
+      set((s) => {
+        const next = { ...s.messageCollapseOverrides };
+        if (collapsed === null) {
+          delete next[messageId];
+        } else {
+          next[messageId] = collapsed;
+        }
+        saveMsgCollapseOverrides(next);
+        return { messageCollapseOverrides: next };
+      });
     },
 
     updateUserPreferences: async (patch) => {
@@ -1944,10 +2350,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           const mentionedMe =
             evType === "message.created" &&
             !isOwn &&
+            !isSys &&
             Boolean(
               mapped.blocks?.some(
-                (b) => b.type === "mention" && b.userId === s.currentUser?.id
-              )
+                (b) =>
+                  b.type === "mention" &&
+                  (b.userId === s.currentUser?.id ||
+                    b.userId === "all" ||
+                    b.label === "所有人")
+              ) ||
+                ((prevConv?.kind === "group" || !prevConv) && mapped.plainText.includes("@所有人"))
             );
 
           const nextUnread =
@@ -1964,12 +2376,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
               ? (prevConv?.mentionCount || 0) + 1
               : prevConv?.mentionCount || 0;
 
-          const summaryText =
-            evType === "message.recalled"
-              ? isOwn
-                ? "你撤回了一条消息"
-                : `${mapped.senderName} 撤回了一条消息`
-              : mapped.plainText;
+          const isRecalledEvent = Boolean(evType === "message.recalled" || recalledTs);
+          const summaryText = isRecalledEvent
+            ? isOwn
+              ? "你撤回了一条消息"
+              : `${mapped.senderName} 撤回了一条消息`
+            : mapped.plainText;
 
           const nextTyping = { ...s.typingByConv };
           if (evType === "message.created" && nextTyping[convId]) {
@@ -1991,6 +2403,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
                       evType === "message.created"
                         ? mapped.createdAt
                         : prevConv.lastMessageAt || mapped.createdAt,
+                    lastMessageSenderId: mapped.senderId || prevConv.lastMessageSenderId,
+                    lastMessageSenderName: mapped.senderName || prevConv.lastMessageSenderName,
+                    lastMessageRecalled: isRecalledEvent,
                     unreadCount: nextUnread,
                     mentionCount: nextMention,
                     peerLastReadAt: nextPeerLastReadAt,
@@ -2005,6 +2420,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
                     memberIds: [],
                     lastMessageText: summaryText,
                     lastMessageAt: mapped.createdAt,
+                    lastMessageSenderId: mapped.senderId,
+                    lastMessageSenderName: mapped.senderName,
+                    lastMessageRecalled: isRecalledEvent,
+                    notificationLevel: "all",
                     peerLastReadAt: nextPeerLastReadAt,
                   },
             },
@@ -2044,6 +2463,42 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           }
           return { messagesByConv: nextByConv };
         });
+        return;
+      }
+
+      if (
+        evType === "conversation.notification_updated" ||
+        evType === "conversation.updated"
+      ) {
+        const convObj =
+          payload.conversation && typeof payload.conversation === "object"
+            ? (payload.conversation as Record<string, unknown>)
+            : payload;
+        const convId = String(
+          convObj.id || payload.conversationId || eventObj.conversationId || ""
+        );
+        if (convId && get().conversations[convId]) {
+          const rawLvl =
+            convObj.notificationLevel ?? payload.level ?? payload.notificationLevel;
+          set((s) => {
+            const prev = s.conversations[convId];
+            if (!prev) return s;
+            return {
+              conversations: {
+                ...s.conversations,
+                [convId]: {
+                  ...prev,
+                  ...(typeof convObj.title === "string" && convObj.title.trim() && prev.kind === "group"
+                    ? { title: convObj.title.trim() }
+                    : {}),
+                  ...(rawLvl !== undefined
+                    ? { notificationLevel: normalizeNotificationLevel(rawLvl) }
+                    : {}),
+                },
+              },
+            };
+          });
+        }
         return;
       }
 
@@ -2344,5 +2799,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
 useWorkspaceStore.subscribe((state, prevState) => {
   if (state.messagesByConv !== prevState.messagesByConv && state.authStatus === "authenticated") {
     schedulePersistMessages(state.messagesByConv, state.conversationOrder);
+  }
+  if (
+    state.authStatus === "authenticated" &&
+    (state.conversations !== prevState.conversations ||
+      state.members !== prevState.members ||
+      state.currentUser !== prevState.currentUser)
+  ) {
+    syncNativeNotificationState(state);
   }
 });

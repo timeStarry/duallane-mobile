@@ -22,6 +22,7 @@ import { nativeBridge } from "@/native/bridge";
 import { compareSemver, useUpdateStore } from "@/shared/updater";
 import { Avatar } from "@/components/Avatar";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { ChatMarkdown, ExternalLinkGuardSheet } from "@/shared/markdown";
 import { mobileApi } from "@/shared/api";
 import { initializeMobileTheme, resolveSystemMode, useThemeStore } from "@/shared/theme-store";
 
@@ -41,12 +42,22 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
       stickerStudioOpen: false,
       sharedPackId: null,
       botManageOpen: false,
+      lightboxMedia: null,
+      pendingExternalUrl: null,
     });
     useWorkspaceStore.setState({
       conversations: {},
       conversationOrder: [],
       messagesByConv: {},
       members: {},
+      drafts: {},
+      collapsePrefs: {
+        collapseImages: false,
+        collapseStickers: false,
+        collapseLongMessages: false,
+        localOnly: true,
+      },
+      messageCollapseOverrides: {},
       boundEmail: "",
       systemAnnouncement: null,
       dismissedAnnouncementKey: null,
@@ -378,17 +389,17 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
         ok: true,
         status: 200,
         bodyText: JSON.stringify({
-          tag_name: "v1.0.10",
-          name: "DualLane Mobile v1.0.10",
+          tag_name: "v1.0.11",
+          name: "DualLane Mobile v1.0.11",
           body: "- 新增功能与性能优化",
           published_at: "2026-11-16T12:00:00Z",
-          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.10",
+          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.11",
           assets: [
             {
               name: "app-release.apk",
               size: 660000,
               browser_download_url:
-                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.10/app-release.apk",
+                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.11/app-release.apk",
             },
           ],
         }),
@@ -681,5 +692,363 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     );
     fireEvent.click(screen.getByAltText("狗头"));
     expect(builtInSent).toEqual(["[bili:doge]"]);
+  });
+
+  it("renders rich ChatMarkdown (code fences, tables, inline code, emotes, auto-links) and enforces off-site link guard", () => {
+    const openSpy = vi.spyOn(nativeBridge, "openExternalUrl").mockImplementation(() => {});
+    const copySpy = vi.spyOn(nativeBridge, "copyText").mockImplementation(() => {});
+
+    const richSample = [
+      "## 发布摘要",
+      "> 请 @所有人 查收 **重点变更** 与 ~~旧逻辑~~ *说明* `v1.1.0` [bili:doge]",
+      "",
+      "| 模块 | 状态 |",
+      "| --- | --- |",
+      "| Native | 已就绪 |",
+      "",
+      "白名单地址：https://github.com/timeStarry/duallane-mobile。",
+      "百科平衡括号：https://en.wikipedia.org/wiki/Rust_(programming_language)！",
+      "外部非白名单：[测试外链](https://untrusted-site.example.org/demo?x=1)",
+      "",
+      "```ts",
+      "const ready = true;",
+      "```",
+    ].join("\n");
+
+    render(
+      <>
+        <ChatMarkdown text={richSample} tone="peer" lane="workspace" />
+        <ExternalLinkGuardSheet />
+      </>
+    );
+
+    expect(screen.getByText("发布摘要")).toBeInTheDocument();
+    expect(screen.getByText("@所有人")).toHaveAttribute("data-mention-id", "all");
+    expect(screen.getByText("重点变更").tagName).toBe("STRONG");
+    expect(screen.getByText("旧逻辑").tagName).toBe("DEL");
+    expect(screen.getByText("说明").tagName).toBe("EM");
+    expect(screen.getByText("v1.1.0").tagName).toBe("CODE");
+    expect(screen.getByText("已就绪").tagName).toBe("TD");
+    expect(screen.getByAltText("doge")).toBeInTheDocument();
+
+    // Copy fenced code block
+    fireEvent.click(screen.getByLabelText("复制代码"));
+    expect(copySpy).toHaveBeenCalledWith("const ready = true;");
+
+    // Whitelisted GitHub link strips trailing CJK period and opens directly without sheet
+    const ghLink = screen.getByText("https://github.com/timeStarry/duallane-mobile");
+    fireEvent.click(ghLink);
+    expect(openSpy).toHaveBeenCalledWith("https://github.com/timeStarry/duallane-mobile");
+    expect(useNavStore.getState().pendingExternalUrl).toBeNull();
+
+    // Balanced parentheses preserved while trailing exclamation stripped
+    const wikiLink = screen.getByText("https://en.wikipedia.org/wiki/Rust_(programming_language)");
+    fireEvent.click(wikiLink);
+    expect(openSpy).toHaveBeenCalledWith("https://en.wikipedia.org/wiki/Rust_(programming_language)");
+
+    // Non-whitelisted link triggers BottomSheet guard instead of opening immediately
+    openSpy.mockClear();
+    fireEvent.click(screen.getByText("测试外链"));
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(screen.getByText("即将前往外部网站")).toBeInTheDocument();
+    expect(screen.getByTestId("external-link-domain").textContent).toBe(
+      "untrusted-site.example.org"
+    );
+
+    fireEvent.click(screen.getByText("继续访问"));
+    expect(openSpy).toHaveBeenCalledWith("https://untrusted-site.example.org/demo?x=1");
+
+    openSpy.mockRestore();
+    copySpy.mockRestore();
+  });
+
+  it("supports @所有人 candidates & mention badge in group chats, sender prefixes in ChatsTab, and mute badge rules", async () => {
+    const syncCtxSpy = vi
+      .spyOn(nativeBridge, "syncNotificationContext")
+      .mockImplementation(() => {});
+    vi.spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "markRead").mockImplementation(() => {});
+
+    const parsed = parseBootstrapPayload({
+      auth: {
+        enabled: true,
+        currentUser: { id: "u_me", displayName: "星辰", role: "owner" },
+      },
+      members: [
+        { id: "u_me", displayName: "星辰", role: "owner" },
+        { id: "u_alice", displayName: "李总", role: "member" },
+        { id: "u_bob", displayName: "王工", role: "member" },
+      ],
+      conversations: [
+        {
+          id: "conv_grp",
+          kind: "group",
+          displayTitle: "核心研发群",
+          unreadCount: 2,
+          mentionCount: 0,
+          notificationLevel: "all",
+          memberIds: ["u_me", "u_alice", "u_bob"],
+          lastMessagePlainText: "包已构建完成",
+          lastMessageSenderId: "u_alice",
+          lastMessageSenderName: "李总",
+          lastMessageAt: "2026-11-16T10:00:00Z",
+          latestMessages: [],
+        },
+        {
+          id: "conv_dm_alice",
+          kind: "direct",
+          displayTitle: "李总",
+          unreadCount: 0,
+          mentionCount: 0,
+          notificationLevel: "all",
+          memberIds: ["u_me", "u_alice"],
+          lastMessagePlainText: "好的收到",
+          lastMessageSenderId: "u_me",
+          lastMessageAt: "2026-11-16T09:50:00Z",
+          latestMessages: [],
+        },
+        {
+          id: "conv_muted_grp",
+          kind: "group",
+          displayTitle: "水群",
+          unreadCount: 5,
+          mentionCount: 0,
+          notificationLevel: "muted",
+          memberIds: ["u_me", "u_bob"],
+          lastMessagePlainText: "大家中午吃啥",
+          lastMessageSenderId: "u_bob",
+          lastMessageAt: "2026-11-16T09:40:00Z",
+          latestMessages: [],
+        },
+      ],
+    });
+
+    // Verify @所有人 block builder in group chat
+    const mentionBlocks = buildTextAndMentionBlocks(
+      "@所有人 请查看进度",
+      parsed.conversations["conv_grp"],
+      parsed.members,
+      "u_me"
+    );
+    expect(mentionBlocks[0]).toEqual({
+      type: "mention",
+      userId: "all",
+      label: "所有人",
+    });
+
+    useWorkspaceStore.setState({
+      authStatus: "authenticated",
+      currentUser: parsed.currentUser,
+      members: parsed.members,
+      conversations: parsed.conversations,
+      conversationOrder: parsed.conversationOrder,
+      messagesByConv: parsed.messagesByConv,
+    });
+
+    render(<App />);
+
+    // Issue #5: Group chat shows "李总: 包已构建完成", own DM shows "我: 好的收到"
+    expect(screen.getByText("李总: 包已构建完成")).toBeInTheDocument();
+    expect(screen.getByText("我: 好的收到")).toBeInTheDocument();
+    expect(screen.getByText("王工: 大家中午吃啥")).toBeInTheDocument();
+
+    // Category A4: Muted conversation shows grey unread badge and is excluded from totalUnread (only 2 counted, not 2 + 5 = 7!)
+    expect(screen.getByTestId("conv-unread-conv_muted_grp")).toHaveAttribute(
+      "data-muted",
+      "true"
+    );
+    const nav = screen.getByLabelText("主导航栏");
+    expect(nav.textContent).toContain("2");
+    expect(nav.textContent).not.toContain("7");
+
+    // Incoming @所有人 message in group chat increments mentionCount ([有人@我])
+    act(() => {
+      useWorkspaceStore.getState().applyRealtimeEvent({
+        type: "message.created",
+        conversationId: "conv_grp",
+        payload: {
+          message: {
+            id: "m_all_1",
+            conversationId: "conv_grp",
+            authorId: "u_bob",
+            authorName: "王工",
+            plainText: "@所有人 今晚发版",
+            content: {
+              blocks: [
+                { type: "mention", userId: "all", label: "所有人" },
+                { type: "text", text: " 今晚发版" },
+              ],
+            },
+            createdAt: "2026-11-16T10:05:00Z",
+          },
+        },
+      });
+    });
+    expect(useWorkspaceStore.getState().conversations["conv_grp"].mentionCount).toBe(1);
+    expect(screen.getByText("[有人@我]")).toBeInTheDocument();
+    expect(screen.getByText("王工: @所有人 今晚发版")).toBeInTheDocument();
+    expect(syncCtxSpy).toHaveBeenCalled();
+
+    // Open group chat and type "@" -> @所有人 candidate appears at top
+    await act(async () => {
+      fireEvent.click(screen.getByText("核心研发群"));
+    });
+    const composer = screen.getByPlaceholderText("发送消息到 核心研发群…");
+    fireEvent.change(composer, { target: { value: "@" } });
+    const candidateBar = screen.getByTestId("mention-candidate-bar");
+    expect(candidateBar.textContent).toContain("@所有人");
+    fireEvent.click(screen.getByText("提醒全体群成员"));
+    expect(useWorkspaceStore.getState().drafts["conv_grp"]?.text).toBe("@所有人 ");
+
+    syncCtxSpy.mockRestore();
+  });
+
+  it("supports private member remarks, boss-key collapse, huge paste .txt upload, lightbox zoom, recent emojis, and keep-alive controls", async () => {
+    const remarkSpy = vi.spyOn(mobileApi, "setMemberRemark").mockResolvedValue({ ok: true });
+    const uploadTxtSpy = vi.spyOn(nativeBridge, "uploadTextAttachment").mockResolvedValue({
+      id: "att_txt_1",
+      fileName: "pasted.txt",
+      mimeType: "text/plain; charset=utf-8",
+      byteSize: 6500,
+      url: "/api/workspace/files/att_txt_1/download",
+      downloadUrl: "/api/workspace/files/att_txt_1/download",
+    });
+    const sendMsgSpy = vi
+      .spyOn(mobileApi, "sendMessage")
+      .mockResolvedValue({ message: { id: "m_sent_txt", createdAt: "2026-11-16T12:00:00Z" } });
+    vi.spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "markRead").mockImplementation(() => {});
+
+    const parsed = parseBootstrapPayload({
+      auth: {
+        enabled: true,
+        currentUser: { id: "u_me", displayName: "星辰", role: "owner" },
+      },
+      members: [
+        { id: "u_me", displayName: "星辰", role: "owner" },
+        { id: "u_peer", displayName: "张三", handle: "zhangsan", role: "member" },
+      ],
+      conversations: [
+        {
+          id: "conv_dm",
+          kind: "direct",
+          displayTitle: "张三",
+          memberIds: ["u_me", "u_peer"],
+          latestMessages: [
+            {
+              id: "m_img_1",
+              authorId: "u_peer",
+              authorName: "张三",
+              plainText: "[文件]",
+              attachments: [
+                {
+                  id: "img_1",
+                  fileName: "arch.png",
+                  mimeType: "image/png",
+                  byteSize: 2048,
+                  url: "/api/workspace/files/img_1/preview",
+                },
+              ],
+              createdAt: "2026-11-16T11:00:00Z",
+            },
+          ],
+        },
+      ],
+    });
+
+    useWorkspaceStore.setState({
+      authStatus: "authenticated",
+      currentUser: parsed.currentUser,
+      members: parsed.members,
+      conversations: parsed.conversations,
+      conversationOrder: parsed.conversationOrder,
+      messagesByConv: parsed.messagesByConv,
+      collapsePrefs: {
+        collapseImages: true,
+        collapseStickers: false,
+        collapseLongMessages: true,
+        localOnly: true,
+      },
+    });
+
+    // Category A3: Set private member remark updates member displayName & direct conversation title
+    await act(async () => {
+      await useWorkspaceStore.getState().setMemberRemark("u_peer", "张总监");
+    });
+    expect(remarkSpy).toHaveBeenCalledWith("u_peer", "张总监");
+    expect(useWorkspaceStore.getState().members["u_peer"].displayName).toBe("张总监");
+    expect(useWorkspaceStore.getState().conversations["conv_dm"].title).toBe("张总监");
+
+    useNavStore.setState({ activeChatId: "conv_dm" });
+    const { unmount } = render(<App />);
+
+    // Category A1: Auto-collapsed image renders [图片 · 点击展开] capsule, expanding on click
+    const capsule = screen.getByText("[图片 · 点击展开]");
+    expect(capsule).toBeInTheDocument();
+    fireEvent.click(capsule);
+    const imgEl = screen.getByAltText("arch.png");
+    expect(imgEl).toBeInTheDocument();
+
+    // Category A5: Lightbox double-click toggles 1.0x <-> 2.2x zoom
+    fireEvent.click(imgEl);
+    const lightboxImg = screen
+      .getByTestId("media-lightbox")
+      .querySelector("img[data-zoom-scale]") as HTMLImageElement;
+    expect(lightboxImg).not.toBeNull();
+    expect(lightboxImg.getAttribute("data-zoom-scale")).toBe("1.0");
+    fireEvent.doubleClick(lightboxImg);
+    expect(lightboxImg.getAttribute("data-zoom-scale")).toBe("2.2");
+    fireEvent.doubleClick(lightboxImg);
+    expect(lightboxImg.getAttribute("data-zoom-scale")).toBe("1.0");
+    fireEvent.click(screen.getByLabelText("关闭预览"));
+
+    // Category A5: Huge paste (> 6,000 chars) prompts to send as .txt attachment
+    const textarea = screen.getByPlaceholderText("发送消息到 张总监…");
+    const hugeText = "A".repeat(6200);
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        getData: () => hugeText,
+      },
+    });
+    expect(screen.getByTestId("huge-paste-banner")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByText("转为 .txt 发送"));
+    });
+    expect(uploadTxtSpy).toHaveBeenCalledTimes(1);
+    expect(sendMsgSpy).toHaveBeenCalledTimes(1);
+
+    // Switch to MeTab and check Background KeepAlive & Collapse cards
+    act(() => {
+      useNavStore.getState().closeChat();
+      useNavStore.getState().setActiveTab("me");
+    });
+    expect(screen.getByText("消息通知与后台常驻")).toBeInTheDocument();
+    expect(screen.getByText("后台常驻实时连接")).toBeInTheDocument();
+    expect(screen.getByText("聊天阅读与自动折叠")).toBeInTheDocument();
+    unmount();
+
+    // Category B3: Recent 8 unicode emojis persisted in StickerDrawer
+    const inserted: string[] = [];
+    render(
+      <StickerDrawer
+        open
+        conversationId="conv_dm"
+        onInsertToken={(tok) => inserted.push(tok)}
+        onSendBuiltInSticker={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByText("Emoji"));
+    const allButtons = screen.getAllByRole("button");
+    const unicodeBtn = allButtons.find((b) => b.textContent === "😀") || allButtons[4];
+    const pickedChar = unicodeBtn.textContent || "";
+    fireEvent.click(unicodeBtn);
+    expect(inserted).toEqual([pickedChar]);
+    expect(screen.getByTestId("recent-emojis-section")).toBeInTheDocument();
+
+    remarkSpy.mockRestore();
+    uploadTxtSpy.mockRestore();
+    sendMsgSpy.mockRestore();
   });
 });

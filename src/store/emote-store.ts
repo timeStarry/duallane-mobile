@@ -120,6 +120,7 @@ interface EmoteState {
   createPackWithFiles: (name: string, pickedFileIds: string[]) => Promise<EmoteCollectionDTO>;
   deleteSticker: (emoteId: string) => Promise<void>;
   deleteCollection: (collectionId: string, disposition?: "keep" | "remove") => Promise<void>;
+  setReplyAutoMention: (enabled: boolean) => Promise<void>;
 }
 
 function buildCustomSrcMap(
@@ -312,5 +313,32 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
   deleteCollection: async (collectionId, disposition = "keep") => {
     await mobileApi.deleteEmoteCollection(collectionId, disposition);
     await get().refreshLibrary(false);
+  },
+
+  setReplyAutoMention: async (enabled) => {
+    const prev = get().settings;
+    const optimistic: EmoteSettingsDTO = prev
+      ? { ...prev, replyAutoMention: enabled }
+      : {
+          availablePacks: [],
+          enabledPackIds: [],
+          clickImageEmoteToSend: true,
+          replyAutoMention: enabled,
+        };
+    set({ settings: optimistic });
+    saveCachedLibrary({
+      emotes: get().emotes,
+      collections: get().collections,
+      settings: optimistic,
+    });
+    const res = await mobileApi.updateEmoteSettings({ replyAutoMention: enabled });
+    if (res?.settings) {
+      set({ settings: res.settings });
+      saveCachedLibrary({
+        emotes: get().emotes,
+        collections: get().collections,
+        settings: res.settings,
+      });
+    }
   },
 }));

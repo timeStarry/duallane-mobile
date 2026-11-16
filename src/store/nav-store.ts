@@ -41,6 +41,7 @@ interface NavState {
   forwardingMessageIds: string[] | null;
   serverConfigOpen: boolean;
   lightboxMedia: LightboxMediaPayload | null;
+  pendingExternalUrl: string | null;
 
   toast: ToastNotice | null;
 
@@ -63,6 +64,7 @@ interface NavState {
   setForwardingMessageIds: (ids: string[] | null) => void;
   setServerConfigOpen: (open: boolean) => void;
   setLightboxMedia: (media: LightboxMediaPayload | null) => void;
+  setPendingExternalUrl: (url: string | null) => void;
 
   showToast: (message: string, tone?: ToastNotice["tone"]) => void;
   canPopBack: () => boolean;
@@ -94,6 +96,7 @@ export const useNavStore = create<NavState>((set, get) => ({
   forwardingMessageIds: null,
   serverConfigOpen: false,
   lightboxMedia: null,
+  pendingExternalUrl: null,
 
   toast: null,
 
@@ -203,6 +206,11 @@ export const useNavStore = create<NavState>((set, get) => ({
     syncHardwareBack(get());
   },
 
+  setPendingExternalUrl: (pendingExternalUrl) => {
+    set({ pendingExternalUrl });
+    syncHardwareBack(get());
+  },
+
   showToast: (message, tone = "info") => {
     if (toastTimer) clearTimeout(toastTimer);
     const id = `t_${Date.now()}`;
@@ -217,7 +225,8 @@ export const useNavStore = create<NavState>((set, get) => ({
   canPopBack: () => {
     const s = get();
     return Boolean(
-      s.lightboxMedia ||
+      s.pendingExternalUrl ||
+        s.lightboxMedia ||
         s.serverConfigOpen ||
         s.updateSheetOpen ||
         s.actionMessageId ||
@@ -239,6 +248,11 @@ export const useNavStore = create<NavState>((set, get) => ({
 
   popBack: () => {
     const s = get();
+    if (s.pendingExternalUrl) {
+      set({ pendingExternalUrl: null });
+      syncHardwareBack(get());
+      return true;
+    }
     if (s.lightboxMedia) {
       set({ lightboxMedia: null });
       syncHardwareBack(get());

@@ -4,6 +4,8 @@
     @android.webkit.JavascriptInterface <methods>;
 }
 -keep class com.timestarry.duallane.NativeBridge { *; }
+-keep class com.timestarry.duallane.PushKeepAliveService { *; }
+-keep class com.timestarry.duallane.BootCompletedReceiver { *; }
 
 # OkHttp / Okio rules
 -dontwarn okhttp3.**

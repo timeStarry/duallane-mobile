@@ -66,7 +66,7 @@ class NativeBridge(
                     .put("error", "服务地址必须使用 HTTPS 协议")
                     .toString()
             }
-            realtimeManager.closeAll()
+            realtimeManager.shutdownOnLogout()
             networkGateway.tokenVault.setApiOrigin(clean)
             JSONObject()
                 .put("ok", true)
@@ -99,6 +99,7 @@ class NativeBridge(
         ioExecutor.execute {
             try {
                 val res = networkGateway.loginWithEmailCode(email, challengeId, code)
+                PushKeepAliveService.syncServiceState(activity.applicationContext)
                 resolveCall(callId, true, res.toString())
             } catch (err: Throwable) {
                 resolveCall(callId, false, err.message ?: "验证码登录失败")
@@ -108,7 +109,7 @@ class NativeBridge(
 
     @JavascriptInterface
     fun logout() {
-        realtimeManager.closeAll()
+        realtimeManager.shutdownOnLogout()
         ioExecutor.execute {
             networkGateway.logout()
         }
@@ -176,6 +177,30 @@ class NativeBridge(
     }
 
     @JavascriptInterface
+    fun uploadTextAttachment(
+        callId: String,
+        conversationId: String,
+        fileName: String,
+        content: String,
+    ) {
+        ioExecutor.execute {
+            try {
+                val cleanName = fileName.trim().ifBlank { "pasted.txt" }
+                val bytes = content.toByteArray(Charsets.UTF_8)
+                val res = networkGateway.uploadConversationBytes(
+                    conversationId = conversationId,
+                    fileName = cleanName,
+                    mimeType = "text/plain; charset=utf-8",
+                    bytes = bytes,
+                )
+                resolveCall(callId, true, res.toString())
+            } catch (err: Throwable) {
+                resolveCall(callId, false, err.message ?: "长文本附件上传失败")
+            }
+        }
+    }
+
+    @JavascriptInterface
     fun uploadCustomEmote(
         callId: String,
         pickedFileId: String,
@@ -236,6 +261,51 @@ class NativeBridge(
     @JavascriptInterface
     fun wsClose(socketId: String) {
         realtimeManager.close(socketId)
+    }
+
+    @JavascriptInterface
+    fun syncNotificationContext(json: String) {
+        runCatching {
+            realtimeManager.syncNotificationContext(json)
+            if (networkGateway.tokenVault.isAuthenticated()) {
+                PushKeepAliveService.syncServiceState(activity.applicationContext)
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun clearConversationNotification(conversationId: String) {
+        realtimeManager.clearConversationNotification(conversationId)
+    }
+
+    @JavascriptInterface
+    fun getBackgroundPushStatus(): String {
+        return JSONObject().apply {
+            put("keepAliveEnabled", networkGateway.tokenVault.isKeepAliveEnabled())
+            put("notificationsGranted", activity.isNotificationsGranted())
+            put("ignoringBatteryOptimizations", activity.isIgnoringBatteryOptimizations())
+        }.toString()
+    }
+
+    @JavascriptInterface
+    fun setKeepAliveEnabled(enabled: Boolean): String {
+        networkGateway.tokenVault.setKeepAliveEnabled(enabled)
+        PushKeepAliveService.syncServiceState(activity.applicationContext)
+        return getBackgroundPushStatus()
+    }
+
+    @JavascriptInterface
+    fun requestIgnoreBatteryOptimizations() {
+        mainHandler.post {
+            activity.requestIgnoreBatteryOptimizations()
+        }
+    }
+
+    @JavascriptInterface
+    fun requestNotificationPermission() {
+        mainHandler.post {
+            activity.requestNotificationPermissionOrSettings()
+        }
     }
 
     @JavascriptInterface
@@ -521,6 +591,10 @@ class NativeBridge(
         evalJs(
             "window.__duallaneOnSystemTheme && window.__duallaneOnSystemTheme(${JSONObject.quote(mode)});"
         )
+    }
+
+    fun emitAppResumed() {
+        evalJs("window.__duallaneOnAppResumed && window.__duallaneOnAppResumed();")
     }
 
     fun emitUpdateProgress(

@@ -14,9 +14,10 @@ import { MeTab } from "./screens/MeTab";
 import { SearchScreen } from "./screens/SearchScreen";
 import { StickerAndBotSheets } from "./screens/StickerAndBotSheets";
 import { ThreadAndDetailSheets } from "./screens/ThreadAndDetailSheets";
+import { ExternalLinkGuardSheet } from "./shared/markdown";
 import { useUpdateStore } from "./shared/updater";
 import { useNavStore, type MobileTabId } from "./store/nav-store";
-import { useWorkspaceStore } from "./store/workspace-store";
+import { computeTotalBadgeUnread, useWorkspaceStore } from "./store/workspace-store";
 
 export function App() {
   const authStatus = useWorkspaceStore((s) => s.authStatus);
@@ -55,7 +56,7 @@ export function App() {
   }, [handleDeepLink]);
 
   const totalUnread = useMemo(
-    () => Object.values(conversations).reduce((sum, c) => sum + (c.unreadCount || 0), 0),
+    () => computeTotalBadgeUnread(conversations),
     [conversations]
   );
 
@@ -87,11 +88,12 @@ export function App() {
     );
   }
 
-  if (authStatus === "unauthenticated") {
+      if (authStatus === "unauthenticated") {
     return (
       <>
         <EntryScreen />
         <MediaLightbox />
+        <ExternalLinkGuardSheet />
         {renderToast()}
       </>
     );
@@ -125,11 +127,13 @@ export function App() {
   return (
     <div className="h-full w-full flex flex-col bg-[var(--dl-bg)] overflow-hidden">
       {/* Main Tab Viewport */}
-      <main className="flex-1 min-h-0 overflow-hidden">
-        {activeTab === "chats" && <ChatsTab />}
-        {activeTab === "contacts" && <ContactsTab />}
-        {activeTab === "me" && <MeTab />}
-      </main>
+      {!activeChatId && (
+        <main className="flex-1 min-h-0 overflow-hidden">
+          {activeTab === "chats" && <ChatsTab />}
+          {activeTab === "contacts" && <ContactsTab />}
+          {activeTab === "me" && <MeTab />}
+        </main>
+      )}
 
       {/* Bottom Tab Navigation (Hidden when inside full-screen ChatRoom or Direct Overlay) */}
       {!activeChatId && !directOverlayOpen && (
@@ -188,6 +192,7 @@ export function App() {
       <StickerAndBotSheets />
       <AnnouncementModal />
       <MediaLightbox />
+      <ExternalLinkGuardSheet />
       {renderToast()}
     </div>
   );
