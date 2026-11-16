@@ -351,7 +351,19 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                 ) : conv.kind === "saved" ? (
                   "仅自己可见 · 跨端同步"
                 ) : isBotConversation ? (
-                  "AI 智能体实时通道"
+                  directPeer?.botOnline === true ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                      <span>在线 · AI 智能体实时通道</span>
+                    </span>
+                  ) : directPeer?.botOnline === false ? (
+                    <span className="inline-flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                      <span className="truncate">离线 · 监听未连接（上线后自动处理）</span>
+                    </span>
+                  ) : (
+                    "AI 智能体实时通道"
+                  )
                 ) : (
                   "加密传输会话"
                 )}
@@ -414,9 +426,9 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           nearBottomRef.current = dist < 140;
           setShowScrollBottom(dist > 360);
         }}
-        className="flex-1 overflow-y-auto py-2 overscroll-contain relative"
+        className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 py-2 overscroll-contain relative"
       >
-        <div ref={contentRef} className="min-h-full flex flex-col justify-end">
+        <div ref={contentRef} className="min-h-full w-full min-w-0 flex flex-col justify-end">
           {messages.length === 0 && loadingInitial ? (
             <div className="py-12 text-center text-[12px] text-[var(--dl-text-muted)]">
               正在同步近期消息…
@@ -424,7 +436,20 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           ) : (
             messages.map((msg, idx) => {
               const prev = idx > 0 ? messages[idx - 1] : null;
+              const next = idx < messages.length - 1 ? messages[idx + 1] : null;
               const showDate = !prev || !isSameCalendarDay(prev.createdAt, msg.createdAt);
+              const canBurst = (a: V1Message | null, b: V1Message | null) => {
+                if (!a || !b) return false;
+                if (a.kind === "system" || b.kind === "system" || a.recalledAt || b.recalledAt) {
+                  return false;
+                }
+                if (a.senderId !== b.senderId) return false;
+                if (!isSameCalendarDay(a.createdAt, b.createdAt)) return false;
+                const diff = Math.abs(Date.parse(b.createdAt) - Date.parse(a.createdAt));
+                return Number.isFinite(diff) && diff <= 5 * 60 * 1000;
+              };
+              const groupedWithPrev = !showDate && canBurst(prev, msg);
+              const groupedWithNext = canBurst(msg, next);
               return (
                 <React.Fragment key={msg.id}>
                   {showDate && (
@@ -441,12 +466,18 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                     senderColor={members[msg.senderId]?.avatarColor}
                     replyTarget={msg.replyToId ? msgById.get(msg.replyToId) : undefined}
                     highlighted={highlightedMessageId === msg.id}
+                    groupedWithPrev={groupedWithPrev}
+                    groupedWithNext={groupedWithNext}
                     onQuickReply={(target) => {
                       setEditingMessageId(null);
                       setDraft(conversationId, textValue, target.id);
                       textareaRef.current?.focus();
                     }}
                     onMentionSender={insertMention}
+                    onJumpToMessage={(targetId) => {
+                      const el = document.getElementById(`msg-${targetId}`);
+                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }}
                   />
                 </React.Fragment>
               );
@@ -527,21 +558,21 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         </div>
       )}
 
-      {/* Reply / Edit Banner */}
+      {/* Telegram / Feishu Style Reply / Edit Banner */}
       {(replyTarget || editingMsg) && (
-        <div className="px-3.5 py-2 bg-[var(--dl-surface)] border-t border-[var(--dl-border)] flex items-center justify-between gap-2 shrink-0">
-          <div className="min-w-0 flex items-center gap-2">
+        <div className="px-3.5 py-2 bg-[var(--dl-surface)] border-t border-[var(--dl-border)] flex items-center justify-between gap-2 shrink-0 overflow-hidden">
+          <div className="min-w-0 flex-1 flex items-center gap-2.5 overflow-hidden">
             {editingMsg ? (
               <Edit3 size={15} className="text-[var(--dl-accent)] shrink-0" />
             ) : (
               <Reply size={15} className="text-[var(--dl-accent)] shrink-0" />
             )}
-            <div className="min-w-0">
-              <div className="text-[11px] font-semibold text-[var(--dl-accent)]">
+            <div className="min-w-0 flex-1 border-l-[2.5px] border-[var(--dl-accent)] pl-2.5 overflow-hidden">
+              <div className="text-[11px] font-semibold text-[var(--dl-accent)] truncate leading-tight">
                 {editingMsg ? "编辑消息" : `回复 ${replyTarget?.senderName}`}
               </div>
-              <div className="text-[12px] text-[var(--dl-text-muted)] truncate">
-                {editingMsg ? editingMsg.plainText : replyTarget?.plainText}
+              <div className="text-[12px] text-[var(--dl-text-muted)] truncate leading-snug">
+                {editingMsg ? editingMsg.plainText : replyTarget?.plainText || "[媒体消息]"}
               </div>
             </div>
           </div>
@@ -555,7 +586,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                 setDraft(conversationId, textValue, "");
               }
             }}
-            className="p-1 text-[var(--dl-text-muted)]"
+            className="p-1 text-[var(--dl-text-muted)] shrink-0"
           >
             <X size={16} />
           </button>

@@ -255,7 +255,10 @@ export function DirectTab({
       )}
 
       {/* Encrypted Message Stream */}
-      <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+      <div
+        ref={listRef}
+        className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 px-3 py-3 space-y-2"
+      >
         {!peerConnected && p2pMessages.length === 0 && (
           <div className="my-6 mx-auto max-w-[300px] rounded-2xl bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 text-center space-y-2.5">
             <div className="text-[13px] font-semibold text-[var(--dl-text)]">
@@ -330,43 +333,41 @@ export function DirectTab({
                   </div>
                 </div>
               ) : (
-                <div
-                  className={`max-w-[78%] px-3.5 py-2.5 rounded-[20px] ${
-                    m.isOwn
-                      ? "bg-amber-500 text-white rounded-br-[6px]"
-                      : "bg-[var(--dl-surface)] text-[var(--dl-text)] border border-[var(--dl-border)] rounded-bl-[6px]"
-                  }`}
-                >
-                  {m.attachment && (
-                    <div className="mb-1.5 flex items-center gap-2 p-2 rounded-xl bg-black/10">
-                      <FileText size={18} />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-medium truncate">
-                          {m.attachment.fileName}
-                        </div>
-                        <div className="text-[10px] opacity-75">
-                          {formatBytes(m.attachment.byteSize)}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  {m.text && (
-                    <div className="text-[15px] leading-snug whitespace-pre-wrap break-words">
-                      {renderRichTextTokens(m.text, m.id)}
-                    </div>
-                  )}
-                  <div
-                    className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${
-                      m.isOwn ? "text-white/80" : "text-[var(--dl-text-muted)]"
-                    }`}
-                  >
-                    <span>{formatMessageClock(m.createdAt)}</span>
-                    {m.isOwn &&
-                      (m.deliveryStatus === "delivered" ? (
-                        <CheckCheck size={13} />
+                <div className="flex items-end gap-1.5 min-w-0 max-w-[78%]">
+                  {m.isOwn && (
+                    <span className="shrink-0 mb-1 text-[var(--dl-text-muted)]">
+                      {m.deliveryStatus === "delivered" ? (
+                        <CheckCheck size={13} className="text-amber-500" />
                       ) : (
                         <Check size={12} />
-                      ))}
+                      )}
+                    </span>
+                  )}
+                  <div
+                    className={`max-w-full min-w-0 overflow-hidden px-3.5 py-2 rounded-[18px] [overflow-wrap:anywhere] break-words ${
+                      m.isOwn
+                        ? "bg-amber-500 text-white rounded-br-[6px]"
+                        : "bg-[var(--dl-surface)] text-[var(--dl-text)] border border-[var(--dl-border)] rounded-bl-[6px]"
+                    }`}
+                  >
+                    {m.attachment && (
+                      <div className="mb-1.5 flex items-center gap-2 p-2 rounded-xl bg-black/10 min-w-0 overflow-hidden">
+                        <FileText size={18} className="shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12px] font-medium truncate">
+                            {m.attachment.fileName}
+                          </div>
+                          <div className="text-[10px] opacity-75">
+                            {formatBytes(m.attachment.byteSize)}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {m.text && (
+                      <div className="text-[15px] leading-[1.45] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                        {renderRichTextTokens(m.text, m.id)}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

@@ -14,9 +14,10 @@ import {
   useWorkspaceStore,
 } from "@/store/workspace-store";
 import { useNavStore } from "@/store/nav-store";
-import { useEmoteStore } from "@/store/emote-store";
+import { normalizeEmoteTabOrder, useEmoteStore } from "@/store/emote-store";
 import { EntryScreen } from "@/screens/EntryScreen";
 import { App } from "@/App";
+import { StickerDrawer } from "@/components/StickerDrawer";
 import { nativeBridge } from "@/native/bridge";
 import { compareSemver, useUpdateStore } from "@/shared/updater";
 import { Avatar } from "@/components/Avatar";
@@ -24,7 +25,7 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { mobileApi } from "@/shared/api";
 import { initializeMobileTheme, resolveSystemMode, useThemeStore } from "@/shared/theme-store";
 
-describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
+describe("DualLane Mobile Clean-Room v1.0.8 Core", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useNavStore.setState({
@@ -139,7 +140,13 @@ describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
     ]);
   });
 
-  it("reorders sticker drawer tabs and persists custom order", () => {
+  it("reorders sticker drawer tabs using PC Web parity keys and migrates legacy keys", () => {
+    expect(normalizeEmoteTabOrder(["col:c1", "pack:heybox", "favorites", "pack:c1"])).toEqual([
+      "pack:c1",
+      "heybox",
+      "favorites",
+    ]);
+
     useEmoteStore.setState({
       collections: [
         {
@@ -159,11 +166,12 @@ describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
     });
     const before = useEmoteStore.getState().getOrderedTabs();
     expect(before[0].id).toBe("favorites");
-    expect(before[1].id).toBe("col:c1");
+    expect(before[1].id).toBe("pack:c1");
+    expect(before.some((t) => t.id === "emoji")).toBe(true);
 
-    useEmoteStore.getState().moveTab("col:c1", "left");
+    useEmoteStore.getState().moveTab("pack:c1", "left");
     const after = useEmoteStore.getState().getOrderedTabs();
-    expect(after[0].id).toBe("col:c1");
+    expect(after[0].id).toBe("pack:c1");
     expect(after[1].id).toBe("favorites");
   });
 
@@ -264,9 +272,9 @@ describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
   });
 
   it("prioritizes same-origin server APK releases and falls back cleanly to GitHub", async () => {
-    expect(compareSemver("1.0.7", "1.0.7")).toBe(0);
-    expect(compareSemver("v1.0.8", "1.0.7")).toBe(1);
-    expect(compareSemver("1.0.6", "1.0.7")).toBe(-1);
+    expect(compareSemver("1.0.8", "1.0.8")).toBe(0);
+    expect(compareSemver("v1.0.9", "1.0.8")).toBe(1);
+    expect(compareSemver("1.0.7", "1.0.8")).toBe(-1);
 
     const { container } = render(<Avatar name="Astra" kind="bot" color="violet" />);
     const tile = container.querySelector('[data-avatar-kind="bot"]');
@@ -279,9 +287,9 @@ describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
       bodyText: JSON.stringify({
         release: {
           enabled: true,
-          version: "1.0.8",
-          versionCode: 10008,
-          title: "DualLane Android v1.0.8",
+          version: "1.0.9",
+          versionCode: 10009,
+          title: "DualLane Android v1.0.9",
           notes: "### 新增与优化\n- **站内同源分发**：免代理秒下",
           byteSize: 658000,
           sha256: "abc123",
@@ -293,7 +301,7 @@ describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
     const srvResult = await useUpdateStore.getState().checkForUpdates(false);
     expect(srvResult.hasUpdate).toBe(true);
     expect(srvResult.release?.source).toBe("server");
-    expect(srvResult.release?.version).toBe("1.0.8");
+    expect(srvResult.release?.version).toBe("1.0.9");
     expect(srvResult.release?.apkUrl).toBe(
       "https://duallane.tsio.top/api/v1/mobile/android/latest.apk"
     );
@@ -312,17 +320,17 @@ describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
         ok: true,
         status: 200,
         bodyText: JSON.stringify({
-          tag_name: "v1.0.8",
-          name: "DualLane Mobile v1.0.8",
+          tag_name: "v1.0.9",
+          name: "DualLane Mobile v1.0.9",
           body: "- 新增功能与性能优化",
           published_at: "2026-11-16T12:00:00Z",
-          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.8",
+          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.9",
           assets: [
             {
               name: "app-release.apk",
               size: 660000,
               browser_download_url:
-                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.8/app-release.apk",
+                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.9/app-release.apk",
             },
           ],
         }),
@@ -505,5 +513,115 @@ describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
     expect(screen.getByText("owner@tsio.top")).toBeInTheDocument();
 
     ackSpy.mockRestore();
+  });
+
+  it("sanitizes @__duallane_bot mentions, shows live botOnline status, and sends favorited built-in stickers directly", () => {
+    const parsed = parseBootstrapPayload({
+      auth: {
+        enabled: true,
+        currentUser: { id: "u_me", displayName: "星辰", role: "owner" },
+      },
+      members: [
+        { id: "u_me", displayName: "星辰", role: "owner" },
+        {
+          id: "usr_bot_comet",
+          displayName: "Comet",
+          githubLogin: "__duallane_bot_4fd877150a26c0fa6505fe88",
+          role: "bot",
+          botOnline: true,
+        },
+      ],
+      conversations: [
+        {
+          id: "conv_grp",
+          kind: "group",
+          displayTitle: "研发群",
+          memberIds: ["u_me", "usr_bot_comet"],
+          lastMessagePlainText: "@__duallane_bot_4fd877150a26c0fa6505fe88 能收到群聊信息吗",
+          latestMessages: [
+            {
+              id: "m_mention",
+              authorId: "u_me",
+              authorName: "星辰",
+              plainText: "@__duallane_bot_4fd877150a26c0fa6505fe88 能收到群聊信息吗",
+              content: {
+                blocks: [
+                  {
+                    type: "mention",
+                    userId: "usr_bot_comet",
+                    label: "__duallane_bot_4fd877150a26c0fa6505fe88",
+                  },
+                  { type: "text", text: " 能收到群聊信息吗" },
+                ],
+              },
+              createdAt: "2026-11-16T11:07:00Z",
+            },
+          ],
+        },
+        {
+          id: "conv_comet_dm",
+          kind: "direct",
+          displayTitle: "Comet",
+          memberIds: ["u_me", "usr_bot_comet"],
+          latestMessages: [],
+        },
+      ],
+    });
+
+    expect(parsed.members["usr_bot_comet"].handle).toBeUndefined();
+    expect(parsed.members["usr_bot_comet"].botOnline).toBe(true);
+    expect(parsed.messagesByConv["conv_grp"][0].blocks?.[0]).toEqual({
+      type: "mention",
+      userId: "usr_bot_comet",
+      label: "Comet",
+    });
+    expect(parsed.messagesByConv["conv_grp"][0].plainText).toBe("@Comet 能收到群聊信息吗");
+    expect(parsed.conversations["conv_grp"].lastMessageText).not.toContain("__duallane_");
+
+    vi.spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "markRead").mockImplementation(() => {});
+
+    useWorkspaceStore.setState({
+      authStatus: "authenticated",
+      currentUser: parsed.currentUser,
+      members: parsed.members,
+      conversations: parsed.conversations,
+      conversationOrder: parsed.conversationOrder,
+      messagesByConv: parsed.messagesByConv,
+    });
+    useNavStore.setState({ activeChatId: "conv_comet_dm" });
+
+    const { unmount } = render(<App />);
+    expect(screen.getByText("在线 · AI 智能体实时通道")).toBeInTheDocument();
+    unmount();
+
+    // Favorited built-in sticker sends built-in token directly instead of custom:<uuid>
+    const builtInSent: string[] = [];
+    useEmoteStore.setState({
+      emotes: [
+        {
+          id: "fav_builtin_1",
+          kind: "image",
+          label: "狗头",
+          token: "[custom:fav_builtin_1]",
+          emoteKey: "bili:doge",
+          sourceType: "builtin",
+          animated: false,
+          createdAt: "2026-11-16T10:00:00Z",
+        },
+      ],
+      collections: [],
+    });
+    render(
+      <StickerDrawer
+        open
+        conversationId="conv_grp"
+        onInsertToken={() => {}}
+        onSendBuiltInSticker={(tok) => builtInSent.push(tok)}
+      />
+    );
+    fireEvent.click(screen.getByAltText("狗头"));
+    expect(builtInSent).toEqual(["[bili:doge]"]);
   });
 });

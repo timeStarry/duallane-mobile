@@ -194,8 +194,8 @@ export const nativeBridge = {
         return {
           authenticated: Boolean(raw.authenticated),
           apiOrigin: raw.apiOrigin || DEFAULT_ORIGIN,
-          appVersion: raw.appVersion || "1.0.7",
-          versionCode: raw.versionCode || 10007,
+          appVersion: raw.appVersion || "1.0.8",
+          versionCode: raw.versionCode || 10008,
           platform: raw.platform || "android",
           systemTheme:
             raw.systemTheme === "dark" || raw.systemTheme === "light"
@@ -211,8 +211,8 @@ export const nativeBridge = {
     return {
       authenticated: false,
       apiOrigin: storedOrigin || DEFAULT_ORIGIN,
-      appVersion: "1.0.7",
-      versionCode: 10007,
+      appVersion: "1.0.8",
+      versionCode: 10008,
       platform: "web",
     };
   },

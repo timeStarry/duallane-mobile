@@ -34,6 +34,7 @@ export interface V1User {
   avatarUrl?: string;
   avatarColor?: string;
   description?: string;
+  botOnline?: boolean;
 }
 
 export interface TypingIndicatorEntry {
@@ -362,7 +363,38 @@ export function buildTextAndMentionBlocks(
   return blocks.length > 0 ? blocks : [{ type: "text", text }];
 }
 
-function mapRawBlocks(rawContent: unknown): V1MessageBlock[] | undefined {
+function sanitizeSyntheticHandle(val: unknown): string | undefined {
+  if (typeof val !== "string") return undefined;
+  const trimmed = val.trim();
+  if (!trimmed || trimmed.startsWith("__duallane_")) return undefined;
+  return trimmed;
+}
+
+function sanitizeSyntheticMentionsInText(
+  rawText: string,
+  members: Record<string, V1User>,
+  blocks?: V1MessageBlock[]
+): string {
+  if (!rawText || !rawText.includes("__duallane_")) return rawText;
+  if (blocks && blocks.some((b) => b.type === "mention")) {
+    let rebuilt = "";
+    for (const b of blocks) {
+      if (b.type === "text") rebuilt += b.text;
+      else if (b.type === "mention") {
+        const resolved = members[b.userId]?.displayName || sanitizeSyntheticHandle(b.label) || "机器人";
+        rebuilt += `@${resolved}`;
+      } else if (b.type === "link") rebuilt += b.label || b.url;
+      else if (b.type === "emoji") rebuilt += `[${b.shortcode}]`;
+    }
+    if (rebuilt.trim()) return rebuilt;
+  }
+  return rawText.replace(/@__duallane_[a-zA-Z0-9_-]+/g, "@机器人");
+}
+
+function mapRawBlocks(
+  rawContent: unknown,
+  members?: Record<string, V1User>
+): V1MessageBlock[] | undefined {
   if (!rawContent || typeof rawContent !== "object") return undefined;
   const blocksRaw = (rawContent as Record<string, unknown>).blocks;
   if (!Array.isArray(blocksRaw) || blocksRaw.length === 0) return undefined;
@@ -372,10 +404,16 @@ function mapRawBlocks(rawContent: unknown): V1MessageBlock[] | undefined {
     if (t === "text" && typeof b.text === "string") {
       out.push({ type: "text", text: b.text });
     } else if (t === "mention" && b.userId) {
+      const uid = String(b.userId);
+      const rawLabel = typeof b.label === "string" ? b.label.replace(/^@+/, "").trim() : "";
+      const resolvedLabel =
+        members?.[uid]?.displayName ||
+        sanitizeSyntheticHandle(rawLabel) ||
+        (uid.startsWith("usr_bot_") ? "机器人" : uid);
       out.push({
         type: "mention",
-        userId: String(b.userId),
-        label: String(b.label || b.userId),
+        userId: uid,
+        label: resolvedLabel,
       });
     } else if (t === "link" && b.url) {
       out.push({
@@ -461,12 +499,21 @@ function upsertRawMemberRecord(
       : rawRole === "owner" || rawRole === "admin"
       ? rawRole
       : "member";
+  const cleanGithubLogin = sanitizeSyntheticHandle(m.githubLogin);
+  const cleanHandle = sanitizeSyntheticHandle(m.handle);
   const candidateName =
-    m.remark || m.nickname || m.displayName || m.name || m.githubLogin || m.handle;
+    sanitizeSyntheticHandle(m.remark) ||
+    sanitizeSyntheticHandle(m.nickname) ||
+    sanitizeSyntheticHandle(m.displayName) ||
+    sanitizeSyntheticHandle(m.name) ||
+    cleanGithubLogin ||
+    cleanHandle;
   const resolvedName = candidateName
     ? String(candidateName)
-    : prev?.displayName && !prev.displayName.startsWith("usr_")
+    : prev?.displayName && !prev.displayName.startsWith("usr_") && !prev.displayName.startsWith("__duallane_")
     ? prev.displayName
+    : role === "bot"
+    ? "机器人"
     : id;
   const hasExplicitAvatar = "avatarUrl" in m;
   const nextAvatarUrl = hasExplicitAvatar
@@ -482,18 +529,17 @@ function upsertRawMemberRecord(
     : prev?.avatarColor;
   const nextDescription =
     typeof m.description === "string" ? m.description.trim() || undefined : prev?.description;
+  const nextBotOnline =
+    typeof m.botOnline === "boolean" ? m.botOnline : prev?.botOnline;
   target[id] = {
     id,
     displayName: resolvedName,
-    handle: m.githubLogin
-      ? String(m.githubLogin)
-      : m.handle
-      ? String(m.handle)
-      : prev?.handle,
+    handle: cleanGithubLogin || cleanHandle || prev?.handle,
     role,
     avatarUrl: nextAvatarUrl,
     avatarColor: nextAvatarColor,
     description: nextDescription,
+    ...(nextBotOnline !== undefined ? { botOnline: nextBotOnline } : {}),
   };
   return id;
 }
@@ -570,6 +616,10 @@ export function mapRawMessage(
       ? m.senderAvatarUrl.trim()
       : undefined;
 
+  const mappedBlocks = recalledAt ? [] : mapRawBlocks(m.content, members);
+  const rawPlain = String(m.plainText || m.text || "");
+  const sanitizedPlain = sanitizeSyntheticMentionsInText(rawPlain, members, mappedBlocks);
+
   return {
     id,
     clientMessageId: m.clientMessageId ? String(m.clientMessageId) : undefined,
@@ -578,18 +628,16 @@ export function mapRawMessage(
     senderId,
     senderName:
       members[senderId]?.displayName ||
-      String(
-        m.authorRemark ||
-          m.authorNickname ||
-          m.authorName ||
-          m.authorDisplayName ||
-          authorObj.displayName ||
-          m.senderName ||
-          (kind === "system" ? "系统通知" : "成员")
-      ),
+      sanitizeSyntheticHandle(m.authorRemark) ||
+      sanitizeSyntheticHandle(m.authorNickname) ||
+      sanitizeSyntheticHandle(m.authorName) ||
+      sanitizeSyntheticHandle(m.authorDisplayName) ||
+      sanitizeSyntheticHandle(authorObj.displayName) ||
+      sanitizeSyntheticHandle(m.senderName) ||
+      (kind === "system" ? "系统通知" : kind === "bot" ? "机器人" : "成员"),
     senderAvatarUrl: members[senderId]?.avatarUrl || rawAvatar,
-    plainText: String(m.plainText || m.text || ""),
-    blocks: recalledAt ? [] : mapRawBlocks(m.content),
+    plainText: sanitizedPlain,
+    blocks: mappedBlocks,
     replyToId: recalledAt
       ? undefined
       : m.replyToMessageId
@@ -717,11 +765,11 @@ export function parseBootstrapPayload(raw: Record<string, unknown>) {
       pinnedMessageIds: Array.isArray(c.pinnedMessageIds) ? c.pinnedMessageIds.map(String) : [],
       memberIds: cleanedMemberIds,
       lastMessageText: c.lastMessagePlainText
-        ? String(c.lastMessagePlainText)
+        ? sanitizeSyntheticMentionsInText(String(c.lastMessagePlainText), members)
         : c.lastMessageText
-        ? String(c.lastMessageText)
+        ? sanitizeSyntheticMentionsInText(String(c.lastMessageText), members)
         : lastMsg.plainText
-        ? String(lastMsg.plainText)
+        ? sanitizeSyntheticMentionsInText(String(lastMsg.plainText), members)
         : undefined,
       lastMessageAt: c.lastMessageAt
         ? String(c.lastMessageAt)
@@ -1328,7 +1376,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
             },
           };
         });
-      } catch {
+      } catch (err) {
         set((s) => ({
           messagesByConv: {
             ...s.messagesByConv,
@@ -1337,6 +1385,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
             ),
           },
         }));
+        useNavStore
+          .getState()
+          .showToast(
+            err instanceof Error && err.message ? err.message : "贴纸发送失败，请重试",
+            "danger"
+          );
       }
     },
 
@@ -1392,7 +1446,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
             },
           };
         });
-      } catch {
+      } catch (err) {
         set((s) => ({
           messagesByConv: {
             ...s.messagesByConv,
@@ -1401,6 +1455,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
             ),
           },
         }));
+        useNavStore
+          .getState()
+          .showToast(
+            err instanceof Error && err.message ? err.message : "分享表情包卡片失败",
+            "danger"
+          );
       }
     },
 

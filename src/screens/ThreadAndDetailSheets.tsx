@@ -76,14 +76,16 @@ export function ThreadAndDetailSheets() {
         maxHeight="88dvh"
       >
         <div className="flex flex-col h-[72dvh]">
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3 min-w-0">
             {rootMsg && (
-              <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] border border-[var(--dl-border)]">
-                <div className="flex items-center justify-between text-[12px] text-[var(--dl-text-muted)] mb-1">
-                  <span className="font-semibold text-[var(--dl-text)]">{rootMsg.senderName}</span>
-                  <span>{formatMessageClock(rootMsg.createdAt)}</span>
+              <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] border border-[var(--dl-border)] min-w-0 overflow-hidden">
+                <div className="flex items-center justify-between gap-2 text-[12px] text-[var(--dl-text-muted)] mb-1">
+                  <span className="font-semibold text-[var(--dl-text)] truncate">
+                    {rootMsg.senderName}
+                  </span>
+                  <span className="shrink-0">{formatMessageClock(rootMsg.createdAt)}</span>
                 </div>
-                <div className="text-[14px] text-[var(--dl-text)] whitespace-pre-wrap">
+                <div className="text-[14px] text-[var(--dl-text)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                   {renderRichTextTokens(rootMsg.plainText, `root_${rootMsg.id}`)}
                 </div>
               </div>
@@ -96,13 +98,15 @@ export function ThreadAndDetailSheets() {
             {(threadView?.replies || []).map((rep) => (
               <div
                 key={rep.id}
-                className="p-3 rounded-2xl bg-[var(--dl-surface)] border border-[var(--dl-border)]"
+                className="p-3 rounded-2xl bg-[var(--dl-surface)] border border-[var(--dl-border)] min-w-0 overflow-hidden"
               >
-                <div className="flex items-center justify-between text-[11px] text-[var(--dl-text-muted)]">
-                  <span className="font-semibold text-[var(--dl-text)]">{rep.authorName}</span>
-                  <span>{formatMessageClock(rep.createdAt)}</span>
+                <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--dl-text-muted)]">
+                  <span className="font-semibold text-[var(--dl-text)] truncate">
+                    {rep.authorName}
+                  </span>
+                  <span className="shrink-0">{formatMessageClock(rep.createdAt)}</span>
                 </div>
-                <div className="mt-1 text-[14px] text-[var(--dl-text)] whitespace-pre-wrap">
+                <div className="mt-1 text-[14px] text-[var(--dl-text)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                   {renderRichTextTokens(rep.plainText, rep.id)}
                 </div>
                 {rep.card && <CardKitView card={rep.card} />}

@@ -12,12 +12,38 @@ import { visibleEmotePacks } from "@/shared/emotes";
 const TAB_ORDER_STORAGE_KEY = "duallane:v1:emote-tab-order";
 const LIBRARY_CACHE_STORAGE_KEY = "duallane:mobile:emote-library:v1";
 
+const BUILTIN_PACK_IDS = new Set(visibleEmotePacks.map((p) => p.id));
+
+export function normalizeEmoteTabOrder(rawOrder: unknown): string[] {
+  if (!Array.isArray(rawOrder)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of rawOrder) {
+    const raw = String(item || "").trim();
+    if (!raw) continue;
+    let normalized = raw;
+    if (raw.startsWith("col:")) {
+      const colId = raw.slice("col:".length).trim();
+      if (!colId) continue;
+      normalized = `pack:${colId}`;
+    } else if (raw.startsWith("pack:")) {
+      const rest = raw.slice("pack:".length).trim();
+      if (!rest) continue;
+      normalized = BUILTIN_PACK_IDS.has(rest) ? rest : `pack:${rest}`;
+    }
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      out.push(normalized);
+    }
+  }
+  return out;
+}
+
 function loadStoredTabOrder(): string[] {
   try {
     const raw = window.localStorage.getItem(TAB_ORDER_STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+    return normalizeEmoteTabOrder(JSON.parse(raw));
   } catch {
     return [];
   }
@@ -128,11 +154,11 @@ function scheduleEmoteMediaPrewarm(
 ) {
   const urls: string[] = [];
   for (const e of emotes.slice(0, 24)) {
-    urls.push(e.src || `/api/workspace/emotes/custom/${encodeURIComponent(e.id)}`);
+    urls.push(e.src || `/api/workspace/emotes/${encodeURIComponent(e.id)}/content`);
   }
   for (const col of collections.slice(0, 4)) {
     for (const item of (col.items || []).slice(0, 8)) {
-      urls.push(item.src || `/api/workspace/emotes/custom/${encodeURIComponent(item.id)}`);
+      urls.push(item.src || `/api/workspace/emotes/${encodeURIComponent(item.id)}/content`);
     }
   }
   if (urls.length > 0) {
@@ -198,8 +224,7 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
   },
 
   hydrateTabOrderFromPreferences: (rawOrder) => {
-    if (!Array.isArray(rawOrder)) return;
-    const cleaned = rawOrder.map(String).filter(Boolean);
+    const cleaned = normalizeEmoteTabOrder(rawOrder);
     if (cleaned.length > 0) {
       saveStoredTabOrder(cleaned);
       set({ tabOrder: cleaned });
@@ -212,7 +237,7 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
     const rawTabs: EmoteTabDescriptor[] = [
       { id: "favorites", label: "收藏", kind: "favorites" },
       ...s.collections.map((col) => ({
-        id: `col:${col.id}`,
+        id: `pack:${col.id}`,
         label: col.name,
         kind: "collection" as const,
         collection: col,
@@ -222,7 +247,7 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
           !enabledPackIds || enabledPackIds.length === 0 ? true : enabledPackIds.includes(p.id)
         )
         .map((p) => ({
-          id: `pack:${p.id}`,
+          id: p.id,
           label: p.label,
           kind: "builtin" as const,
           packId: p.id,
@@ -239,8 +264,9 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
   },
 
   moveTab: (tabId, direction) => {
+    const normalizedId = normalizeEmoteTabOrder([tabId])[0] || tabId;
     const tabs = get().getOrderedTabs().map((t) => t.id);
-    const idx = tabs.indexOf(tabId);
+    const idx = tabs.indexOf(normalizedId);
     if (idx < 0) return tabs;
     const swapIdx = direction === "left" ? idx - 1 : idx + 1;
     if (swapIdx < 0 || swapIdx >= tabs.length) return tabs;

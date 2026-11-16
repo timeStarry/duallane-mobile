@@ -6,13 +6,13 @@ import {
   Clock,
   FileText,
   MessageSquareText,
-  MoreHorizontal,
   Package,
   Reply,
 } from "lucide-react";
 import { nativeBridge } from "@/native/bridge";
 import {
   extractPackShareIdFromText,
+  formatConversationPreviewText,
   getBuiltInEmote,
   isSingleBuiltInSticker,
   ReactionGlyph,
@@ -29,14 +29,30 @@ import { CardKitView } from "./CardKitView";
 function DeliveryStatusIcon({
   status,
   frameless = false,
+  external = false,
 }: {
   status?: V1Message["status"];
   frameless?: boolean;
+  external?: boolean;
 }) {
+  if (external) {
+    if (status === "sending") {
+      return <Clock size={12} className="text-[var(--dl-text-muted)] opacity-75" />;
+    }
+    if (status === "failed") {
+      return <AlertCircle size={13} className="text-rose-500" />;
+    }
+    if (status === "read") {
+      return <CheckCheck size={14} className="text-[var(--dl-accent)]" />;
+    }
+    return <Check size={13} className="text-[var(--dl-text-muted)] opacity-80" />;
+  }
   const mutedCls = frameless ? "text-white/90" : "opacity-80";
   if (status === "sending") return <Clock size={12} className={mutedCls} />;
   if (status === "failed") return <AlertCircle size={13} className="text-rose-400" />;
-  if (status === "read") return <CheckCheck size={14} className={frameless ? "text-sky-300" : "opacity-95"} />;
+  if (status === "read") {
+    return <CheckCheck size={14} className={frameless ? "text-sky-300" : "opacity-95"} />;
+  }
   return <Check size={13} className={mutedCls} />;
 }
 
@@ -47,8 +63,11 @@ export function MessageItem({
   senderColor,
   replyTarget,
   highlighted,
+  groupedWithPrev = false,
+  groupedWithNext = false,
   onQuickReply,
   onMentionSender,
+  onJumpToMessage,
 }: {
   msg: V1Message;
   isOwn: boolean;
@@ -56,10 +75,14 @@ export function MessageItem({
   senderColor?: string;
   replyTarget?: V1Message;
   highlighted?: boolean;
+  groupedWithPrev?: boolean;
+  groupedWithNext?: boolean;
   onQuickReply: (msg: V1Message) => void;
   onMentionSender: (userId: string, displayName: string) => void;
+  onJumpToMessage?: (messageId: string) => void;
 }) {
   const customSrcMap = useEmoteStore((s) => s.customSrcMap);
+  const members = useWorkspaceStore((s) => s.members);
   const recalledDrafts = useWorkspaceStore((s) => s.recalledDrafts);
   const restoreRecalledDraft = useWorkspaceStore((s) => s.restoreRecalledDraft);
   const toggleReaction = useWorkspaceStore((s) => s.toggleReaction);
@@ -68,8 +91,9 @@ export function MessageItem({
   const setSharedPackId = useNavStore((s) => s.setSharedPackId);
   const setLightboxMedia = useNavStore((s) => s.setLightboxMedia);
 
-  // Touch gestures: long-press for action sheet & swipe-left for reply
+  // Touch gestures: long-press for action sheet, swipe-left for reply, tap for Feishu-style time reveal
   const [swipeOffset, setSwipeOffset] = useState(0);
+  const [showTime, setShowTime] = useState(false);
   const touchState = useRef<{
     startX: number;
     startY: number;
@@ -126,7 +150,7 @@ export function MessageItem({
       : null;
   const customStickerSrc = customStickerId
     ? customSrcMap[customStickerId] ||
-      `/api/workspace/emotes/custom/${encodeURIComponent(customStickerId)}`
+      `/api/workspace/emotes/${encodeURIComponent(customStickerId)}/content`
     : null;
 
   const packShareBlock = msg.blocks?.find((b) => b.type === "emote_collection");
@@ -205,20 +229,23 @@ export function MessageItem({
     if (msg.blocks && msg.blocks.length > 0) {
       return msg.blocks.map((b, i) => {
         if (b.type === "mention") {
+          const resolvedLabel =
+            members[b.userId]?.displayName ||
+            (b.label.startsWith("__duallane_") ? "机器人" : b.label);
           return (
             <span
               key={i}
               onClick={(ev) => {
                 ev.stopPropagation();
-                onMentionSender(b.userId, b.label);
+                onMentionSender(b.userId, resolvedLabel);
               }}
-              className={`font-semibold px-1 py-0.5 rounded-md mx-0.5 ${
+              className={`inline font-semibold px-1 py-0.5 rounded-md mx-0.5 break-all [overflow-wrap:anywhere] ${
                 isOwn
                   ? "bg-white/20 text-white"
                   : "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]"
               }`}
             >
-              @{b.label}
+              @{resolvedLabel}
             </span>
           );
         }
@@ -231,20 +258,32 @@ export function MessageItem({
                 ev.stopPropagation();
                 nativeBridge.openExternalUrl(b.url);
               }}
-              className="underline break-all text-left"
+              className="inline underline break-all [overflow-wrap:anywhere] text-left"
             >
               {b.label || b.url}
             </button>
           );
         }
         if (b.type === "text") {
-          return <React.Fragment key={i}>{renderRichTextTokens(b.text, `${msg.id}_${i}`)}</React.Fragment>;
+          return (
+            <React.Fragment key={i}>
+              {renderRichTextTokens(b.text, `${msg.id}_${i}`)}
+            </React.Fragment>
+          );
         }
         return null;
       });
     }
     return renderRichTextTokens(msg.plainText, msg.id);
   };
+
+  const bubbleRadiusCls = isOwn
+    ? groupedWithPrev
+      ? "rounded-[18px] rounded-tr-[6px] rounded-br-[6px]"
+      : "rounded-[18px] rounded-br-[6px]"
+    : groupedWithPrev
+    ? "rounded-[18px] rounded-tl-[6px] rounded-bl-[6px]"
+    : "rounded-[18px] rounded-bl-[6px]";
 
   return (
     <div
@@ -261,7 +300,9 @@ export function MessageItem({
         transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
         transition: swipeOffset ? "none" : "transform 180ms cubic-bezier(0.16,1,0.3,1)",
       }}
-      className={`relative flex gap-2.5 px-3 py-1.5 select-none ${
+      className={`relative flex w-full max-w-full min-w-0 gap-2.5 px-3 select-none ${
+        groupedWithPrev ? "pt-0.5" : "pt-1.5"
+      } ${groupedWithNext ? "pb-0.5" : "pb-1.5"} ${
         isOwn ? "flex-row-reverse" : "flex-row"
       } ${highlighted ? "bg-[var(--dl-accent-soft)] rounded-2xl transition-colors" : ""}`}
     >
@@ -275,32 +316,45 @@ export function MessageItem({
         </div>
       )}
 
-      {/* Peer Avatar in incoming messages */}
-      {!isOwn && (
-        <button
-          type="button"
-          onClick={() => isGroup && onMentionSender(msg.senderId, msg.senderName)}
-          className="self-end mb-0.5 shrink-0"
-        >
-          <Avatar
-            name={msg.senderName}
-            src={msg.senderAvatarUrl}
-            kind={msg.kind === "bot" ? "bot" : "user"}
-            color={senderColor}
-            size={34}
-          />
-        </button>
-      )}
+      {/* Feishu-style Peer Avatar on first message of burst, or timestamp gutter on follow-ups */}
+      {!isOwn &&
+        (!groupedWithPrev ? (
+          <button
+            type="button"
+            onClick={() => isGroup && onMentionSender(msg.senderId, msg.senderName)}
+            className="self-start mt-0.5 shrink-0"
+          >
+            <Avatar
+              name={msg.senderName}
+              src={msg.senderAvatarUrl}
+              kind={msg.kind === "bot" ? "bot" : "user"}
+              color={senderColor}
+              size={34}
+            />
+          </button>
+        ) : (
+          <div className="w-[34px] shrink-0 self-center flex items-center justify-end pr-0.5">
+            {showTime && (
+              <span className="text-[10px] font-medium tabular-nums text-[var(--dl-text-muted)] leading-none">
+                {clockStr}
+              </span>
+            )}
+          </div>
+        ))}
 
-      <div className={`flex flex-col max-w-[78%] ${isOwn ? "items-end" : "items-start"}`}>
-        {/* Group sender name + Feishu-style @ quick mention badge */}
-        {!isOwn && isGroup && (
-          <div className="flex items-center gap-1.5 mb-1 pl-1">
-            <span className="text-[12px] font-medium text-[var(--dl-text-muted)] truncate max-w-[160px]">
+      <div
+        className={`flex flex-col min-w-0 max-w-[78%] ${
+          isOwn ? "items-end" : "items-start"
+        }`}
+      >
+        {/* Group sender name + Feishu-style @ quick mention badge + first-message inline time */}
+        {!isOwn && isGroup && !groupedWithPrev && (
+          <div className="flex items-center gap-1.5 mb-1 pl-0.5 max-w-full min-w-0">
+            <span className="text-[12px] font-medium text-[var(--dl-text-muted)] truncate max-w-[150px]">
               {msg.senderName}
             </span>
             {msg.kind === "bot" && (
-              <span className="px-1.5 py-0.2 rounded text-[10px] font-medium bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]">
+              <span className="px-1.5 py-0.2 rounded text-[10px] font-medium bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] shrink-0">
                 BOT
               </span>
             )}
@@ -308,16 +362,26 @@ export function MessageItem({
               type="button"
               onClick={() => onMentionSender(msg.senderId, msg.senderName)}
               aria-label={`提及 ${msg.senderName}`}
-              className="px-1.5 py-0.2 rounded-full text-[11px] font-medium text-[var(--dl-accent)] bg-[var(--dl-accent-soft)] active:scale-95"
+              className="px-1.5 py-0.2 rounded-full text-[11px] font-medium text-[var(--dl-accent)] bg-[var(--dl-accent-soft)] active:scale-95 shrink-0"
             >
               @TA
             </button>
+            <span className="text-[10px] tabular-nums text-[var(--dl-text-muted)]/80 shrink-0">
+              {clockStr}
+            </span>
+          </div>
+        )}
+
+        {/* First message top timestamp on tap in 1-on-1 DM or own message */}
+        {showTime && (!groupedWithPrev && (!isGroup || isOwn)) && (
+          <div className="mb-0.5 px-1 text-[10px] tabular-nums text-[var(--dl-text-muted)]">
+            {clockStr}
           </div>
         )}
 
         {/* FRAMELESS STANDALONE STICKER OR SINGLE IMAGE */}
         {isFrameless ? (
-          <div className="relative inline-block group">
+          <div className="relative inline-block max-w-full group">
             {isFramelessSticker ? (
               <img
                 src={resolveAssetUrl(builtInSticker?.src || customStickerSrc || "")}
@@ -335,7 +399,7 @@ export function MessageItem({
                     },
                   })
                 }
-                className="w-32 h-32 object-contain drop-shadow-sm active:scale-[0.98] transition"
+                className="w-32 h-32 max-w-full object-contain drop-shadow-sm active:scale-[0.98] transition"
               />
             ) : (
               <img
@@ -354,7 +418,7 @@ export function MessageItem({
                     },
                   })
                 }
-                className="max-w-[240px] max-h-[300px] rounded-2xl object-cover shadow-sm active:opacity-95"
+                className="max-w-[min(240px,100%)] max-h-[300px] rounded-2xl object-cover shadow-sm active:opacity-95"
               />
             )}
             <div className="absolute bottom-1.5 right-1.5 px-2 py-0.5 rounded-full bg-black/50 backdrop-blur-xs text-white text-[10px] flex items-center gap-1">
@@ -364,150 +428,188 @@ export function MessageItem({
           </div>
         ) : packShareId ? (
           /* STICKER PACK SHARE CARD */
-          <button
-            type="button"
-            onClick={() => setSharedPackId(packShareId)}
-            className="w-[244px] text-left rounded-2xl border border-[var(--dl-border)] bg-[var(--dl-surface)] p-3 shadow-xs active:scale-[0.99] transition"
-          >
-            <div className="flex items-center gap-2.5">
-              <div className="w-10 h-10 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] flex items-center justify-center shrink-0">
-                <Package size={20} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-[14px] font-semibold text-[var(--dl-text)] truncate">
-                  {packShareBlock?.type === "emote_collection" && packShareBlock.share?.name
-                    ? packShareBlock.share.name
-                    : msg.plainText.replace("[表情包]", "").trim() || "共享表情包"}
+          <div className="flex items-end gap-1.5 min-w-0 max-w-full">
+            {isOwn && (
+              <span className="shrink-0 mb-1 flex items-center gap-1">
+                {showTime && groupedWithPrev && (
+                  <span className="text-[10px] tabular-nums text-[var(--dl-text-muted)]">
+                    {clockStr}
+                  </span>
+                )}
+                <DeliveryStatusIcon status={msg.status} external />
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setSharedPackId(packShareId)}
+              className="w-[244px] max-w-full overflow-hidden text-left rounded-2xl border border-[var(--dl-border)] bg-[var(--dl-surface)] p-3 shadow-xs active:scale-[0.99] transition"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] flex items-center justify-center shrink-0">
+                  <Package size={20} />
                 </div>
-                <div className="text-[11px] text-[var(--dl-text-muted)]">
-                  {packShareBlock?.type === "emote_collection" && packShareBlock.share?.itemCount
-                    ? `共 ${packShareBlock.share.itemCount} 枚贴纸 · 点击预览添加`
-                    : "点击预览并一键添加表情包"}
+                <div className="min-w-0 flex-1">
+                  <div className="text-[14px] font-semibold text-[var(--dl-text)] truncate">
+                    {packShareBlock?.type === "emote_collection" && packShareBlock.share?.name
+                      ? packShareBlock.share.name
+                      : msg.plainText.replace("[表情包]", "").trim() || "共享表情包"}
+                  </div>
+                  <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
+                    {packShareBlock?.type === "emote_collection" && packShareBlock.share?.itemCount
+                      ? `共 ${packShareBlock.share.itemCount} 枚贴纸 · 点击预览添加`
+                      : "点击预览并一键添加表情包"}
+                  </div>
                 </div>
               </div>
-            </div>
-            {packShareBlock?.type === "emote_collection" &&
-              packShareBlock.share?.covers &&
-              packShareBlock.share.covers.length > 0 && (
-                <div className="mt-2.5 grid grid-cols-4 gap-1.5 bg-[var(--dl-card)] p-2 rounded-xl">
-                  {packShareBlock.share.covers.slice(0, 4).map((cov) => (
+              {packShareBlock?.type === "emote_collection" &&
+                packShareBlock.share?.covers &&
+                packShareBlock.share.covers.length > 0 && (
+                  <div className="mt-2.5 grid grid-cols-4 gap-1.5 bg-[var(--dl-card)] p-2 rounded-xl">
+                    {packShareBlock.share.covers.slice(0, 4).map((cov) => (
+                      <img
+                        key={cov.id}
+                        src={resolveAssetUrl(cov.src)}
+                        alt={cov.label}
+                        className="w-10 h-10 object-contain mx-auto"
+                      />
+                    ))}
+                  </div>
+                )}
+            </button>
+          </div>
+        ) : (
+          /* COMPACT FEISHU / TG STANDARD MESSAGE BUBBLE */
+          <div className="flex items-end gap-1.5 min-w-0 max-w-full">
+            {isOwn && (
+              <span
+                data-testid={`msg-status-${msg.id}`}
+                className="shrink-0 mb-1 flex items-center gap-1"
+              >
+                {showTime && groupedWithPrev && (
+                  <span className="text-[10px] tabular-nums text-[var(--dl-text-muted)]">
+                    {clockStr}
+                  </span>
+                )}
+                <DeliveryStatusIcon status={msg.status} external />
+              </span>
+            )}
+            <div
+              onClick={() => setShowTime((v) => !v)}
+              className={`relative max-w-full min-w-0 overflow-hidden px-3.5 py-2 shadow-2xs [overflow-wrap:anywhere] break-words ${bubbleRadiusCls} ${
+                isOwn
+                  ? "bg-[var(--dl-bubble-own)] text-[var(--dl-bubble-own-text)]"
+                  : "bg-[var(--dl-bubble-peer)] text-[var(--dl-text)] border border-[var(--dl-border)]"
+              }`}
+            >
+              {/* Telegram / Feishu Frosted Accent Reply Quote */}
+              {(replyTarget || msg.replyToId) && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    if (msg.replyToId) onJumpToMessage?.(msg.replyToId);
+                  }}
+                  onKeyDown={(ev) => {
+                    if ((ev.key === "Enter" || ev.key === " ") && msg.replyToId) {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      onJumpToMessage?.(msg.replyToId);
+                    }
+                  }}
+                  className={`mb-1.5 w-full max-w-full min-w-0 overflow-hidden rounded-[10px] border-l-[3px] py-1.5 pl-2.5 pr-3 text-left transition active:opacity-80 ${
+                    isOwn
+                      ? "bg-black/16 border-white/85 text-white/95"
+                      : "bg-[var(--dl-accent-soft)]/70 border-[var(--dl-accent)] text-[var(--dl-text)]"
+                  }`}
+                >
+                  <div
+                    className={`font-semibold text-[11px] leading-tight truncate ${
+                      isOwn ? "text-white" : "text-[var(--dl-accent)]"
+                    }`}
+                  >
+                    {replyTarget?.senderName || "引用消息"}
+                  </div>
+                  <div
+                    className={`mt-0.5 text-[12px] leading-[1.35] line-clamp-2 [overflow-wrap:anywhere] break-all ${
+                      isOwn ? "text-white/85" : "text-[var(--dl-text-muted)]"
+                    }`}
+                  >
+                    {replyTarget
+                      ? formatConversationPreviewText(replyTarget.plainText) || "[媒体消息]"
+                      : "原消息已不在当前窗口"}
+                  </div>
+                </div>
+              )}
+
+              {/* Multi-image or captioned image grid */}
+              {imageAttachments.length > 0 && (
+                <div
+                  className={`mb-1.5 grid gap-1.5 ${
+                    imageAttachments.length > 1 ? "grid-cols-2" : "grid-cols-1"
+                  }`}
+                >
+                  {imageAttachments.map((img) => (
                     <img
-                      key={cov.id}
-                      src={resolveAssetUrl(cov.src)}
-                      alt={cov.label}
-                      className="w-10 h-10 object-contain mx-auto"
+                      key={img.id}
+                      src={resolveAssetUrl(img.url)}
+                      alt={img.fileName}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setLightboxMedia({
+                          src: resolveAssetUrl(img.url),
+                          title: img.fileName,
+                          downloadUrl: resolveAssetUrl(img.downloadUrl || img.url),
+                          favoriteInput: { messageId: msg.id, attachmentId: img.id },
+                        });
+                      }}
+                      className="max-h-48 w-full max-w-full rounded-xl object-cover"
                     />
                   ))}
                 </div>
               )}
-            <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-[var(--dl-text-muted)]">
-              <span>{clockStr}</span>
-              {isOwn && <DeliveryStatusIcon status={msg.status} />}
-            </div>
-          </button>
-        ) : (
-          /* STANDARD MESSAGE BUBBLE */
-          <div
-            className={`relative px-3.5 py-2.5 shadow-2xs ${
-              isOwn
-                ? "bg-[var(--dl-bubble-own)] text-[var(--dl-bubble-own-text)] rounded-[20px] rounded-br-[6px]"
-                : "bg-[var(--dl-bubble-peer)] text-[var(--dl-text)] border border-[var(--dl-border)] rounded-[20px] rounded-bl-[6px]"
-            }`}
-          >
-            {/* Reply Quote */}
-            {replyTarget && (
-              <div
-                className={`mb-1.5 pl-2.5 pr-2 py-1 rounded-lg border-l-2 text-[12px] ${
-                  isOwn
-                    ? "bg-black/15 border-white/70 text-white/90"
-                    : "bg-[var(--dl-card)] border-[var(--dl-accent)] text-[var(--dl-text-muted)]"
-                }`}
-              >
-                <div className="font-semibold text-[11px] truncate">{replyTarget.senderName}</div>
-                <div className="truncate opacity-85">{replyTarget.plainText || "[媒体消息]"}</div>
-              </div>
-            )}
 
-            {/* Multi-image or captioned image grid */}
-            {imageAttachments.length > 0 && (
-              <div
-                className={`mb-1.5 grid gap-1.5 ${
-                  imageAttachments.length > 1 ? "grid-cols-2" : "grid-cols-1"
-                }`}
-              >
-                {imageAttachments.map((img) => (
-                  <img
-                    key={img.id}
-                    src={resolveAssetUrl(img.url)}
-                    alt={img.fileName}
-                    onClick={() =>
-                      setLightboxMedia({
-                        src: resolveAssetUrl(img.url),
-                        title: img.fileName,
-                        downloadUrl: resolveAssetUrl(img.downloadUrl || img.url),
-                        favoriteInput: { messageId: msg.id, attachmentId: img.id },
-                      })
-                    }
-                    className="max-h-48 w-full rounded-xl object-cover"
-                  />
-                ))}
-              </div>
-            )}
+              {/* File attachments */}
+              {fileAttachments.length > 0 && (
+                <div className="space-y-1.5 mb-1.5 max-w-full min-w-0">
+                  {fileAttachments.map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        nativeBridge.openExternalUrl(resolveAssetUrl(f.downloadUrl || f.url));
+                      }}
+                      className={`w-full max-w-full min-w-0 flex items-center gap-2.5 p-2 rounded-xl text-left overflow-hidden ${
+                        isOwn ? "bg-black/15" : "bg-[var(--dl-card)]"
+                      }`}
+                    >
+                      <FileText size={20} className="shrink-0 opacity-85" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-medium truncate">{f.fileName}</div>
+                        <div className="text-[11px] opacity-75">{formatBytes(f.byteSize)}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
 
-            {/* File attachments */}
-            {fileAttachments.length > 0 && (
-              <div className="space-y-1.5 mb-1.5">
-                {fileAttachments.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() =>
-                      nativeBridge.openExternalUrl(resolveAssetUrl(f.downloadUrl || f.url))
-                    }
-                    className={`w-full flex items-center gap-2.5 p-2 rounded-xl text-left ${
-                      isOwn ? "bg-black/15" : "bg-[var(--dl-card)]"
-                    }`}
-                  >
-                    <FileText size={20} className="shrink-0 opacity-85" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-medium truncate">{f.fileName}</div>
-                      <div className="text-[11px] opacity-75">{formatBytes(f.byteSize)}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
+              {/* Rich text */}
+              {hasCaptionText && (
+                <div className="text-[15px] leading-[1.45] whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-w-full min-w-0">
+                  {renderMessageRichBody()}
+                  {msg.editedAt && (
+                    <span className="ml-1.5 text-[11px] opacity-65 select-none">(已编辑)</span>
+                  )}
+                </div>
+              )}
 
-            {/* Rich text */}
-            {hasCaptionText && (
-              <div className="text-[15px] leading-[1.45] whitespace-pre-wrap break-words">
-                {renderMessageRichBody()}
-              </div>
-            )}
+              {/* Interactive CardKit v1 */}
+              {msg.card && <CardKitView card={msg.card} />}
 
-            {/* Interactive CardKit v1 */}
-            {msg.card && <CardKitView card={msg.card} />}
-
-            {/* Timestamp + Edited + Checkmarks */}
-            <div
-              className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${
-                isOwn ? "text-white/75" : "text-[var(--dl-text-muted)]"
-              }`}
-            >
-              {msg.editedAt && <span>已编辑</span>}
-              <span>{clockStr}</span>
-              {isOwn && <DeliveryStatusIcon status={msg.status} />}
-              <button
-                type="button"
-                aria-label="消息更多操作"
-                onClick={(ev) => {
-                  ev.stopPropagation();
-                  setActionMessageId(msg.id);
-                }}
-                className="ml-0.5 p-0.5 rounded opacity-60 active:opacity-100"
-              >
-                <MoreHorizontal size={12} />
-              </button>
+              {!hasCaptionText && msg.editedAt && (
+                <div className="mt-0.5 text-[11px] opacity-65 text-right select-none">(已编辑)</div>
+              )}
             </div>
           </div>
         )}

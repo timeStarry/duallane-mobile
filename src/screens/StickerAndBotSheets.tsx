@@ -262,7 +262,7 @@ export function StickerAndBotSheets() {
                     <img
                       key={item.id}
                       src={resolveAssetUrl(
-                        item.src || `/api/workspace/emotes/custom/${encodeURIComponent(item.id)}`
+                        item.src || `/api/workspace/emotes/${encodeURIComponent(item.id)}/content`
                       )}
                       alt={item.label}
                       className="w-10 h-10 object-contain rounded-lg bg-[var(--dl-surface)] p-1"
@@ -296,7 +296,7 @@ export function StickerAndBotSheets() {
                 >
                   <img
                     src={resolveAssetUrl(
-                      em.src || `/api/workspace/emotes/custom/${encodeURIComponent(em.id)}`
+                      em.src || `/api/workspace/emotes/${encodeURIComponent(em.id)}/content`
                     )}
                     alt={em.label}
                     className="w-full h-full object-contain"

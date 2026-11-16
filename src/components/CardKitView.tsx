@@ -27,14 +27,16 @@ export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
   };
 
   return (
-    <div className="mt-1.5 rounded-2xl border border-[var(--dl-border)] bg-[var(--dl-surface)] overflow-hidden shadow-xs text-[var(--dl-text)] min-w-[230px] max-w-[300px]">
+    <div className="mt-1.5 w-full max-w-[min(300px,100%)] min-w-0 rounded-2xl border border-[var(--dl-border)] bg-[var(--dl-surface)] overflow-hidden shadow-xs text-[var(--dl-text)] [overflow-wrap:anywhere] break-words">
       {card.blocks.map((block, idx) => {
         if (block.type === "header") {
           const tone = TONE_STYLES[block.tone || "shared"] || TONE_STYLES.neutral;
           return (
             <div key={idx} className={`px-3.5 py-2.5 border-b ${tone}`}>
-              <div className="flex items-center justify-between gap-2">
-                <div className="font-semibold text-[14px] leading-snug">{block.title}</div>
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <div className="font-semibold text-[14px] leading-snug min-w-0 break-words [overflow-wrap:anywhere]">
+                  {block.title}
+                </div>
                 {block.badge && (
                   <span className="px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-black/10 dark:bg-white/10 shrink-0">
                     {block.badge}
@@ -42,7 +44,9 @@ export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
                 )}
               </div>
               {block.subtitle && (
-                <div className="text-[11px] opacity-80 mt-0.5">{block.subtitle}</div>
+                <div className="text-[11px] opacity-80 mt-0.5 break-words [overflow-wrap:anywhere]">
+                  {block.subtitle}
+                </div>
               )}
             </div>
           );
@@ -52,7 +56,7 @@ export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
           return (
             <div
               key={idx}
-              className="px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words"
+              className="px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0"
             >
               {block.content}
             </div>
@@ -61,14 +65,18 @@ export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
 
         if (block.type === "fields") {
           return (
-            <div key={idx} className="px-3.5 py-2 grid grid-cols-2 gap-2">
+            <div key={idx} className="px-3.5 py-2 grid grid-cols-2 gap-2 min-w-0">
               {block.items.map((item, fIdx) => (
                 <div
                   key={fIdx}
-                  className={item.short ? "col-span-1" : "col-span-2"}
+                  className={`min-w-0 ${item.short ? "col-span-1" : "col-span-2"}`}
                 >
-                  <div className="text-[11px] text-[var(--dl-text-muted)]">{item.label}</div>
-                  <div className="text-[13px] font-medium mt-0.5 break-words">{item.value}</div>
+                  <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
+                    {item.label}
+                  </div>
+                  <div className="text-[13px] font-medium mt-0.5 break-words [overflow-wrap:anywhere]">
+                    {item.value}
+                  </div>
                 </div>
               ))}
             </div>

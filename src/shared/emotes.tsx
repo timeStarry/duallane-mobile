@@ -134,6 +134,7 @@ export function isSingleBuiltInSticker(text: string): EmoteItem | null {
 export function formatConversationPreviewText(text: string | undefined): string {
   if (!text) return "暂无消息";
   const cleaned = text
+    .replace(/@__duallane_[a-zA-Z0-9_-]+/g, "@机器人")
     .replace(PACK_SHARE_PATTERN, "[表情包分享]")
     .replace(TOKEN_PATTERN, (_full, rawKey: string) => {
       const found = emoteByKey.get(rawKey) || emoteByKey.get(rawKey.toLowerCase());
@@ -152,7 +153,7 @@ export function ReactionGlyph({
 }) {
   if (emoteKey.startsWith("custom:")) {
     const id = emoteKey.slice("custom:".length);
-    const src = customSrcMap?.[id] || `/api/workspace/emotes/custom/${encodeURIComponent(id)}`;
+    const src = customSrcMap?.[id] || `/api/workspace/emotes/${encodeURIComponent(id)}/content`;
     return (
       <img
         src={resolveAssetUrl(src)}

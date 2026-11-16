@@ -23,7 +23,7 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
       nodes.push(
         <code
           key={`${keyPrefix}_c_${idx++}`}
-          className="px-1.5 py-0.5 rounded-md bg-[var(--dl-surface)] border border-[var(--dl-border)] font-mono text-[11.5px] text-[var(--dl-text)]"
+          className="px-1.5 py-0.5 rounded-md bg-[var(--dl-surface)] border border-[var(--dl-border)] font-mono text-[11.5px] text-[var(--dl-text)] break-all whitespace-pre-wrap [overflow-wrap:anywhere]"
         >
           {token.slice(1, -1)}
         </code>
@@ -128,7 +128,7 @@ export function MarkdownContent({
         blocks.push(
           <pre
             key={`code_${i}`}
-            className="p-2.5 rounded-xl bg-[var(--dl-surface)] border border-[var(--dl-border)] overflow-x-auto font-mono text-[11.5px] leading-relaxed text-[var(--dl-text)]"
+            className="max-w-full p-2.5 rounded-xl bg-[var(--dl-surface)] border border-[var(--dl-border)] overflow-x-auto font-mono text-[11.5px] leading-relaxed text-[var(--dl-text)]"
           >
             <code>{codeLines.join("\n")}</code>
           </pre>
@@ -204,7 +204,10 @@ export function MarkdownContent({
     }
 
     blocks.push(
-      <p key={`p_${i}`} className="text-[13.5px] leading-[1.65] text-[var(--dl-text-muted)]">
+      <p
+        key={`p_${i}`}
+        className="text-[13.5px] leading-[1.65] text-[var(--dl-text-muted)] break-words [overflow-wrap:anywhere]"
+      >
         {renderInline(trimmed, `p_${i}`)}
       </p>
     );
@@ -214,7 +217,7 @@ export function MarkdownContent({
     blocks.push(
       <pre
         key="code_eof"
-        className="p-2.5 rounded-xl bg-[var(--dl-surface)] border border-[var(--dl-border)] overflow-x-auto font-mono text-[11.5px] leading-relaxed text-[var(--dl-text)]"
+        className="max-w-full p-2.5 rounded-xl bg-[var(--dl-surface)] border border-[var(--dl-border)] overflow-x-auto font-mono text-[11.5px] leading-relaxed text-[var(--dl-text)]"
       >
         <code>{codeLines.join("\n")}</code>
       </pre>
@@ -223,7 +226,10 @@ export function MarkdownContent({
   flushLists(lines.length);
 
   return (
-    <div data-testid="markdown-content" className={`space-y-2 ${className}`.trim()}>
+    <div
+      data-testid="markdown-content"
+      className={`space-y-2 min-w-0 max-w-full break-words [overflow-wrap:anywhere] ${className}`.trim()}
+    >
       {blocks}
     </div>
   );
