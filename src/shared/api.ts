@@ -301,6 +301,28 @@ export interface MobileBotSummary {
   createdAt?: string;
 }
 
+export interface MobileBotConversationItem {
+  id: string;
+  type: "direct" | "group" | string;
+  title: string;
+  isOwnerDirect?: boolean;
+  allowSend: boolean;
+  allowTrigger: boolean;
+  allowContext: boolean;
+  maxMessages: number;
+  triggerMode?: string;
+  groupPolicyStatus?: string;
+  blockReason?: string;
+  updatedAt: string;
+}
+
+export interface MobileBotOverviewResponse {
+  botId: string;
+  botUserId: string;
+  latestSdkVersion: string;
+  conversations: MobileBotConversationItem[];
+}
+
 export interface SystemAnnouncementDTO {
   id: string;
   enabled: boolean;
@@ -785,6 +807,25 @@ export const mobileApi = {
       `/api/workspace/bots/${encodeURIComponent(botId)}/connection`
     ),
 
+  getBotSettings: (botId: string) =>
+    requestJSON<{ settings: Record<string, unknown> }>(
+      `/api/workspace/bots/${encodeURIComponent(botId)}/settings`
+    ),
+
+  getBotOverview: (botId: string) =>
+    requestJSON<MobileBotOverviewResponse>(
+      `/api/v1/bots/${encodeURIComponent(botId)}/overview`
+    ),
+
+  requestBotRuntimeUpgrade: (botId: string) =>
+    requestJSON<{ requested: boolean; targetVersion: string }>(
+      `/api/v1/bots/${encodeURIComponent(botId)}/request-upgrade`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      }
+    ),
+
   updateBotSettings: (botId: string, settings: Record<string, unknown>) =>
     requestJSON<Record<string, unknown>>(
       `/api/workspace/bots/${encodeURIComponent(botId)}/settings`,
@@ -805,6 +846,36 @@ export const mobileApi = {
         method: "PATCH",
         body: JSON.stringify(patch),
       }
+    ),
+
+  updateBotGroupPolicy: (
+    botId: string,
+    conversationId: string,
+    patch: {
+      status?: string;
+      allowTrigger?: boolean;
+      allowContext?: boolean;
+      maxMessages?: number;
+    }
+  ) =>
+    requestJSON<Record<string, unknown>>(
+      `/api/workspace/bots/${encodeURIComponent(botId)}/group-policies/${encodeURIComponent(conversationId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }
+    ),
+
+  beginDeleteBot: (botId: string) =>
+    requestJSON<Record<string, unknown>>(
+      `/api/workspace/bots/${encodeURIComponent(botId)}`,
+      { method: "DELETE" }
+    ),
+
+  confirmDeleteBot: (botId: string) =>
+    requestJSON<Record<string, unknown>>(
+      `/api/workspace/bots/${encodeURIComponent(botId)}/delete/confirm`,
+      { method: "POST" }
     ),
 
   createBotSetupSession: (

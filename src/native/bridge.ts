@@ -271,9 +271,9 @@ export const nativeBridge = {
         return {
           authenticated: Boolean(raw.authenticated),
           apiOrigin: raw.apiOrigin || DEFAULT_ORIGIN,
-          appVersion: raw.appVersion || "1.0.13",
-          nativeVersion: raw.nativeVersion || raw.appVersion || "1.0.13",
-          versionCode: raw.versionCode || 10013,
+          appVersion: raw.appVersion || "1.0.14",
+          nativeVersion: raw.nativeVersion || raw.appVersion || "1.0.14",
+          versionCode: raw.versionCode || 10014,
           otaActive: Boolean(raw.otaActive),
           otaBundleId: raw.otaBundleId ? String(raw.otaBundleId) : undefined,
           platform: raw.platform || "android",
@@ -291,9 +291,9 @@ export const nativeBridge = {
     return {
       authenticated: false,
       apiOrigin: storedOrigin || DEFAULT_ORIGIN,
-      appVersion: "1.0.13",
-      nativeVersion: "1.0.13",
-      versionCode: 10013,
+      appVersion: "1.0.14",
+      nativeVersion: "1.0.14",
+      versionCode: 10014,
       otaActive: false,
       platform: "web",
     };

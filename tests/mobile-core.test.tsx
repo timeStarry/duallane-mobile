@@ -401,17 +401,17 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
         ok: true,
         status: 200,
         bodyText: JSON.stringify({
-          tag_name: "v1.0.14",
-          name: "DualLane Mobile v1.0.14",
+          tag_name: "v1.9.0",
+          name: "DualLane Mobile v1.9.0",
           body: "- 新增功能与性能优化",
           published_at: "2026-11-16T12:00:00Z",
-          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.14",
+          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.9.0",
           assets: [
             {
               name: "app-release.apk",
               size: 660000,
               browser_download_url:
-                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.14/app-release.apk",
+                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.9.0/app-release.apk",
             },
           ],
         }),
@@ -1141,6 +1141,12 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     expect(copiedPrompt).toContain("/workspace?setup=setup_abc123");
     expect(screen.getByText("已复制配对指令")).toBeInTheDocument();
     expect(screen.getByText(/配对指令已就绪/)).toBeInTheDocument();
+    expect(screen.getByText("权限与群聊准入")).toBeInTheDocument();
+    expect(screen.getByText("已接入会话与上下文")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByText("权限与群聊准入"));
+    });
+    expect(screen.getByText(/创建者本人 1v1 私聊权限永久保留/)).toBeInTheDocument();
 
     listBotsSpy.mockRestore();
     listTokensSpy.mockRestore();

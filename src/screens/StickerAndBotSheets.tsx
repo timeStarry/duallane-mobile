@@ -1,18 +1,24 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  ArrowUpCircle,
   Camera,
   Check,
+  ChevronRight,
   Copy,
   KeyRound,
   Link2,
+  Lock,
+  MessageSquare,
   Pause,
   Play,
   Plus,
   RefreshCw,
   Share2,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Unplug,
+  Users,
   X,
 } from "lucide-react";
 import { Avatar, BOT_AVATAR_COLORS } from "@/components/Avatar";
@@ -21,15 +27,20 @@ import { nativeBridge } from "@/native/bridge";
 import {
   DEFAULT_BOT_PAIRING_SCOPES,
   mobileApi,
+  type BotConnectionInfo,
   type BotSetupSession,
   type BotTokenRecord,
   type EmoteCollectionShareDetailDTO,
+  type MobileBotConversationItem,
   type MobileBotSummary,
 } from "@/shared/api";
 import { resolveAssetUrl } from "@/shared/emotes";
 import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
+
+type MobileBotSubView = "root" | "permissions" | "conversations" | "persona" | "credentials";
+type MobileGroupPreset = "disabled" | "owner_only" | "approval_required" | "open";
 
 function buildPairingPrompt(botName: string, origin: string, sessionId: string): string {
   const cleanOrigin = origin.replace(/\/+$/, "") || "https://duallane.tsio.top";
@@ -39,10 +50,10 @@ function buildPairingPrompt(botName: string, origin: string, sessionId: string):
   return [
     `请接入我的 DualLane 机器人「${botName}」：`,
     `1. 先阅读接入规范：${skillUrl}`,
-    `2. 无需 npm，直接从当前实例下载零依赖单文件运行时（含 CLI / MCP / 实时监听）：`,
+    `2. 无需 npm，直接从当前实例下载零依赖单文件运行时（含 CLI / MCP / 空闲自动热更）：`,
     `   mkdir -p ~/.duallane/bin && curl -fsSL "${runtimeUrl}" -o ~/.duallane/bin/duallane-agent.mjs && chmod +x ~/.duallane/bin/duallane-agent.mjs`,
     `3. 使用一次性配对地址发起绑定（无需手动粘贴 Token）：${setupUrl}`,
-    `发起请求后提醒我点击「确认授权」；授权完成后请运行 node ~/.duallane/bin/duallane-agent.mjs daemon install --profile default --agent auto 注册常驻后台守护服务（支持断线自愈重连、私聊/群聊自动唤醒回复与群聊只读安全隔离）。`,
+    `发起请求后提醒我点击「确认授权」；授权完成后请运行 node ~/.duallane/bin/duallane-agent.mjs daemon install --profile default --agent auto 注册常驻后台守护服务（支持断线自愈、空闲静默热更新与群聊安全隔离）。`,
   ].join("\n");
 }
 
@@ -66,6 +77,53 @@ function copyTextReliable(text: string): void {
   }
 }
 
+function normalizeVisibility(raw?: string): "private" | "specified_members" | "space_members" {
+  if (raw === "space_members") return "space_members";
+  if (raw === "specified_members") return "specified_members";
+  return "private";
+}
+
+function resolveGroupPreset(
+  allowGroup: boolean,
+  inviterPolicy: string,
+  requireApproval: boolean
+): MobileGroupPreset {
+  if (!allowGroup) return "disabled";
+  if (inviterPolicy === "owner") return "owner_only";
+  if (requireApproval) return "approval_required";
+  return "open";
+}
+
+function buildGroupPresetPatch(preset: MobileGroupPreset): Record<string, unknown> {
+  switch (preset) {
+    case "disabled":
+      return { allowGroup: false, groupInviterPolicy: "owner", requireOwnerApproval: true };
+    case "owner_only":
+      return { allowGroup: true, groupInviterPolicy: "owner", requireOwnerApproval: true };
+    case "approval_required":
+      return { allowGroup: true, groupInviterPolicy: "any_member", requireOwnerApproval: true };
+    case "open":
+      return { allowGroup: true, groupInviterPolicy: "any_member", requireOwnerApproval: false };
+  }
+}
+
+function extractSemver(adapterVersion?: string | null): string {
+  if (!adapterVersion) return "";
+  const m = /(\d+\.\d+\.\d+)/u.exec(adapterVersion);
+  return m ? m[1] : "";
+}
+
+function isOlderSemver(cur: string, latest: string): boolean {
+  if (!cur || !latest) return false;
+  const pa = cur.split(".").map((x) => Number.parseInt(x, 10) || 0);
+  const pb = latest.split(".").map((x) => Number.parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i += 1) {
+    const d = (pb[i] || 0) - (pa[i] || 0);
+    if (d !== 0) return d > 0;
+  }
+  return false;
+}
+
 export function StickerAndBotSheets() {
   const stickerStudioOpen = useNavStore((s) => s.stickerStudioOpen);
   const setStickerStudioOpen = useNavStore((s) => s.setStickerStudioOpen);
@@ -76,6 +134,7 @@ export function StickerAndBotSheets() {
   const botSetupSessionId = useNavStore((s) => s.botSetupSessionId);
   const setBotSetupSessionId = useNavStore((s) => s.setBotSetupSessionId);
   const activeChatId = useNavStore((s) => s.activeChatId);
+  const openChat = useNavStore((s) => s.openChat);
   const showToast = useNavStore((s) => s.showToast);
 
   const emotes = useEmoteStore((s) => s.emotes);
@@ -99,11 +158,27 @@ export function StickerAndBotSheets() {
   const [sharedDetail, setSharedDetail] = useState<EmoteCollectionShareDetailDTO | null>(null);
   const [importingPack, setImportingPack] = useState(false);
 
-  // Bot Management state
+  // Bot Management state (Hierarchical — never flat)
   const [bots, setBots] = useState<MobileBotSummary[]>([]);
   const [newBotName, setNewBotName] = useState("");
   const [selectedBot, setSelectedBot] = useState<MobileBotSummary | null>(null);
+  const [botSubView, setBotSubView] = useState<MobileBotSubView>("root");
   const [botTokens, setBotTokens] = useState<BotTokenRecord[]>([]);
+  const [botConnection, setBotConnection] = useState<BotConnectionInfo | null>(null);
+  const [botConversations, setBotConversations] = useState<MobileBotConversationItem[]>([]);
+  const [latestSdkVer, setLatestSdkVer] = useState("1.0.14");
+
+  // Selected Bot Settings state
+  const [visPolicy, setVisPolicy] = useState<"private" | "specified_members" | "space_members">("private");
+  const [allowedMemberIds, setAllowedMemberIds] = useState<string[]>([]);
+  const [allowGroup, setAllowGroup] = useState(true);
+  const [groupInviterPolicy, setGroupInviterPolicy] = useState("owner");
+  const [requireOwnerApproval, setRequireOwnerApproval] = useState(true);
+  const [triggerPolicy, setTriggerPolicy] = useState("mention-or-command");
+  const [nameDraft, setNameDraft] = useState("");
+  const [bioDraft, setBioDraft] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
   const [setupSession, setSetupSession] = useState<BotSetupSession | null>(null);
   const [inlineSetupSession, setInlineSetupSession] = useState<BotSetupSession | null>(null);
   const [pairingPromptText, setPairingPromptText] = useState("");
@@ -132,39 +207,65 @@ export function StickerAndBotSheets() {
       .catch(() => showToast("无法加载该表情包分享详情", "warning"));
   }, [sharedPackId, showToast]);
 
-  const reloadBots = async () => {
+  const reloadBots = useCallback(async () => {
     try {
       const list = await mobileApi.listBots();
       setBots(list);
     } catch {
       setBots([]);
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (botManageOpen) void reloadBots();
-  }, [botManageOpen]);
+  }, [botManageOpen, reloadBots]);
 
-  const refreshSelectedBotTokens = async (botId: string) => {
-    try {
-      const res = await mobileApi.listBotTokens(botId);
-      setBotTokens((res.tokens || []).filter((t) => !t.revokedAt));
-    } catch {
-      setBotTokens([]);
+  const refreshSelectedBotDetail = useCallback(async (botId: string) => {
+    const [tokRes, connRes, setRes, ovRes] = await Promise.all([
+      mobileApi.listBotTokens(botId).catch(() => ({ tokens: [] })),
+      mobileApi.getBotConnection(botId).catch(() => ({ connection: null })),
+      mobileApi.getBotSettings(botId).catch(() => null),
+      mobileApi.getBotOverview(botId).catch(() => null),
+    ]);
+    setBotTokens((tokRes.tokens || []).filter((t) => !t.revokedAt));
+    setBotConnection(connRes.connection || null);
+    if (setRes?.settings) {
+      const s = setRes.settings;
+      const rawVis = String(s.visibilityPolicy || "private");
+      setVisPolicy(normalizeVisibility(rawVis));
+      setAllowedMemberIds(
+        Array.isArray(s.allowedMemberIds) ? s.allowedMemberIds.map(String) : []
+      );
+      setAllowGroup(rawVis === "groups" ? true : s.allowGroup !== false);
+      setGroupInviterPolicy(String(s.groupInviterPolicy || "owner"));
+      setRequireOwnerApproval(s.requireOwnerApproval !== false);
+      setTriggerPolicy(String(s.triggerPolicy || "mention-or-command"));
+      if (typeof s.description === "string") {
+        setBioDraft(s.description);
+      }
     }
-  };
+    if (ovRes) {
+      setBotConversations(Array.isArray(ovRes.conversations) ? ovRes.conversations : []);
+      if (ovRes.latestSdkVersion) setLatestSdkVer(ovRes.latestSdkVersion);
+    }
+  }, []);
 
   useEffect(() => {
     if (!selectedBot) {
       setBotTokens([]);
+      setBotConnection(null);
+      setBotConversations([]);
       setInlineSetupSession(null);
       setPairingPromptText("");
+      setBotSubView("root");
+      setConfirmDelete(false);
       return;
     }
-    void refreshSelectedBotTokens(selectedBot.id);
-  }, [selectedBot]);
+    setNameDraft(selectedBot.name);
+    setBioDraft(selectedBot.description || "");
+    void refreshSelectedBotDetail(selectedBot.id);
+  }, [refreshSelectedBotDetail, selectedBot]);
 
-  // Live-poll inline setup session so Agent pairing request & token exchange show up in real time
   useEffect(() => {
     const activeId = inlineSetupSession?.id;
     const status = inlineSetupSession?.status;
@@ -184,7 +285,7 @@ export function StickerAndBotSheets() {
             if (prev?.status !== "exchanged" && next.status === "exchanged") {
               showToast("Agent 已完成凭证换取并成功绑定！", "success");
               if (next.bot?.id) {
-                void refreshSelectedBotTokens(next.bot.id);
+                void refreshSelectedBotDetail(next.bot.id);
               }
             }
             return next;
@@ -193,7 +294,7 @@ export function StickerAndBotSheets() {
         .catch(() => {});
     }, 2200);
     return () => window.clearInterval(timer);
-  }, [inlineSetupSession?.id, inlineSetupSession?.status, showToast]);
+  }, [inlineSetupSession?.id, inlineSetupSession?.status, refreshSelectedBotDetail, showToast]);
 
   const completeBotApproveFlow = async (session: BotSetupSession) => {
     const validScopes =
@@ -223,7 +324,7 @@ export function StickerAndBotSheets() {
       void bootstrapWorkspace().catch(() => {});
     }
     if (targetBotId) {
-      void refreshSelectedBotTokens(targetBotId);
+      void refreshSelectedBotDetail(targetBotId);
     }
     return res.session;
   };
@@ -307,6 +408,54 @@ export function StickerAndBotSheets() {
     }
   };
 
+  const handleOpenBotDirectChat = async () => {
+    if (!selectedBot?.botUserId) return;
+    try {
+      await mobileApi.updateBotSettings(selectedBot.id, { allowDirect: true }).catch(() => {});
+      const dmRes = await mobileApi.createDirectConversation(selectedBot.botUserId);
+      const convObj = (dmRes?.conversation || dmRes) as Record<string, unknown>;
+      const dmConvId = String(convObj?.id || "");
+      if (dmConvId) {
+        await mobileApi
+          .updateBotContextGrant(selectedBot.id, dmConvId, {
+            allowTrigger: true,
+            allowContext: true,
+            maxMessages: 50,
+          })
+          .catch(() => {});
+        await bootstrapWorkspace().catch(() => {});
+        setBotManageOpen(false);
+        setSelectedBot(null);
+        openChat(dmConvId);
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "打开机器人私聊失败", "warning");
+    }
+  };
+
+  const connectedVer = extractSemver(botConnection?.adapterVersion);
+  const updateAvailable = isOlderSemver(connectedVer, latestSdkVer);
+  const groupPreset = resolveGroupPreset(allowGroup, groupInviterPolicy, requireOwnerApproval);
+
+  const visibilitySummaryLabel =
+    visPolicy === "space_members"
+      ? "全员可用"
+      : visPolicy === "specified_members"
+      ? `指定 ${allowedMemberIds.length} 人`
+      : "仅创建者";
+
+  const sheetTitle = !selectedBot
+    ? "我的 AI 机器人管理"
+    : botSubView === "permissions"
+    ? `权限与准入 · ${selectedBot.name}`
+    : botSubView === "conversations"
+    ? `已接入会话 · ${selectedBot.name}`
+    : botSubView === "persona"
+    ? `资料与主题色 · ${selectedBot.name}`
+    : botSubView === "credentials"
+    ? `凭证与运行管理 · ${selectedBot.name}`
+    : `管理机器人 · ${selectedBot.name}`;
+
   return (
     <>
       {/* Telegram-Style Sticker Studio Sheet */}
@@ -318,7 +467,6 @@ export function StickerAndBotSheets() {
         maxHeight="88dvh"
       >
         <div className="p-4 space-y-5">
-          {/* Batch Create Sticker Pack */}
           <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2.5">
             <div className="text-[13px] font-semibold text-[var(--dl-text)]">
               新建专属表情包合集
@@ -342,7 +490,6 @@ export function StickerAndBotSheets() {
             </div>
           </div>
 
-          {/* Existing Collections */}
           <div className="space-y-2">
             <div className="text-[12px] font-semibold text-[var(--dl-text-muted)]">
               我的表情包合集 ({collections.length})
@@ -395,7 +542,6 @@ export function StickerAndBotSheets() {
             ))}
           </div>
 
-          {/* Favorites Grid */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[12px] font-semibold text-[var(--dl-text-muted)]">
@@ -476,15 +622,16 @@ export function StickerAndBotSheets() {
         )}
       </BottomSheet>
 
-      {/* Bot Management & Unbind Sheet (Feishu Agent Style) */}
+      {/* Hierarchical Bot Management Sheet (Restrained Sub-Views — Never Flat) */}
       <BottomSheet
         open={botManageOpen}
         onClose={() => {
           setBotManageOpen(false);
           setSelectedBot(null);
+          setBotSubView("root");
         }}
-        title={selectedBot ? `管理机器人 · ${selectedBot.name}` : "我的 AI 机器人管理"}
-        subtitle="支持一键生成 Agent 配对指令、换头像、暂停与解绑凭证"
+        title={sheetTitle}
+        subtitle="创建者私聊永久保留 · 守护进程空闲自动静默热更"
         maxHeight="88dvh"
       >
         <div className="p-4 space-y-4">
@@ -495,7 +642,7 @@ export function StickerAndBotSheets() {
                   type="text"
                   value={newBotName}
                   onChange={(e) => setNewBotName(e.target.value)}
-                  placeholder="新机器人名称（如：Astra 助手）"
+                  placeholder="新机器人名称（如：Comet 助手）"
                   className="flex-1 px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] text-[var(--dl-text)] outline-none"
                 />
                 <button
@@ -507,7 +654,7 @@ export function StickerAndBotSheets() {
                       setNewBotName("");
                       await reloadBots();
                       await bootstrapWorkspace();
-                      showToast("机器人创建成功", "success");
+                      showToast("机器人已创建，专属私聊已自动开通", "success");
                     } catch (err) {
                       showToast(err instanceof Error ? err.message : "创建机器人失败", "warning");
                     }
@@ -527,7 +674,10 @@ export function StickerAndBotSheets() {
                     <button
                       key={b.id}
                       type="button"
-                      onClick={() => setSelectedBot(b)}
+                      onClick={() => {
+                        setSelectedBot(b);
+                        setBotSubView("root");
+                      }}
                       className="w-full p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center gap-3 text-left active:opacity-85 transition-opacity duration-150"
                     >
                       <Avatar
@@ -553,166 +703,106 @@ export function StickerAndBotSheets() {
                           </span>
                         </div>
                         <div className="text-[12px] text-[var(--dl-text-muted)] truncate mt-0.5">
-                          点击生成配对指令、设置主题色或解绑凭证
+                          {b.description || "点击进入私聊、复制配对指令或调整权限"}
                         </div>
                       </div>
+                      <ChevronRight size={16} className="text-[var(--dl-text-muted)] shrink-0" />
                     </button>
                   );
                 })}
               </div>
             </>
-          ) : (
+          ) : botSubView === "root" ? (
             <div className="space-y-4">
-              {(() => {
-                const selectedBotColor =
-                  (selectedBot.botUserId
-                    ? members[selectedBot.botUserId]?.avatarColor
-                    : undefined) ??
-                  selectedBot.avatarColor ??
-                  "";
-                const handleSelectBotColor = async (nextColor: string) => {
-                  const prevColor = selectedBotColor;
-                  setSelectedBot({ ...selectedBot, avatarColor: nextColor || undefined });
-                  if (selectedBot.botUserId) {
-                    patchMemberLocal(selectedBot.botUserId, {
-                      avatarColor: nextColor || undefined,
-                    });
+              {/* Identity & Status Header */}
+              <div className="flex items-center gap-3">
+                <Avatar
+                  name={selectedBot.name}
+                  src={selectedBot.avatarUrl}
+                  kind="bot"
+                  color={
+                    (selectedBot.botUserId
+                      ? members[selectedBot.botUserId]?.avatarColor
+                      : undefined) ??
+                    selectedBot.avatarColor ??
+                    ""
                   }
-                  try {
-                    await mobileApi.updateBotProfile(selectedBot.id, { color: nextColor });
-                    void reloadBots();
-                    showToast("机器人主题色已更新", "success");
-                  } catch {
-                    setSelectedBot({ ...selectedBot, avatarColor: prevColor || undefined });
-                    if (selectedBot.botUserId) {
-                      patchMemberLocal(selectedBot.botUserId, {
-                        avatarColor: prevColor || undefined,
-                      });
-                    }
-                    showToast("更新机器人主题色失败", "warning");
-                  }
-                };
+                  size={52}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[16px] font-bold text-[var(--dl-text)] truncate">
+                      {selectedBot.name}
+                    </span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold shrink-0 tabular-nums ${
+                        botConnection?.status === "connected"
+                          ? "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]"
+                          : "bg-[var(--dl-card)] text-[var(--dl-text-muted)]"
+                      }`}
+                    >
+                      {botConnection?.status === "connected"
+                        ? `实时在线${connectedVer ? ` · v${connectedVer}` : ""}`
+                        : "待机 / 按需"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBot(null)}
+                      className="text-[12px] text-[var(--dl-accent)] font-medium"
+                    >
+                      ← 返回机器人列表
+                    </button>
+                  </div>
+                </div>
+              </div>
 
-                return (
-                  <>
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const picked = await nativeBridge.pickMedia("image", false);
-                            if (picked.length === 0) return;
-                            await mobileApi.uploadBotAvatar(selectedBot.id, picked[0].id);
-                            await reloadBots();
-                            await bootstrapWorkspace();
-                            showToast("机器人头像已更新", "success");
-                          } catch (err) {
-                            showToast(
-                              err instanceof Error ? err.message : "上传机器人头像失败",
-                              "warning"
-                            );
-                          }
-                        }}
-                        className="relative"
-                      >
-                        <Avatar
-                          name={selectedBot.name}
-                          src={selectedBot.avatarUrl}
-                          kind="bot"
-                          color={selectedBotColor}
-                          size={54}
-                        />
-                        <span className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center">
-                          <Camera size={11} />
-                        </span>
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[16px] font-bold text-[var(--dl-text)] truncate">
-                          {selectedBot.name}
-                        </div>
-                        <div className="flex items-center gap-3 mt-0.5">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedBot(null)}
-                            className="text-[12px] text-[var(--dl-accent)]"
-                          >
-                            ← 返回机器人列表
-                          </button>
-                          {selectedBot.avatarUrl && (
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                try {
-                                  await mobileApi.deleteBotAvatar(selectedBot.id);
-                                  setSelectedBot({ ...selectedBot, avatarUrl: undefined });
-                                  await reloadBots();
-                                  await bootstrapWorkspace();
-                                  showToast("已恢复默认彩色机器人图标", "success");
-                                } catch (err) {
-                                  showToast(
-                                    err instanceof Error ? err.message : "恢复默认图标失败",
-                                    "warning"
-                                  );
-                                }
-                              }}
-                              className="text-[12px] text-[var(--dl-text-muted)]"
-                            >
-                              恢复默认图标
-                            </button>
-                          )}
-                        </div>
-                      </div>
+              {/* Remote Upgrade Banner (Only shown when connected daemon runs an older version) */}
+              {botConnection?.status === "connected" && updateAvailable && (
+                <div className="p-3 rounded-2xl bg-amber-500/12 border border-amber-500/25 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[12.5px] font-semibold text-[var(--dl-text)] tabular-nums">
+                      可升级至 SDK v{latestSdkVer}
                     </div>
-
-                    {/* Bot Theme Color Picker */}
-                    <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[12px] font-semibold text-[var(--dl-text)]">
-                          机器人主题色
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => void handleSelectBotColor("")}
-                          className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
-                            !selectedBotColor
-                              ? "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold"
-                              : "text-[var(--dl-text-muted)]"
-                          }`}
-                        >
-                          自动分配
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-8 gap-2">
-                        {BOT_AVATAR_COLORS.map((preset) => {
-                          const active = selectedBotColor === preset.id;
-                          return (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              aria-label={preset.label}
-                              onClick={() => void handleSelectBotColor(preset.id)}
-                              style={{ backgroundImage: preset.gradient }}
-                              className={`aspect-square rounded-xl flex items-center justify-center text-white shadow-2xs transition-transform duration-150 ${
-                                active ? "ring-2 ring-offset-2 ring-[var(--dl-accent)] scale-105" : "opacity-88"
-                              }`}
-                            >
-                              {active && <Check size={13} />}
-                            </button>
-                          );
-                        })}
-                      </div>
+                    <div className="text-[11px] text-[var(--dl-text-muted)]">
+                      空闲时会自动升级，也可立即推送热更新
                     </div>
-                  </>
-                );
-              })()}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const res = await mobileApi.requestBotRuntimeUpgrade(selectedBot.id);
+                        showToast(`已下发 v${res.targetVersion} 热更信号`, "success");
+                      } catch {
+                        showToast("下发升级通知失败", "warning");
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-[var(--dl-accent)] text-white text-[12px] font-semibold flex items-center gap-1 shrink-0 active:opacity-85 transition-opacity duration-150"
+                  >
+                    <ArrowUpCircle size={13} /> 立即热更
+                  </button>
+                </div>
+              )}
 
+              {/* Primary Dual Actions: Open DM + Copy Pairing Command */}
               <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => void handleOpenBotDirectChat()}
+                  className="p-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[13px] flex items-center justify-center gap-1.5 active:opacity-85 transition-opacity duration-150"
+                >
+                  <MessageSquare size={15} />
+                  <span>发起私聊</span>
+                </button>
+
                 <button
                   type="button"
                   disabled={pairingBusy}
                   onClick={async () => {
                     if (selectedBot.status === "paused") {
-                      showToast("机器人处于暂停状态，请先点击右侧「恢复运行」", "warning");
+                      showToast("机器人处于暂停状态，请先在运行管理中恢复运行", "warning");
                       return;
                     }
                     setPairingBusy(true);
@@ -753,33 +843,6 @@ export function StickerAndBotSheets() {
                       ? "已复制配对指令"
                       : "复制配对指令"}
                   </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      if (selectedBot.status === "paused") {
-                        await mobileApi.resumeBot(selectedBot.id);
-                        setSelectedBot({ ...selectedBot, status: "active" });
-                        showToast("已恢复机器人收发", "success");
-                      } else {
-                        await mobileApi.pauseBot(selectedBot.id);
-                        setSelectedBot({ ...selectedBot, status: "paused" });
-                        showToast("已暂停机器人", "info");
-                      }
-                      void reloadBots();
-                    } catch (err) {
-                      showToast(
-                        err instanceof Error ? err.message : "切换运行状态失败",
-                        "warning"
-                      );
-                    }
-                  }}
-                  className="p-3 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[13px] flex items-center justify-center gap-1.5 active:opacity-85 transition-opacity duration-150"
-                >
-                  {selectedBot.status === "paused" ? <Play size={15} /> : <Pause size={15} />}
-                  <span>{selectedBot.status === "paused" ? "恢复运行" : "暂停接收"}</span>
                 </button>
               </div>
 
@@ -908,14 +971,508 @@ export function StickerAndBotSheets() {
                   </div>
                 )}
 
-              {/* Active Tokens & Unbind */}
+              {/* 4 Clean Categorized Entry Rows (No Flat Dumping) */}
+              <div className="rounded-2xl bg-[var(--dl-card)] divide-y divide-[var(--dl-border)] overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setBotSubView("permissions")}
+                  className="w-full px-3.5 py-3.5 flex items-center justify-between gap-3 text-left active:opacity-80 transition-opacity duration-150"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Users size={17} className="text-[var(--dl-accent)] shrink-0" />
+                    <span className="text-[14px] font-medium text-[var(--dl-text)]">
+                      权限与群聊准入
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 text-[12px] text-[var(--dl-text-muted)] shrink-0">
+                    <span>
+                      {visibilitySummaryLabel} · {allowGroup ? "可入群" : "仅私聊"}
+                    </span>
+                    <ChevronRight size={15} />
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBotSubView("conversations")}
+                  className="w-full px-3.5 py-3.5 flex items-center justify-between gap-3 text-left active:opacity-80 transition-opacity duration-150"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <MessageSquare size={17} className="text-[var(--dl-accent)] shrink-0" />
+                    <span className="text-[14px] font-medium text-[var(--dl-text)]">
+                      已接入会话与上下文
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 text-[12px] text-[var(--dl-text-muted)] shrink-0 tabular-nums">
+                    <span>{botConversations.length} 个会话</span>
+                    <ChevronRight size={15} />
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBotSubView("persona")}
+                  className="w-full px-3.5 py-3.5 flex items-center justify-between gap-3 text-left active:opacity-80 transition-opacity duration-150"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Sparkles size={17} className="text-[var(--dl-accent)] shrink-0" />
+                    <span className="text-[14px] font-medium text-[var(--dl-text)]">
+                      资料、头像与主题色
+                    </span>
+                  </div>
+                  <ChevronRight size={15} className="text-[var(--dl-text-muted)] shrink-0" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBotSubView("credentials")}
+                  className="w-full px-3.5 py-3.5 flex items-center justify-between gap-3 text-left active:opacity-80 transition-opacity duration-150"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <KeyRound size={17} className="text-[var(--dl-accent)] shrink-0" />
+                    <span className="text-[14px] font-medium text-[var(--dl-text)]">
+                      绑定凭证与运行管理
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 text-[12px] text-[var(--dl-text-muted)] shrink-0 tabular-nums">
+                    <span>{botTokens.length} 把凭证</span>
+                    <ChevronRight size={15} />
+                  </div>
+                </button>
+              </div>
+            </div>
+          ) : botSubView === "permissions" ? (
+            /* Sub-view 1: Orthogonal Permissions */
+            <div className="space-y-4">
+              <button
+                type="button"
+                onClick={() => setBotSubView("root")}
+                className="text-[13px] font-medium text-[var(--dl-accent)]"
+              >
+                ← 返回机器人主页
+              </button>
+
+              <div className="p-3 rounded-2xl bg-[var(--dl-accent-soft)]/50 flex items-center gap-2 text-[12px] text-[var(--dl-text)]">
+                <Lock size={14} className="text-[var(--dl-accent)] shrink-0" />
+                <span>创建者本人 1v1 私聊权限永久保留，不受下方范围影响</span>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2">
+                <div className="text-[12.5px] font-semibold text-[var(--dl-text)]">
+                  1. 成员可用范围（谁可私聊）
+                </div>
+                {(
+                  [
+                    { id: "private", label: "仅创建者本人可用（默认）" },
+                    { id: "specified_members", label: "创建者 + 指定空间成员" },
+                    { id: "space_members", label: "全空间成员可用" },
+                  ] as const
+                ).map((opt) => {
+                  const checked = visPolicy === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={async () => {
+                        setVisPolicy(opt.id);
+                        try {
+                          await mobileApi.updateBotSettings(selectedBot.id, {
+                            visibilityPolicy: opt.id,
+                            allowDirect: true,
+                          });
+                          void refreshSelectedBotDetail(selectedBot.id);
+                          showToast("成员可用范围已更新", "success");
+                        } catch {
+                          showToast("保存失败", "warning");
+                        }
+                      }}
+                      className={`w-full px-3 py-2.5 rounded-xl flex items-center justify-between text-[13px] ${
+                        checked
+                          ? "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold"
+                          : "bg-[var(--dl-surface)] text-[var(--dl-text)]"
+                      }`}
+                    >
+                      <span>{opt.label}</span>
+                      {checked && <Check size={15} />}
+                    </button>
+                  );
+                })}
+
+                {visPolicy === "specified_members" && (
+                  <div className="max-h-36 overflow-y-auto pt-1 space-y-1">
+                    {Object.values(members)
+                      .filter((m) => m.role !== "bot")
+                      .map((m) => {
+                        const checked = allowedMemberIds.includes(m.id);
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={async () => {
+                              const next = checked
+                                ? allowedMemberIds.filter((id) => id !== m.id)
+                                : [...allowedMemberIds, m.id];
+                              setAllowedMemberIds(next);
+                              await mobileApi
+                                .updateBotSettings(selectedBot.id, { allowedMemberIds: next })
+                                .catch(() => {});
+                            }}
+                            className="w-full px-3 py-2 rounded-xl bg-[var(--dl-surface)] flex items-center justify-between text-[12.5px] text-[var(--dl-text)]"
+                          >
+                            <span>{m.displayName}</span>
+                            <span className="text-[var(--dl-accent)]">
+                              {checked ? "✓ 已授权" : "授权"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2">
+                <div className="text-[12.5px] font-semibold text-[var(--dl-text)]">
+                  2. 群聊准入与唤醒规则
+                </div>
+                {(
+                  [
+                    { id: "owner_only", label: "允许入群 · 仅创建者可拉入" },
+                    { id: "approval_required", label: "允许入群 · 成员拉入需审批" },
+                    { id: "open", label: "允许入群 · 获准成员可直接拉入" },
+                    { id: "disabled", label: "禁止加入群聊" },
+                  ] as const
+                ).map((opt) => {
+                  const checked = groupPreset === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={async () => {
+                        const patch = buildGroupPresetPatch(opt.id);
+                        setAllowGroup(Boolean(patch.allowGroup));
+                        setGroupInviterPolicy(String(patch.groupInviterPolicy));
+                        setRequireOwnerApproval(Boolean(patch.requireOwnerApproval));
+                        try {
+                          await mobileApi.updateBotSettings(selectedBot.id, patch);
+                          void refreshSelectedBotDetail(selectedBot.id);
+                          showToast("群聊准入策略已更新", "success");
+                        } catch {
+                          showToast("保存失败", "warning");
+                        }
+                      }}
+                      className={`w-full px-3 py-2.5 rounded-xl flex items-center justify-between text-[13px] ${
+                        checked
+                          ? "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold"
+                          : "bg-[var(--dl-surface)] text-[var(--dl-text)]"
+                      }`}
+                    >
+                      <span>{opt.label}</span>
+                      {checked && <Check size={15} />}
+                    </button>
+                  );
+                })}
+
+                {allowGroup && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const nextPrivacy = triggerPolicy === "all-messages";
+                      const nextMode = nextPrivacy ? "mention-or-command" : "all-messages";
+                      setTriggerPolicy(nextMode);
+                      await mobileApi
+                        .updateBotSettings(selectedBot.id, { triggerPolicy: nextMode })
+                        .catch(() => {});
+                      showToast(
+                        nextPrivacy ? "已设为仅 @提及/回复唤醒" : "已设为群聊全量消息响应",
+                        "success"
+                      );
+                    }}
+                    className="w-full mt-1 px-3 py-2.5 rounded-xl bg-[var(--dl-surface)] flex items-center justify-between text-[12.5px]"
+                  >
+                    <span className="text-[var(--dl-text)]">群内仅 `@提及` / 回复唤醒</span>
+                    <span className="font-semibold text-[var(--dl-accent)]">
+                      {triggerPolicy !== "all-messages" ? "已开启" : "全量响应"}
+                    </span>
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : botSubView === "conversations" ? (
+            /* Sub-view 2: Connected Conversations & Effective Trigger Status */
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => setBotSubView("root")}
+                className="text-[13px] font-medium text-[var(--dl-accent)]"
+              >
+                ← 返回机器人主页
+              </button>
+
+              {botConversations.length === 0 ? (
+                <div className="p-4 rounded-2xl bg-[var(--dl-card)] text-center text-[12.5px] text-[var(--dl-text-muted)]">
+                  暂无已接入会话，点击主页「发起私聊」即可开始对话
+                </div>
+              ) : (
+                botConversations.map((conv) => (
+                  <div
+                    key={conv.id}
+                    className="p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[13.5px] font-semibold text-[var(--dl-text)] truncate">
+                        {conv.type === "direct" ? `私聊 · ${conv.title}` : `群聊 · ${conv.title}`}
+                      </div>
+                      <div className="text-[11.5px] text-[var(--dl-text-muted)] mt-0.5">
+                        {conv.allowTrigger
+                          ? conv.type === "direct"
+                            ? "🟢 私聊实时响应"
+                            : conv.triggerMode === "all_messages"
+                            ? "🟢 群内全量响应"
+                            : "🟢 群内 @提及唤醒"
+                          : "🟡 待授权或已暂停"}
+                        {conv.allowContext ? ` · 上下文 ${conv.maxMessages} 条` : " · 仅单条消息"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const nextCtx = !conv.allowContext;
+                          if (conv.type === "group") {
+                            await mobileApi.updateBotGroupPolicy(selectedBot.id, conv.id, {
+                              status: "active",
+                              allowTrigger: true,
+                              allowContext: nextCtx,
+                              maxMessages: 50,
+                            });
+                          } else {
+                            await mobileApi.updateBotContextGrant(selectedBot.id, conv.id, {
+                              allowTrigger: true,
+                              allowContext: nextCtx,
+                              maxMessages: 50,
+                            });
+                          }
+                          await refreshSelectedBotDetail(selectedBot.id);
+                          showToast("会话授权已更新", "success");
+                        } catch {
+                          showToast("更新失败", "warning");
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-[var(--dl-surface)] text-[12px] font-semibold text-[var(--dl-accent)] shrink-0"
+                    >
+                      {conv.type === "group" && conv.groupPolicyStatus !== "active"
+                        ? "批准入群"
+                        : conv.allowContext
+                        ? "关闭上下文"
+                        : "开启上下文"}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : botSubView === "persona" ? (
+            /* Sub-view 3: Persona, Avatar & Theme Color */
+            <div className="space-y-4">
+              <button
+                type="button"
+                onClick={() => setBotSubView("root")}
+                className="text-[13px] font-medium text-[var(--dl-accent)]"
+              >
+                ← 返回机器人主页
+              </button>
+
+              {(() => {
+                const selectedBotColor =
+                  (selectedBot.botUserId
+                    ? members[selectedBot.botUserId]?.avatarColor
+                    : undefined) ??
+                  selectedBot.avatarColor ??
+                  "";
+                const handleSelectBotColor = async (nextColor: string) => {
+                  const prevColor = selectedBotColor;
+                  setSelectedBot({ ...selectedBot, avatarColor: nextColor || undefined });
+                  if (selectedBot.botUserId) {
+                    patchMemberLocal(selectedBot.botUserId, {
+                      avatarColor: nextColor || undefined,
+                    });
+                  }
+                  try {
+                    await mobileApi.updateBotProfile(selectedBot.id, { color: nextColor });
+                    void reloadBots();
+                    showToast("机器人主题色已更新", "success");
+                  } catch {
+                    setSelectedBot({ ...selectedBot, avatarColor: prevColor || undefined });
+                    if (selectedBot.botUserId) {
+                      patchMemberLocal(selectedBot.botUserId, {
+                        avatarColor: prevColor || undefined,
+                      });
+                    }
+                    showToast("更新机器人主题色失败", "warning");
+                  }
+                };
+
+                return (
+                  <>
+                    <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const picked = await nativeBridge.pickMedia("image", false);
+                            if (picked.length === 0) return;
+                            await mobileApi.uploadBotAvatar(selectedBot.id, picked[0].id);
+                            await reloadBots();
+                            await bootstrapWorkspace();
+                            showToast("机器人头像已更新", "success");
+                          } catch (err) {
+                            showToast(
+                              err instanceof Error ? err.message : "上传机器人头像失败",
+                              "warning"
+                            );
+                          }
+                        }}
+                        className="relative shrink-0"
+                      >
+                        <Avatar
+                          name={selectedBot.name}
+                          src={selectedBot.avatarUrl}
+                          kind="bot"
+                          color={selectedBotColor}
+                          size={54}
+                        />
+                        <span className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center">
+                          <Camera size={11} />
+                        </span>
+                      </button>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="text-[13px] font-semibold text-[var(--dl-text)]">
+                          点击左侧图标上传自定义头像
+                        </div>
+                        {selectedBot.avatarUrl && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await mobileApi.deleteBotAvatar(selectedBot.id);
+                                setSelectedBot({ ...selectedBot, avatarUrl: undefined });
+                                await reloadBots();
+                                await bootstrapWorkspace();
+                                showToast("已恢复默认彩色机器人图标", "success");
+                              } catch {
+                                showToast("恢复默认图标失败", "warning");
+                              }
+                            }}
+                            className="text-[12px] text-[var(--dl-accent)]"
+                          >
+                            恢复默认彩色图标
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2.5">
+                      <input
+                        type="text"
+                        value={nameDraft}
+                        onChange={(e) => setNameDraft(e.target.value)}
+                        placeholder="机器人显示名称"
+                        className="w-full px-3 py-2 rounded-xl bg-[var(--dl-surface)] border border-[var(--dl-border)] text-[13.5px] text-[var(--dl-text)] outline-none"
+                      />
+                      <input
+                        type="text"
+                        value={bioDraft}
+                        onChange={(e) => setBioDraft(e.target.value)}
+                        placeholder="职责简介（选填）"
+                        className="w-full px-3 py-2 rounded-xl bg-[var(--dl-surface)] border border-[var(--dl-border)] text-[13.5px] text-[var(--dl-text)] outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!nameDraft.trim()) return;
+                          try {
+                            await mobileApi.updateBotProfile(selectedBot.id, {
+                              name: nameDraft.trim(),
+                              description: bioDraft.trim(),
+                            });
+                            setSelectedBot({
+                              ...selectedBot,
+                              name: nameDraft.trim(),
+                              description: bioDraft.trim(),
+                            });
+                            void reloadBots();
+                            void bootstrapWorkspace();
+                            showToast("机器人资料已保存", "success");
+                          } catch (err) {
+                            showToast(err instanceof Error ? err.message : "保存失败", "warning");
+                          }
+                        }}
+                        className="w-full py-2.5 rounded-xl bg-[var(--dl-accent)] text-white text-[13px] font-semibold active:opacity-85 transition-opacity duration-150"
+                      >
+                        保存名称与简介
+                      </button>
+                    </div>
+
+                    <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[12.5px] font-semibold text-[var(--dl-text)]">
+                          机器人主题色
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleSelectBotColor("")}
+                          className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
+                            !selectedBotColor
+                              ? "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold"
+                              : "text-[var(--dl-text-muted)]"
+                          }`}
+                        >
+                          自动分配
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-8 gap-2">
+                        {BOT_AVATAR_COLORS.map((preset) => {
+                          const active = selectedBotColor === preset.id;
+                          return (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              aria-label={preset.label}
+                              onClick={() => void handleSelectBotColor(preset.id)}
+                              style={{ backgroundImage: preset.gradient }}
+                              className={`aspect-square rounded-xl flex items-center justify-center text-white shadow-2xs transition-transform duration-150 ${
+                                active
+                                  ? "ring-2 ring-offset-2 ring-[var(--dl-accent)] scale-105"
+                                  : "opacity-88"
+                              }`}
+                            >
+                              {active && <Check size={13} />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          ) : (
+            /* Sub-view 4: Bound Credentials & Lifecycle Controls */
+            <div className="space-y-4">
+              <button
+                type="button"
+                onClick={() => setBotSubView("root")}
+                className="text-[13px] font-medium text-[var(--dl-accent)]"
+              >
+                ← 返回机器人主页
+              </button>
+
               <div className="space-y-2">
                 <div className="text-[12px] font-semibold text-[var(--dl-text-muted)] flex items-center gap-1 tabular-nums">
                   <KeyRound size={13} /> 已绑定凭证 ({botTokens.length})
                 </div>
                 {botTokens.length === 0 ? (
                   <div className="p-4 rounded-2xl bg-[var(--dl-card)] text-center text-[12px] text-[var(--dl-text-muted)]">
-                    当前无活跃接入凭证，点击上方「复制配对指令」发给 Agent 即可完成接入
+                    当前无活跃接入凭证，可在机器人主页点击「复制配对指令」完成绑定
                   </div>
                 ) : (
                   botTokens.map((tok) => (
@@ -925,10 +1482,10 @@ export function StickerAndBotSheets() {
                     >
                       <div className="min-w-0">
                         <div className="text-[13px] font-mono font-semibold text-[var(--dl-text)] truncate tabular-nums">
-                          凭证 #{tok.id.slice(0, 8)}
+                          凭证 #{tok.id.slice(-8)}
                         </div>
-                        <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
-                          权限：{tok.scopes.join(", ")}
+                        <div className="text-[11px] text-[var(--dl-text-muted)] truncate tabular-nums">
+                          已授予 {tok.scopes.length} 项能力权限
                         </div>
                       </div>
                       <button
@@ -951,6 +1508,75 @@ export function StickerAndBotSheets() {
                       </button>
                     </div>
                   ))
+                )}
+              </div>
+
+              <div className="pt-2 space-y-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      if (selectedBot.status === "paused") {
+                        await mobileApi.resumeBot(selectedBot.id);
+                        setSelectedBot({ ...selectedBot, status: "active" });
+                        showToast("已恢复机器人运行", "success");
+                      } else {
+                        await mobileApi.pauseBot(selectedBot.id);
+                        setSelectedBot({ ...selectedBot, status: "paused" });
+                        showToast("已暂停机器人响应", "info");
+                      }
+                      void reloadBots();
+                    } catch (err) {
+                      showToast(
+                        err instanceof Error ? err.message : "切换运行状态失败",
+                        "warning"
+                      );
+                    }
+                  }}
+                  className="w-full p-3 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[13.5px] flex items-center justify-center gap-1.5 active:opacity-85 transition-opacity duration-150"
+                >
+                  {selectedBot.status === "paused" ? <Play size={15} /> : <Pause size={15} />}
+                  <span>{selectedBot.status === "paused" ? "恢复机器人运行" : "暂停机器人响应"}</span>
+                </button>
+
+                {!confirmDelete ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(true)}
+                    className="w-full p-3 rounded-2xl bg-rose-500/10 text-rose-500 font-semibold text-[13.5px] flex items-center justify-center gap-1.5 active:opacity-85 transition-opacity duration-150"
+                  >
+                    <Trash2 size={15} />
+                    <span>永久删除该机器人</span>
+                  </button>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(false)}
+                      className="p-3 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[13px]"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await mobileApi.beginDeleteBot(selectedBot.id);
+                          await mobileApi.confirmDeleteBot(selectedBot.id);
+                          setSelectedBot(null);
+                          setConfirmDelete(false);
+                          await reloadBots();
+                          await bootstrapWorkspace();
+                          showToast("机器人已永久删除", "success");
+                        } catch (err) {
+                          showToast(err instanceof Error ? err.message : "删除失败", "warning");
+                        }
+                      }}
+                      className="p-3 rounded-2xl bg-rose-500 text-white font-semibold text-[13px]"
+                    >
+                      确认永久删除
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
