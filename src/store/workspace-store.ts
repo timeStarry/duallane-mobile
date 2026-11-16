@@ -87,7 +87,16 @@ export interface V1Message {
   blocks?: V1MessageBlock[];
   replyToId?: string;
   threadRootId?: string;
+  threadTitle?: string;
   threadReplyCount?: number;
+  threadLastRepliedAt?: string;
+  threadPreviewReplies?: Array<{
+    id: string;
+    authorId: string;
+    authorName: string;
+    plainText: string;
+    createdAt: string;
+  }>;
   editedAt?: string;
   recalledAt?: string;
   createdAt: string;
@@ -825,7 +834,26 @@ export function mapRawMessage(
       ? String(m.replyToId)
       : undefined,
     threadRootId: m.threadRootId ? String(m.threadRootId) : undefined,
+    threadTitle: m.threadTitle ? String(m.threadTitle) : undefined,
     threadReplyCount: Number(m.threadReplyCount || m.replyCount || 0),
+    threadLastRepliedAt: m.threadLastRepliedAt ? String(m.threadLastRepliedAt) : undefined,
+    threadPreviewReplies: Array.isArray(m.threadPreviewReplies)
+      ? m.threadPreviewReplies
+          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+          .map((item) => {
+            const aid = String(item.authorId || "");
+            return {
+              id: String(item.id || ""),
+              authorId: aid,
+              authorName:
+                members[aid]?.displayName ||
+                sanitizeSyntheticHandle(item.authorName) ||
+                "成员",
+              plainText: String(item.plainText || ""),
+              createdAt: String(item.createdAt || createdAt),
+            };
+          })
+      : undefined,
     editedAt: m.editedAt ? String(m.editedAt) : undefined,
     recalledAt,
     createdAt,
@@ -1047,9 +1075,21 @@ export function parseBootstrapPayload(raw: Record<string, unknown>) {
 
 let workspaceWsHandle: { send: (data: string) => void; close: () => void } | null = null;
 let workspaceReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let workspaceHandshakeTimer: ReturnType<typeof setTimeout> | null = null;
+let latestRealtimeCursor = 0;
+let resumeHooksAttached = false;
+let lastResumeSyncAt = 0;
 let activeP2PTransport: P2PRoomTransport | null = null;
 
+function clearHandshakeTimer() {
+  if (workspaceHandshakeTimer) {
+    clearTimeout(workspaceHandshakeTimer);
+    workspaceHandshakeTimer = null;
+  }
+}
+
 function teardownWorkspaceRealtime() {
+  clearHandshakeTimer();
   if (workspaceReconnectTimer) {
     clearTimeout(workspaceReconnectTimer);
     workspaceReconnectTimer = null;
@@ -1058,6 +1098,43 @@ function teardownWorkspaceRealtime() {
     const h = workspaceWsHandle;
     workspaceWsHandle = null;
     h.close();
+  }
+}
+
+interface InitialShellHydration {
+  currentUser: V1User;
+  boundEmail: string;
+  members: Record<string, V1User>;
+  conversations: Record<string, V1Conversation>;
+  conversationOrder: string[];
+  pinnedConversationIds: string[];
+  userPreferences: Record<string, unknown>;
+}
+
+function loadInitialShellHydration(): InitialShellHydration | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const snap = nativeBridge.getSessionSnapshot();
+    if (nativeBridge.isNativeAndroid() && !snap.authenticated) return null;
+    const cachedRaw = window.localStorage.getItem(SHELL_CACHE_KEY);
+    if (!cachedRaw) return null;
+    const cached = JSON.parse(cachedRaw) as Partial<InitialShellHydration>;
+    if (!cached.currentUser?.id || !cached.conversations || !Array.isArray(cached.conversationOrder)) {
+      return null;
+    }
+    return {
+      currentUser: cached.currentUser,
+      boundEmail: typeof cached.boundEmail === "string" ? cached.boundEmail : "",
+      members: cached.members || {},
+      conversations: cached.conversations || {},
+      conversationOrder: cached.conversationOrder,
+      pinnedConversationIds: Array.isArray(cached.pinnedConversationIds)
+        ? cached.pinnedConversationIds
+        : [],
+      userPreferences: cached.userPreferences || {},
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -1072,14 +1149,26 @@ function teardownP2P() {
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
   const connectRealtime = (initialCursor: number) => {
     teardownWorkspaceRealtime();
-    let cursor = Math.max(0, Math.trunc(initialCursor || 0));
+    let cursor = Math.max(latestRealtimeCursor, Math.max(0, Math.trunc(initialCursor || 0)));
+    latestRealtimeCursor = cursor;
 
     const open = () => {
       if (get().authStatus !== "authenticated") return;
+      clearHandshakeTimer();
       const handle = nativeBridge.connectSocket("/ws/workspace", true, {
         onOpen: () => {
           if (workspaceWsHandle !== handle) return;
           handle.send(JSON.stringify({ type: "hello", version: 1, lastSeq: cursor }));
+          clearHandshakeTimer();
+          // Watchdog: if half-open NAT socket never delivers "ready" within 3.8s, cycle cleanly
+          workspaceHandshakeTimer = setTimeout(() => {
+            if (workspaceWsHandle !== handle) return;
+            workspaceWsHandle = null;
+            handle.close();
+            if (get().authStatus === "authenticated") {
+              workspaceReconnectTimer = setTimeout(open, 600);
+            }
+          }, 3800);
         },
         onMessage: (rawText) => {
           if (workspaceWsHandle !== handle) return;
@@ -1090,30 +1179,44 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
             return;
           }
           if (frame.type === "ready") {
+            clearHandshakeTimer();
             if (typeof frame.currentSeq === "number" && frame.currentSeq > cursor) {
               cursor = frame.currentSeq;
+              latestRealtimeCursor = cursor;
             }
             set({ connectionStatus: "connected" });
             return;
           }
           if (frame.type === "sync.required") {
-            if (typeof frame.currentSeq === "number") cursor = frame.currentSeq;
+            clearHandshakeTimer();
+            if (typeof frame.currentSeq === "number") {
+              cursor = frame.currentSeq;
+              latestRealtimeCursor = cursor;
+            }
             void get().bootstrapWorkspace();
             return;
           }
           if (frame.type === "event" && frame.event && typeof frame.event === "object") {
+            clearHandshakeTimer();
             const evObj = frame.event as Record<string, unknown>;
             const seq = Number(evObj.seq || 0);
-            if (seq > cursor) cursor = seq;
+            if (seq > cursor) {
+              cursor = seq;
+              latestRealtimeCursor = cursor;
+            }
+            if (get().connectionStatus !== "connected") {
+              set({ connectionStatus: "connected" });
+            }
             get().applyRealtimeEvent(evObj);
           }
         },
         onClose: () => {
           if (workspaceWsHandle !== handle) return;
+          clearHandshakeTimer();
           workspaceWsHandle = null;
           if (get().authStatus === "authenticated") {
             set({ connectionStatus: "reconnecting" });
-            workspaceReconnectTimer = setTimeout(open, 2000);
+            workspaceReconnectTimer = setTimeout(open, 1600);
           }
         },
       });
@@ -1123,26 +1226,54 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     open();
   };
 
+  if (!resumeHooksAttached && typeof window !== "undefined") {
+    resumeHooksAttached = true;
+    const handleForegroundResume = () => {
+      const state = get();
+      if (state.authStatus !== "authenticated") return;
+      const now = Date.now();
+      // Always re-anchor realtime socket if missing or stuck in reconnecting after background freeze
+      if (!workspaceWsHandle || state.connectionStatus !== "connected") {
+        connectRealtime(latestRealtimeCursor);
+      }
+      // Pull lightweight bootstrap catch-up (throttled to 3s) so missed events clear "加载中…" immediately
+      if (now - lastResumeSyncAt >= 3000) {
+        lastResumeSyncAt = now;
+        void state.bootstrapWorkspace();
+      }
+    };
+    nativeBridge.onAppResumed(handleForegroundResume);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          handleForegroundResume();
+        }
+      });
+    }
+  }
+
+  const initialHydration = loadInitialShellHydration();
+
   return {
-    authStatus: "checking",
-    connectionStatus: "connected",
+    authStatus: initialHydration ? "authenticated" : "checking",
+    connectionStatus: initialHydration ? "reconnecting" : "connected",
     statusError: null,
     pendingInviteCode: "",
-    currentUser: null,
-    boundEmail: "",
+    currentUser: initialHydration?.currentUser ?? null,
+    boundEmail: initialHydration?.boundEmail ?? "",
     systemAnnouncement: null,
     dismissedAnnouncementKey: null,
     quotaUsedBytes: 0,
     quotaLimitBytes: 512 * 1024 * 1024,
 
-    conversations: {},
-    conversationOrder: [],
-    pinnedConversationIds: [],
-    userPreferences: {},
+    conversations: initialHydration?.conversations ?? {},
+    conversationOrder: initialHydration?.conversationOrder ?? [],
+    pinnedConversationIds: initialHydration?.pinnedConversationIds ?? [],
+    userPreferences: initialHydration?.userPreferences ?? {},
     collapsePrefs: loadLocalCollapsePrefs(),
     messageCollapseOverrides: loadMsgCollapseOverrides(),
     messagesByConv: loadCachedMessages(),
-    members: {},
+    members: initialHydration?.members ?? {},
     threadsByRootId: {},
 
     drafts: loadCachedDrafts(),
@@ -1234,7 +1365,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
 
         let userPreferences = parsed.userPreferences;
         let pinnedConversationIds = parsed.pinnedConversationIds;
-        if (Object.keys(userPreferences).length === 0) {
+        const hasEmbeddedPreferences = Boolean(
+          raw && typeof raw === "object" && "preferences" in raw
+        );
+        if (!hasEmbeddedPreferences && Object.keys(userPreferences).length === 0) {
           try {
             const prefRes = await mobileApi.getPreferences();
             if (prefRes.preferences) {
@@ -2097,7 +2231,37 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       set((s) => {
         const prev = s.threadsByRootId[rootMessageId];
         const nextReplies = [...(prev?.replies || []), reply];
+        const convMsgs = s.messagesByConv[reply.conversationId];
+        const nextMessagesByConv = convMsgs
+          ? {
+              ...s.messagesByConv,
+              [reply.conversationId]: convMsgs.map((m) =>
+                m.id === rootMessageId
+                  ? {
+                      ...m,
+                      threadReplyCount: Math.max(
+                        (m.threadReplyCount || 0) + 1,
+                        nextReplies.length
+                      ),
+                      threadLastRepliedAt: reply.createdAt,
+                      threadPreviewReplies: [
+                        ...(m.threadPreviewReplies || []),
+                        {
+                          id: reply.id,
+                          authorId: reply.authorId,
+                          authorName:
+                            s.members[reply.authorId]?.displayName || reply.authorName || "我",
+                          plainText: reply.plainText,
+                          createdAt: reply.createdAt,
+                        },
+                      ].slice(-3),
+                    }
+                  : m
+              ),
+            }
+          : s.messagesByConv;
         return {
+          messagesByConv: nextMessagesByConv,
           threadsByRootId: {
             ...s.threadsByRootId,
             [rootMessageId]: {

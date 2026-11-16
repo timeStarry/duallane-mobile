@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AtSign,
   Bell,
@@ -6,6 +6,8 @@ import {
   Bookmark,
   CheckCheck,
   ChevronRight,
+  CloudOff,
+  Loader2,
   Lock,
   MessageSquarePlus,
   Pin,
@@ -13,7 +15,6 @@ import {
   Search,
   Sparkles,
   Users,
-  WifiOff,
 } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { BottomSheet } from "@/components/BottomSheet";
@@ -58,6 +59,17 @@ export function ChatsTab() {
   const [filter, setFilter] = useState<ChatFilter>("all");
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [contextConvId, setContextConvId] = useState<string | null>(null);
+  const [showSyncPill, setShowSyncPill] = useState(false);
+
+  // Debounce brief <350ms background delta syncs so warm app resumes feel seamless with zero flicker
+  useEffect(() => {
+    if (connectionStatus !== "reconnecting") {
+      setShowSyncPill(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowSyncPill(true), 350);
+    return () => window.clearTimeout(timer);
+  }, [connectionStatus]);
 
   const contextConv = contextConvId ? conversations[contextConvId] || null : null;
 
@@ -172,10 +184,16 @@ export function ChatsTab() {
                     {totalUnread > 99 ? "99+" : totalUnread}
                   </span>
                 )}
-                {connectionStatus !== "connected" && (
-                  <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 text-[10px] font-medium flex items-center gap-1">
-                    <WifiOff size={10} />
-                    {connectionStatus === "reconnecting" ? "重连中" : "离线"}
+                {connectionStatus === "reconnecting" && showSyncPill && (
+                  <span className="px-2 py-0.5 rounded-full bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[10.5px] font-medium flex items-center gap-1">
+                    <Loader2 size={10} className="animate-spin shrink-0" />
+                    <span>加载中…</span>
+                  </span>
+                )}
+                {connectionStatus === "offline" && (
+                  <span className="px-2 py-0.5 rounded-full bg-rose-500/12 text-rose-600 dark:text-rose-300 text-[10.5px] font-medium flex items-center gap-1">
+                    <CloudOff size={10} className="shrink-0" />
+                    <span>未连接</span>
                   </span>
                 )}
               </div>

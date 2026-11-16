@@ -140,6 +140,37 @@ function resolveDownloadUrl(
 }
 
 let progressSubscribed = false;
+let deferredOtaReloadRegistered = false;
+
+function isUserActivelyTypingInComposer(): boolean {
+  if (typeof document === "undefined") return false;
+  const el = document.activeElement;
+  if (!el) return false;
+  if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+    const val = (el as HTMLInputElement | HTMLTextAreaElement).value || "";
+    return val.trim().length > 0;
+  }
+  return false;
+}
+
+function applyStagedOtaImmediatelyOrOnIdle(): void {
+  if (!isUserActivelyTypingInComposer()) {
+    nativeBridge.applyStagedOta();
+    return;
+  }
+  if (deferredOtaReloadRegistered || typeof window === "undefined") return;
+  deferredOtaReloadRegistered = true;
+  const tryApply = () => {
+    if (!isUserActivelyTypingInComposer()) {
+      window.removeEventListener("focusout", tryApply, true);
+      document.removeEventListener("visibilitychange", tryApply);
+      deferredOtaReloadRegistered = false;
+      nativeBridge.applyStagedOta();
+    }
+  };
+  window.addEventListener("focusout", tryApply, true);
+  document.addEventListener("visibilitychange", tryApply);
+}
 
 export const useUpdateStore = create<UpdateState>((set, get) => {
   if (!progressSubscribed && typeof window !== "undefined") {
@@ -251,9 +282,9 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
               error: null,
             });
 
-            // Silently pre-stage ~180KB OTA bundle in background so next launch or 1-tap reload is instant
-            if (silent && canUseOta && otaInfo && get().otaStagedBundleId !== otaInfo.bundleId) {
-              void get().performOtaUpdate(false);
+            // Non-release OTA hot-updates never ask the user to click: download & apply automatically!
+            if (canUseOta && otaInfo) {
+              void get().performOtaUpdate(true);
             }
 
             return { hasUpdate, release };
@@ -330,7 +361,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
       if (get().installing) return { ok: false, error: "更新正在进行中" };
 
       if (get().otaStagedBundleId === ota.bundleId) {
-        if (autoReload) nativeBridge.applyStagedOta();
+        if (autoReload) applyStagedOtaImmediatelyOrOnIdle();
         return { ok: true };
       }
 
@@ -361,7 +392,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
           otaStagedBundleId: res.bundleId || ota.bundleId,
         });
         if (autoReload) {
-          nativeBridge.applyStagedOta();
+          applyStagedOtaImmediatelyOrOnIdle();
         }
         return { ok: true };
       } catch (err) {

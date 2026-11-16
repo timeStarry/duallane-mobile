@@ -446,6 +446,23 @@ export const mobileApi = {
   getThread: (messageId: string) =>
     requestJSON<ThreadViewResponse>(`/api/v1/messages/${encodeURIComponent(messageId)}/thread`),
 
+  listConversationThreads: (conversationId: string) =>
+    requestJSON<{
+      threads: Array<{
+        rootMessageId: string;
+        conversationId: string;
+        threadTitle?: string;
+        rootAuthorId: string;
+        rootAuthorName: string;
+        rootPlainText: string;
+        rootCreatedAt: string;
+        replyCount: number;
+        lastRepliedAt: string;
+        lastAuthorName: string;
+        lastPlainText: string;
+      }>;
+    }>(`/api/v1/conversations/${encodeURIComponent(conversationId)}/threads`),
+
   replyThread: (
     messageId: string,
     plainText: string,

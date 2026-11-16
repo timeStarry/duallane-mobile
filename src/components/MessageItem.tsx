@@ -4,6 +4,7 @@ import {
   Check,
   CheckCheck,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Clock,
   Eye,
@@ -809,6 +810,19 @@ export function MessageItem({
           </div>
         )}
 
+        {/* Channel-forwarded thread reply backlink */}
+        {msg.threadRootId && !msg.recalledAt && (
+          <button
+            type="button"
+            onClick={() => setThreadRootId(msg.threadRootId!)}
+            className="mt-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium text-[var(--dl-accent)] bg-[var(--dl-accent-soft)] inline-flex items-center gap-1 active:opacity-80"
+          >
+            <MessageSquareText size={11} className="shrink-0" />
+            <span>源自话题讨论 · 查看话题</span>
+            <ChevronRight size={11} className="shrink-0" />
+          </button>
+        )}
+
         {/* Reactions Row */}
         {reactionEntries.length > 0 && (
           <div
@@ -819,7 +833,7 @@ export function MessageItem({
                 key={key}
                 type="button"
                 onClick={() => void toggleReaction(msg.conversationId, msg.id, key)}
-                className={`px-2 py-0.5 rounded-full text-[11px] flex items-center gap-1 border transition active:scale-95 ${
+                className={`px-2 py-0.5 rounded-full text-[11px] flex items-center gap-1 border transition-transform duration-150 active:scale-95 tabular-nums ${
                   info.reactedByMe
                     ? "bg-[var(--dl-accent-soft)] border-[var(--dl-accent)] text-[var(--dl-accent)] font-semibold"
                     : "bg-[var(--dl-surface)] border-[var(--dl-border)] text-[var(--dl-text-muted)]"
@@ -832,15 +846,44 @@ export function MessageItem({
           </div>
         )}
 
-        {/* Thread Replies Chip */}
+        {/* Feishu-Style Inline Topic Summary & Preview Card */}
         {(msg.threadReplyCount || 0) > 0 && (
           <button
             type="button"
+            data-testid="feishu-inline-topic-card"
             onClick={() => setThreadRootId(msg.id)}
-            className="mt-1 px-2.5 py-1 rounded-full text-[11px] font-medium text-[var(--dl-accent)] bg-[var(--dl-accent-soft)] flex items-center gap-1 active:scale-95"
+            className="mt-1.5 w-fit min-w-[196px] max-w-[min(320px,78vw)] rounded-xl border border-[var(--dl-accent)]/25 bg-[var(--dl-surface)]/95 px-2.5 py-2 text-left flex flex-col gap-1 shadow-2xs active:opacity-85 transition-opacity duration-150"
           >
-            <MessageSquareText size={12} />
-            <span>{msg.threadReplyCount} 条话题回复</span>
+            {(msg.threadPreviewReplies || []).length > 0 && (
+              <div className="space-y-0.5 border-l-2 border-[var(--dl-accent)]/45 pl-2 w-full">
+                {(msg.threadPreviewReplies || []).slice(-3).map((rep) => (
+                  <div
+                    key={rep.id}
+                    className="truncate text-[11.5px] leading-snug text-[var(--dl-text-muted)]"
+                  >
+                    <span className="font-medium text-[var(--dl-text)]">
+                      {rep.authorName}:{" "}
+                    </span>
+                    <span>{rep.plainText}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-2 w-full text-[11px] font-medium text-[var(--dl-accent)]">
+              <span className="inline-flex items-center gap-1 tabular-nums min-w-0">
+                <MessageSquareText size={12} className="shrink-0" />
+                <span className="shrink-0">{msg.threadReplyCount} 条话题回复</span>
+                {msg.threadTitle && (
+                  <span className="truncate text-[var(--dl-text-muted)] font-normal">
+                    · {msg.threadTitle}
+                  </span>
+                )}
+              </span>
+              <span className="inline-flex items-center gap-0.5 text-[10.5px] opacity-85 shrink-0">
+                <span>参与讨论</span>
+                <ChevronRight size={12} />
+              </span>
+            </div>
           </button>
         )}
       </div>

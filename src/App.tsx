@@ -34,11 +34,25 @@ export function App() {
   const toast = useNavStore((s) => s.toast);
   const popBack = useNavStore((s) => s.popBack);
   const hasUpdate = useUpdateStore((s) => s.hasUpdate);
+  const recommendedMode = useUpdateStore((s) => s.recommendedMode);
 
   useEffect(() => {
     nativeBridge.markBundleHealthy();
     void bootstrapWorkspace();
   }, [bootstrapWorkspace]);
+
+  // Auto-check & auto-apply OTA hot-updates when returning to foreground (throttled to 45s)
+  useEffect(() => {
+    let lastCheckMs = Date.now();
+    const triggerSilentUpdateCheck = () => {
+      const now = Date.now();
+      if (now - lastCheckMs < 45_000) return;
+      lastCheckMs = now;
+      void useUpdateStore.getState().checkForUpdates(true);
+    };
+    const offResume = nativeBridge.onAppResumed(triggerSilentUpdateCheck);
+    return () => offResume();
+  }, []);
 
   useEffect(() => {
     nativeBridge.setBackPressHandler(() => popBack());
@@ -120,7 +134,7 @@ export function App() {
       id: "me",
       label: "我",
       icon: User,
-      badge: hasUpdate || Boolean(p2pRoom) ? "dot" : undefined,
+      badge: (hasUpdate && recommendedMode === "apk") || Boolean(p2pRoom) ? "dot" : undefined,
     },
   ];
 

@@ -334,6 +334,11 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
       }),
     });
 
+    const stageOtaSpy = vi
+      .spyOn(nativeBridge, "downloadAndStageOta")
+      .mockResolvedValue({ ok: true, version: "1.0.10", bundleId: "bbbbbbbbbbbb" });
+    const applyOtaSpy = vi.spyOn(nativeBridge, "applyStagedOta").mockImplementation(() => {});
+
     const srvResult = await useUpdateStore.getState().checkForUpdates(false);
     expect(srvResult.hasUpdate).toBe(true);
     expect(useUpdateStore.getState().recommendedMode).toBe("ota");
@@ -341,6 +346,13 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
       "https://duallane.tsio.top/api/v1/mobile/android/latest-ota.zip"
     );
     expect(srvSpy).toHaveBeenCalledTimes(1);
+    // Non-release OTA hot-updates automatically stage & apply without waiting for user click!
+    await vi.waitFor(() => {
+      expect(stageOtaSpy).toHaveBeenCalledTimes(1);
+      expect(applyOtaSpy).toHaveBeenCalledTimes(1);
+    });
+    stageOtaSpy.mockRestore();
+    applyOtaSpy.mockRestore();
 
     // 2. When minNativeVersionCode exceeds current shell versionCode, safely downgrades to in-app APK install ("apk")
     srvSpy.mockResolvedValueOnce({
@@ -389,17 +401,17 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
         ok: true,
         status: 200,
         bodyText: JSON.stringify({
-          tag_name: "v1.0.13",
-          name: "DualLane Mobile v1.0.13",
+          tag_name: "v1.0.14",
+          name: "DualLane Mobile v1.0.14",
           body: "- 新增功能与性能优化",
           published_at: "2026-11-16T12:00:00Z",
-          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.13",
+          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.14",
           assets: [
             {
               name: "app-release.apk",
               size: 660000,
               browser_download_url:
-                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.13/app-release.apk",
+                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.14/app-release.apk",
             },
           ],
         }),
@@ -951,6 +963,17 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
                   url: "/api/workspace/files/img_1/preview",
                 },
               ],
+              threadReplyCount: 2,
+              threadTitle: "架构演进评审",
+              threadPreviewReplies: [
+                {
+                  id: "tr_1",
+                  authorId: "u_peer",
+                  authorName: "张三",
+                  plainText: "同意按飞书话题卡片落地",
+                  createdAt: "2026-11-16T11:02:00Z",
+                },
+              ],
               createdAt: "2026-11-16T11:00:00Z",
             },
           ],
@@ -1003,6 +1026,13 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     fireEvent.doubleClick(lightboxImg);
     expect(lightboxImg.getAttribute("data-zoom-scale")).toBe("1.0");
     fireEvent.click(screen.getByLabelText("关闭预览"));
+
+    // Feishu-style inline topic preview card & chat header topic directory button & single-line ellipsis watermark
+    expect(screen.getByTestId("feishu-inline-topic-card")).toBeInTheDocument();
+    expect(screen.getByText("2 条话题回复")).toBeInTheDocument();
+    expect(screen.getByText("同意按飞书话题卡片落地")).toBeInTheDocument();
+    expect(screen.getByLabelText("本会话话题列表")).toBeInTheDocument();
+    expect(screen.getByTestId("composer-single-line-watermark")).toHaveClass("truncate");
 
     // Category A5: Huge paste (> 6,000 chars) prompts to send as .txt attachment
     const textarea = screen.getByPlaceholderText("发送消息到 张总监…");

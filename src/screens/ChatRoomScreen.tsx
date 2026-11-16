@@ -102,6 +102,20 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     charCount: number;
     byteSize: number;
   } | null>(null);
+  const [isComposingIme, setIsComposingIme] = useState(false);
+  const [topicsSheetOpen, setTopicsSheetOpen] = useState(false);
+  const [remoteThreads, setRemoteThreads] = useState<
+    Array<{
+      rootMessageId: string;
+      threadTitle?: string;
+      rootAuthorName: string;
+      rootPlainText: string;
+      replyCount: number;
+      lastRepliedAt: string;
+      lastAuthorName: string;
+      lastPlainText: string;
+    }>
+  >([]);
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -486,6 +500,33 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             </div>
           </button>
 
+          {(() => {
+            const localTopicCount = messages.filter(
+              (m) => !m.recalledAt && (m.threadReplyCount || 0) > 0
+            ).length;
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  setTopicsSheetOpen(true);
+                  void mobileApi
+                    .listConversationThreads(conversationId)
+                    .then((res) => setRemoteThreads(res.threads || []))
+                    .catch(() => {});
+                }}
+                aria-label="本会话话题列表"
+                className="relative w-9 h-9 rounded-full flex items-center justify-center text-[var(--dl-text)] active:bg-[var(--dl-card)] shrink-0"
+              >
+                <MessageSquareText size={19} />
+                {localTopicCount > 0 && (
+                  <span className="absolute top-0.5 right-0.5 px-1 min-w-[14px] h-3.5 rounded-full bg-[var(--dl-accent)] text-white text-[9.5px] font-bold flex items-center justify-center tabular-nums">
+                    {localTopicCount}
+                  </span>
+                )}
+              </button>
+            );
+          })()}
+
           <button
             type="button"
             onClick={() => setChatDetailOpen(true)}
@@ -819,28 +860,41 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           </button>
         )}
 
-        <textarea
-          ref={textareaRef}
-          rows={1}
-          enterKeyHint="send"
-          value={textValue}
-          onFocus={() => setStickerOpen(false)}
-          onPaste={handlePaste}
-          onChange={(e) => handleTextChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (
-              e.key === "Enter" &&
-              !e.shiftKey &&
-              !e.nativeEvent.isComposing &&
-              e.keyCode !== 229
-            ) {
-              e.preventDefault();
-              void handleSend();
-            }
-          }}
-          placeholder={uploading ? "正在上传附件…" : `发送消息到 ${displayConvTitle}…`}
-          className="flex-1 max-h-28 py-2 px-3.5 rounded-2xl bg-[var(--dl-card)] text-[15px] text-[var(--dl-text)] outline-none resize-none leading-snug"
-        />
+        <div className="relative flex-1 min-w-0 flex items-center">
+          {!textValue && !isComposingIme && (
+            <span
+              aria-hidden="true"
+              data-testid="composer-single-line-watermark"
+              className="pointer-events-none absolute inset-y-0 left-3.5 right-3.5 flex items-center truncate text-[15px] text-[var(--dl-text-muted)] select-none"
+            >
+              {uploading ? "正在上传附件…" : `发送消息到 ${displayConvTitle}…`}
+            </span>
+          )}
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            enterKeyHint="send"
+            value={textValue}
+            onFocus={() => setStickerOpen(false)}
+            onCompositionStart={() => setIsComposingIme(true)}
+            onCompositionEnd={() => setIsComposingIme(false)}
+            onPaste={handlePaste}
+            onChange={(e) => handleTextChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
+            placeholder={uploading ? "正在上传附件…" : `发送消息到 ${displayConvTitle}…`}
+            className="w-full max-h-28 py-2 px-3.5 rounded-2xl bg-[var(--dl-card)] text-[15px] text-[var(--dl-text)] placeholder:text-transparent outline-none resize-none leading-snug"
+          />
+        </div>
 
         <button
           type="button"
@@ -1059,6 +1113,84 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             </div>
           </div>
         )}
+      </BottomSheet>
+
+      {/* Active Conversation Topics Directory Sheet (Feishu Topic List) */}
+      <BottomSheet
+        open={topicsSheetOpen}
+        onClose={() => setTopicsSheetOpen(false)}
+        title="本会话话题讨论"
+        subtitle="点击任意话题查看讨论串并参与回复"
+        maxHeight="80dvh"
+      >
+        {(() => {
+          const localTopics = messages
+            .filter((m) => !m.recalledAt && (m.threadReplyCount || 0) > 0)
+            .map((m) => {
+              const lastPrev =
+                m.threadPreviewReplies && m.threadPreviewReplies.length > 0
+                  ? m.threadPreviewReplies[m.threadPreviewReplies.length - 1]
+                  : undefined;
+              return {
+                rootMessageId: m.id,
+                threadTitle: m.threadTitle,
+                rootAuthorName: m.senderName,
+                rootPlainText: m.plainText || "[富媒体消息]",
+                replyCount: m.threadReplyCount || 0,
+                lastRepliedAt: m.threadLastRepliedAt || lastPrev?.createdAt || m.createdAt,
+                lastAuthorName: lastPrev?.authorName || "",
+                lastPlainText: lastPrev?.plainText || "",
+              };
+            });
+          const byRoot = new Map(localTopics.map((t) => [t.rootMessageId, t]));
+          for (const rt of remoteThreads) {
+            if (!byRoot.has(rt.rootMessageId)) {
+              byRoot.set(rt.rootMessageId, { ...rt, threadTitle: rt.threadTitle });
+            }
+          }
+          const mergedTopics = Array.from(byRoot.values()).sort(
+            (a, b) => Date.parse(b.lastRepliedAt) - Date.parse(a.lastRepliedAt)
+          );
+
+          return (
+            <div className="p-4 space-y-2.5">
+              {mergedTopics.length === 0 ? (
+                <div className="py-10 text-center text-[13px] text-[var(--dl-text-muted)]">
+                  本会话暂无活跃话题。长按任意消息选择「话题」即可开启串消息讨论。
+                </div>
+              ) : (
+                mergedTopics.map((topic) => (
+                  <button
+                    key={topic.rootMessageId}
+                    type="button"
+                    onClick={() => {
+                      setTopicsSheetOpen(false);
+                      setThreadRootId(topic.rootMessageId);
+                    }}
+                    className="w-full p-3.5 rounded-2xl bg-[var(--dl-card)] text-left space-y-1.5 active:opacity-85 transition-opacity duration-150"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-[14px] font-semibold text-[var(--dl-text)]">
+                        {topic.threadTitle || `${topic.rootAuthorName}: ${topic.rootPlainText}`}
+                      </span>
+                      <span className="shrink-0 px-2 py-0.5 rounded-full bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[11px] font-semibold tabular-nums">
+                        {topic.replyCount} 条回复
+                      </span>
+                    </div>
+                    {topic.lastPlainText && (
+                      <div className="truncate text-[12px] text-[var(--dl-text-muted)] border-l-2 border-[var(--dl-accent)]/40 pl-2">
+                        <span className="font-medium text-[var(--dl-text)]">
+                          {topic.lastAuthorName ? `${topic.lastAuthorName}: ` : ""}
+                        </span>
+                        <span>{topic.lastPlainText}</span>
+                      </div>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          );
+        })()}
       </BottomSheet>
     </div>
   );

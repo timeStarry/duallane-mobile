@@ -316,6 +316,21 @@ class RealtimeHub private constructor(private val appContext: Context) {
                     }
                     return
                 }
+                // Socket sent hello earlier (e.g. background resume) and is awaiting server "ready".
+                // Schedule a 1.8s stale-socket check in case NAT dropped the idle TCP connection.
+                val expectedWs = ws
+                reconnectScheduler.schedule({
+                    var staleWs: WebSocket? = null
+                    synchronized(workspaceLock) {
+                        if (workspaceSocket === expectedWs && workspaceOpen && !workspaceReady) {
+                            staleWs = detachWorkspaceSocketLocked()
+                        }
+                    }
+                    if (staleWs != null) {
+                        runCatching { staleWs!!.cancel() }
+                        ensureWorkspaceConnected()
+                    }
+                }, 1800L, TimeUnit.MILLISECONDS)
                 return
             }
         }

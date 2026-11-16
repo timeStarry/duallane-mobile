@@ -49,6 +49,7 @@ export function DirectTab({
   const [joinInput, setJoinInput] = useState("");
   const [creating, setCreating] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
+  const [isComposingIme, setIsComposingIme] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -400,30 +401,42 @@ export function DirectTab({
         >
           <Smile size={20} />
         </button>
-        <textarea
-          ref={composerRef}
-          rows={1}
-          enterKeyHint="send"
-          value={p2pDraft}
-          onFocus={() => setStickerOpen(false)}
-          onChange={(e) => setP2PDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (
-              e.key === "Enter" &&
-              !e.shiftKey &&
-              !e.nativeEvent.isComposing &&
-              e.keyCode !== 229
-            ) {
-              e.preventDefault();
-              if (p2pDraft.trim()) {
-                composerRef.current?.focus({ preventScroll: true });
-                void sendP2PMessage(p2pDraft);
+        <div className="relative flex-1 min-w-0 flex items-center">
+          {!p2pDraft && !isComposingIme && (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-3 right-3 flex items-center truncate text-[15px] text-[var(--dl-text-muted)] select-none"
+            >
+              发送端到端加密消息…
+            </span>
+          )}
+          <textarea
+            ref={composerRef}
+            rows={1}
+            enterKeyHint="send"
+            value={p2pDraft}
+            onFocus={() => setStickerOpen(false)}
+            onCompositionStart={() => setIsComposingIme(true)}
+            onCompositionEnd={() => setIsComposingIme(false)}
+            onChange={(e) => setP2PDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
+                e.preventDefault();
+                if (p2pDraft.trim()) {
+                  composerRef.current?.focus({ preventScroll: true });
+                  void sendP2PMessage(p2pDraft);
+                }
               }
-            }
-          }}
-          placeholder="发送端到端加密消息…"
-          className="flex-1 max-h-28 py-2 px-3 rounded-2xl bg-[var(--dl-card)] text-[15px] text-[var(--dl-text)] outline-none resize-none"
-        />
+            }}
+            placeholder="发送端到端加密消息…"
+            className="w-full max-h-28 py-2 px-3 rounded-2xl bg-[var(--dl-card)] text-[15px] text-[var(--dl-text)] placeholder:text-transparent outline-none resize-none"
+          />
+        </div>
         <button
           type="button"
           tabIndex={-1}
