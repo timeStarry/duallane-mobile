@@ -55,12 +55,12 @@ function ToggleSwitch({
       aria-label={ariaLabel}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-45 ${
+      className={`relative w-11 h-6 rounded-full transition-colors duration-150 shrink-0 disabled:opacity-45 ${
         checked ? "bg-[var(--dl-accent)]" : "bg-[var(--dl-card)] border border-[var(--dl-border)]"
       }`}
     >
       <span
-        className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-xs transition-transform ${
+        className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-xs transition-transform duration-150 ${
           checked ? "translate-x-5" : "translate-x-0"
         }`}
       />
@@ -95,6 +95,8 @@ export function MeTab() {
   const setDirectOverlayOpen = useNavStore((s) => s.setDirectOverlayOpen);
   const updateSheetOpen = useNavStore((s) => s.updateSheetOpen);
   const setUpdateSheetOpen = useNavStore((s) => s.setUpdateSheetOpen);
+  const meSubSheet = useNavStore((s) => s.meSubSheet);
+  const setMeSubSheet = useNavStore((s) => s.setMeSubSheet);
   const showToast = useNavStore((s) => s.showToast);
 
   const checkingUpdate = useUpdateStore((s) => s.checking);
@@ -112,9 +114,6 @@ export function MeTab() {
   const performApkUpdate = useUpdateStore((s) => s.performApkUpdate);
   const resumePendingApkInstall = useUpdateStore((s) => s.resumePendingApkInstall);
 
-  const [profileSheetOpen, setProfileSheetOpen] = useState(false);
-  const [emailSheetOpen, setEmailSheetOpen] = useState(false);
-  const [devicesOpen, setDevicesOpen] = useState(false);
   const [nicknameDraft, setNicknameDraft] = useState(currentUser?.displayName || "");
   const [devices, setDevices] = useState<UserDeviceSummary[]>([]);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -178,21 +177,18 @@ export function MeTab() {
   }, [emailCooldown]);
 
   useEffect(() => {
-    if (devicesOpen) {
+    if (meSubSheet === "devices") {
       void mobileApi
         .listDevices()
         .then((res) => setDevices(res.devices || []))
         .catch(() => {});
     }
-  }, [devicesOpen]);
+  }, [meSubSheet]);
 
   const handleToggleKeepAlive = (next: boolean) => {
     const updated = nativeBridge.setKeepAliveEnabled(next);
     setBgPushStatus(updated);
-    showToast(
-      next ? "已开启后台常驻实时连接" : "已关闭后台常驻守护",
-      "info"
-    );
+    showToast(next ? "已开启后台常驻实时连接" : "已关闭后台常驻守护", "info");
   };
 
   const handleToggleOfflineEmail = async (next: boolean) => {
@@ -232,7 +228,7 @@ export function MeTab() {
     try {
       await mobileApi.updateMyProfile({ nickname: trimmed });
       await bootstrapWorkspace();
-      setProfileSheetOpen(false);
+      setMeSubSheet(null);
       showToast("个人昵称已更新", "success");
     } catch {
       showToast("保存昵称失败", "danger");
@@ -278,7 +274,7 @@ export function MeTab() {
     setEmailDraft("");
     setEmailCodeDraft("");
     setEmailChallengeId("");
-    setEmailSheetOpen(true);
+    setMeSubSheet("email");
   };
 
   const handleSendBindCode = async () => {
@@ -309,7 +305,7 @@ export function MeTab() {
       const res = await mobileApi.verifyBindEmail(emailChallengeId, code);
       setBoundEmailLocal(res.email || clean);
       setChangingEmail(false);
-      setEmailSheetOpen(false);
+      setMeSubSheet(null);
       showToast("登录邮箱已绑定", "success");
     } catch (err) {
       showToast(err instanceof Error ? err.message : "验证码校验失败", "danger");
@@ -333,26 +329,45 @@ export function MeTab() {
     }
   };
 
+  const activeCollapsedCount = [
+    collapsePrefs.collapseImages,
+    collapsePrefs.collapseStickers,
+    collapsePrefs.collapseLongMessages,
+  ].filter(Boolean).length;
+
+  const notificationSummary = !bgPushStatus.keepAliveEnabled
+    ? "已关闭守护"
+    : !bgPushStatus.notificationsGranted
+    ? "通知待开启"
+    : "常驻守护中";
+
+  const readingSummary =
+    activeCollapsedCount > 0 ? `已折叠 ${activeCollapsedCount} 类` : "默认直接展开";
+
+  const themeModeLabel =
+    preference === "light" ? "浅色" : preference === "dark" ? "深色" : "跟随系统";
+
   return (
     <div className="h-full flex flex-col bg-[var(--dl-bg)]">
-      <header className="pt-[var(--safe-top)] bg-[var(--dl-surface)] dl-glass border-b border-[var(--dl-border)] shrink-0">
+      <header className="pt-[var(--safe-top)] bg-[var(--dl-surface)] border-b border-[var(--dl-border)] shrink-0">
         <div className="h-13 px-4 flex items-center">
           <h1 className="text-[17px] font-bold text-[var(--dl-text)]">我</h1>
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* Profile Card */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
+        {/* 1. Identity Card */}
         <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 flex items-center gap-3.5 shadow-2xs">
           <button
             type="button"
             onClick={() => void handleUploadAvatar()}
-            className="relative shrink-0"
+            aria-label="更换头像"
+            className="relative shrink-0 active:opacity-85 transition-opacity duration-150"
           >
             <Avatar
               name={currentUser?.displayName || "我"}
               src={currentUser?.avatarUrl}
-              size={60}
+              size={58}
             />
             <span className="absolute -bottom-0.5 -right-0.5 w-6 h-6 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center shadow-xs">
               <Camera size={12} />
@@ -363,37 +378,200 @@ export function MeTab() {
               {currentUser?.displayName || "协作成员"}
             </div>
             <div className="text-[12px] text-[var(--dl-text-muted)] truncate">
-              {currentUser?.handle ? `@${currentUser.handle}` : "已通过 GitHub 认证"}
+              {currentUser?.handle ? `@${currentUser.handle}` : "已通过身份认证"}
             </div>
-            <div className="mt-1 text-[11px] text-[var(--dl-text-muted)]">
-              今日传输配额：{formatBytes(quotaUsedBytes)} / {formatBytes(quotaLimitBytes)}
+            <div className="mt-1 text-[11px] text-[var(--dl-text-muted)] tabular-nums">
+              今日配额：{formatBytes(quotaUsedBytes)} / {formatBytes(quotaLimitBytes)}
             </div>
           </div>
           <button
             type="button"
             onClick={() => {
               setNicknameDraft(currentUser?.displayName || "");
-              setProfileSheetOpen(true);
+              setMeSubSheet("profile");
             }}
-            className="px-3 py-1.5 rounded-xl bg-[var(--dl-card)] text-[12px] font-semibold text-[var(--dl-text)]"
+            className="px-3 py-1.5 rounded-xl bg-[var(--dl-card)] text-[12px] font-semibold text-[var(--dl-text)] active:opacity-80 transition-opacity duration-150"
           >
             编辑
           </button>
         </div>
 
-        {/* Notifications & Native Background Keep-Alive Card */}
-        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 space-y-3.5 shadow-2xs">
-          <div className="flex items-center gap-2 text-[14px] font-semibold text-[var(--dl-text)]">
-            <Bell size={16} className="text-[var(--dl-accent)]" />
-            <span>消息通知与后台常驻</span>
-          </div>
+        {/* 2. Primary Capabilities Group */}
+        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] divide-y divide-[var(--dl-border)]/60 overflow-hidden shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setDirectOverlayOpen(true)}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <Lock size={19} className="text-[var(--dl-accent)] shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[15px] font-medium text-[var(--dl-text)]">
+                一对一加密直连
+              </div>
+              <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
+                免加好友临时房间 · 端到端加密传输
+              </div>
+            </div>
+            {p2pRoom && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 text-[11px] font-semibold shrink-0">
+                进行中
+              </span>
+            )}
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
 
+          <button
+            type="button"
+            onClick={() => setStickerStudioOpen(true)}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <Sparkles size={19} className="text-[var(--dl-accent)] shrink-0" />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              表情与贴纸工坊
+            </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setBotManageOpen(true)}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <Bot size={19} className="text-[var(--dl-accent)] shrink-0" />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              我的机器人与解绑管理
+            </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
+        </div>
+
+        {/* 3. Collapsed Secondary Settings Group (Zero Exposed Low-Frequency Toggles) */}
+        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] divide-y divide-[var(--dl-border)]/60 overflow-hidden shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setMeSubSheet("notifications")}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <Bell size={19} className="text-[var(--dl-accent)] shrink-0" />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              消息通知与后台常驻
+            </span>
+            <span className="text-[12px] text-[var(--dl-text-muted)] shrink-0">
+              {notificationSummary}
+            </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMeSubSheet("reading")}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <EyeOff size={19} className="text-[var(--dl-accent)] shrink-0" />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              聊天阅读与自动折叠
+            </span>
+            <span className="text-[12px] text-[var(--dl-text-muted)] tabular-nums shrink-0">
+              {readingSummary}
+            </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMeSubSheet("appearance")}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <Palette size={19} className="text-[var(--dl-accent)] shrink-0" />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              外观与主题
+            </span>
+            <span className="text-[12px] text-[var(--dl-text-muted)] shrink-0">
+              {themeModeLabel} · {DESIGN_TOKENS.accents[accent].label}
+            </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={openEmailSheet}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <Mail size={19} className="text-[var(--dl-accent)] shrink-0" />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              登录邮箱
+            </span>
+            <span className="text-[12px] text-[var(--dl-text-muted)] truncate max-w-[150px]">
+              {boundEmail || "未绑定"}
+            </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMeSubSheet("devices")}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <Laptop size={19} className="text-[var(--dl-accent)] shrink-0" />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              在线设备与会话管理
+            </span>
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setUpdateSheetOpen(true);
+              void checkForUpdates(false);
+            }}
+            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)] transition-colors duration-150"
+          >
+            <RefreshCw
+              size={19}
+              className={`text-[var(--dl-accent)] shrink-0 ${checkingUpdate ? "animate-spin" : ""}`}
+            />
+            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
+              检查更新
+            </span>
+            {hasUpdate && latestRelease ? (
+              <span className="px-2 py-0.5 rounded-full bg-rose-500 text-white text-[11px] font-semibold tabular-nums shrink-0">
+                新版本 v{latestRelease.version}
+              </span>
+            ) : (
+              <span className="text-[12px] text-[var(--dl-text-muted)] font-mono tabular-nums shrink-0">
+                v{snap.appVersion}
+              </span>
+            )}
+            <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
+          </button>
+        </div>
+
+        {/* 4. Sign Out Action */}
+        <button
+          type="button"
+          onClick={() => void logout()}
+          className="w-full py-3.5 rounded-[20px] bg-[var(--dl-surface)] border border-[var(--dl-border)] text-rose-600 dark:text-rose-400 font-semibold text-[14.5px] flex items-center justify-center gap-2 shadow-2xs active:opacity-80 transition-opacity duration-150"
+        >
+          <LogOut size={17} />
+          <span>退出当前账号</span>
+        </button>
+      </div>
+
+      {/* Secondary Sheet: Notifications & Background Keep-Alive */}
+      <BottomSheet
+        open={meSubSheet === "notifications"}
+        onClose={() => setMeSubSheet(null)}
+        title="消息通知与后台常驻"
+        subtitle="管理后台实时推送守护与离线邮件兜底"
+      >
+        <div className="p-4 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[13.5px] font-medium text-[var(--dl-text)]">
+              <div className="text-[14px] font-medium text-[var(--dl-text)]">
                 后台常驻实时连接
               </div>
-              <div className="text-[11px] text-[var(--dl-text-muted)]">
+              <div className="text-[11.5px] text-[var(--dl-text-muted)] mt-0.5">
                 静音守护连接，锁屏或切换网络时即时送达消息
               </div>
             </div>
@@ -404,12 +582,12 @@ export function MeTab() {
             />
           </div>
 
-          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
-            <div className="min-w-0 flex items-center gap-2">
-              <ShieldCheck size={15} className="text-[var(--dl-accent)] shrink-0" />
-              <div>
-                <div className="text-[13.5px] font-medium text-[var(--dl-text)]">系统通知权限</div>
-                <div className="text-[11px] text-[var(--dl-text-muted)]">
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-[var(--dl-border)]/60">
+            <div className="min-w-0 flex items-center gap-2.5">
+              <ShieldCheck size={17} className="text-[var(--dl-accent)] shrink-0" />
+              <div className="min-w-0">
+                <div className="text-[14px] font-medium text-[var(--dl-text)]">系统通知权限</div>
+                <div className="text-[11.5px] text-[var(--dl-text-muted)] mt-0.5">
                   在后台收到新消息或 @提及 时弹出系统通知
                 </div>
               </div>
@@ -422,7 +600,7 @@ export function MeTab() {
               <button
                 type="button"
                 onClick={() => nativeBridge.requestNotificationPermission()}
-                className="px-3 py-1.5 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[12px] font-semibold shrink-0 active:opacity-80"
+                className="px-3 py-1.5 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[12px] font-semibold shrink-0 active:opacity-80 transition-opacity duration-150"
               >
                 去开启
               </button>
@@ -430,14 +608,14 @@ export function MeTab() {
           </div>
 
           {isNative && (
-            <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
-              <div className="min-w-0 flex items-center gap-2">
-                <BatteryCharging size={15} className="text-[var(--dl-accent)] shrink-0" />
-                <div>
-                  <div className="text-[13.5px] font-medium text-[var(--dl-text)]">
+            <div className="flex items-center justify-between gap-3 pt-3 border-t border-[var(--dl-border)]/60">
+              <div className="min-w-0 flex items-center gap-2.5">
+                <BatteryCharging size={17} className="text-[var(--dl-accent)] shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[14px] font-medium text-[var(--dl-text)]">
                     加入省电白名单（防杀后台）
                   </div>
-                  <div className="text-[11px] text-[var(--dl-text-muted)]">
+                  <div className="text-[11.5px] text-[var(--dl-text-muted)] mt-0.5">
                     避免系统休眠冻结后台实时推送通道
                   </div>
                 </div>
@@ -450,7 +628,7 @@ export function MeTab() {
                 <button
                   type="button"
                   onClick={() => nativeBridge.requestIgnoreBatteryOptimizations()}
-                  className="px-3 py-1.5 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[12px] font-semibold shrink-0 active:opacity-80"
+                  className="px-3 py-1.5 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[12px] font-semibold shrink-0 active:opacity-80 transition-opacity duration-150"
                 >
                   一键加入
                 </button>
@@ -458,12 +636,12 @@ export function MeTab() {
             </div>
           )}
 
-          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-[var(--dl-border)]/60">
             <div className="min-w-0">
-              <div className="text-[13.5px] font-medium text-[var(--dl-text)]">
+              <div className="text-[14px] font-medium text-[var(--dl-text)]">
                 离线邮件提醒
               </div>
-              <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
+              <div className="text-[11.5px] text-[var(--dl-text-muted)] truncate mt-0.5">
                 {boundEmail
                   ? `全端离线时发送提醒至 ${boundEmail}`
                   : "绑定登录邮箱后可开启离线邮件兜底提醒"}
@@ -477,20 +655,22 @@ export function MeTab() {
             />
           </div>
         </div>
+      </BottomSheet>
 
-        {/* Chat Reading & Boss-Key Auto-Collapse Card (A1 + A5) */}
-        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 space-y-3 shadow-2xs">
-          <div className="flex items-center gap-2 text-[14px] font-semibold text-[var(--dl-text)]">
-            <EyeOff size={16} className="text-[var(--dl-accent)]" />
-            <span>聊天阅读与自动折叠</span>
-          </div>
-
+      {/* Secondary Sheet: Chat Reading & Auto-Collapse */}
+      <BottomSheet
+        open={meSubSheet === "reading"}
+        onClose={() => setMeSubSheet(null)}
+        title="聊天阅读与自动折叠"
+        subtitle="公共场合防窥折叠与群聊引用习惯"
+      >
+        <div className="p-4 space-y-3.5">
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-[13.5px] font-medium text-[var(--dl-text)]">
+            <div className="min-w-0">
+              <div className="text-[14px] font-medium text-[var(--dl-text)]">
                 群聊回复自动 @对方
               </div>
-              <div className="text-[11px] text-[var(--dl-text-muted)]">
+              <div className="text-[11.5px] text-[var(--dl-text-muted)] mt-0.5">
                 左滑或长按引用群消息时自动带入 @提及
               </div>
             </div>
@@ -501,8 +681,8 @@ export function MeTab() {
             />
           </div>
 
-          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
-            <span className="text-[13.5px] font-medium text-[var(--dl-text)]">折叠图片</span>
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-[var(--dl-border)]/60">
+            <span className="text-[14px] font-medium text-[var(--dl-text)]">默认折叠图片</span>
             <ToggleSwitch
               checked={collapsePrefs.collapseImages}
               onChange={(next) => void updateCollapsePreferences({ collapseImages: next })}
@@ -511,7 +691,7 @@ export function MeTab() {
           </div>
 
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[13.5px] font-medium text-[var(--dl-text)]">折叠贴纸</span>
+            <span className="text-[14px] font-medium text-[var(--dl-text)]">默认折叠贴纸</span>
             <ToggleSwitch
               checked={collapsePrefs.collapseStickers}
               onChange={(next) => void updateCollapsePreferences({ collapseStickers: next })}
@@ -520,8 +700,8 @@ export function MeTab() {
           </div>
 
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[13.5px] font-medium text-[var(--dl-text)]">
-              折叠超长消息 (&gt;12行)
+            <span className="text-[14px] font-medium text-[var(--dl-text)]">
+              默认折叠超长消息 (&gt;12行)
             </span>
             <ToggleSwitch
               checked={collapsePrefs.collapseLongMessages}
@@ -530,11 +710,11 @@ export function MeTab() {
             />
           </div>
 
-          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[var(--dl-border)]/50">
-            <div>
-              <div className="text-[13px] font-medium text-[var(--dl-text)]">仅本机生效</div>
-              <div className="text-[11px] text-[var(--dl-text-muted)]">
-                开启后折叠开关不同步到其他已登录设备
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-[var(--dl-border)]/60">
+            <div className="min-w-0">
+              <div className="text-[13.5px] font-medium text-[var(--dl-text)]">仅本机生效</div>
+              <div className="text-[11.5px] text-[var(--dl-text-muted)] mt-0.5">
+                开启后折叠开关仅作用于当前手机，不同步到桌面端
               </div>
             </div>
             <ToggleSwitch
@@ -544,220 +724,101 @@ export function MeTab() {
             />
           </div>
         </div>
+      </BottomSheet>
 
-        {/* Appearance & Liquid Vibrancy */}
-        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 space-y-4 shadow-2xs">
-          <div className="flex items-center gap-2 text-[14px] font-semibold text-[var(--dl-text)]">
-            <Palette size={16} className="text-[var(--dl-accent)]" />
-            <span>外观与主题</span>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            {(
-              [
-                { id: "system", label: "跟随系统", icon: Smartphone },
-                { id: "light", label: "浅色", icon: Sun },
-                { id: "dark", label: "深色", icon: Moon },
-              ] as const
-            ).map((item) => {
-              const Icon = item.icon;
-              const active = preference === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setPreference(item.id)}
-                  className={`py-2.5 rounded-xl border text-[12px] font-medium flex items-center justify-center gap-1.5 transition ${
-                    active
-                      ? "border-[var(--dl-accent)] bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold"
-                      : "border-[var(--dl-border)] bg-[var(--dl-card)] text-[var(--dl-text-muted)]"
-                  }`}
-                >
-                  <Icon size={14} />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* 5 Accent Colors */}
-          <div className="flex items-center justify-between gap-2 pt-1">
-            {ACCENT_IDS.map((id) => {
-              const cfg = DESIGN_TOKENS.accents[id];
-              const active = accent === id;
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => setAccent(id)}
-                  className={`flex-1 py-2 rounded-xl border flex flex-col items-center gap-1 transition ${
-                    active
-                      ? "border-[var(--dl-accent)] bg-[var(--dl-accent-soft)]"
-                      : "border-[var(--dl-border)] bg-[var(--dl-card)]/60"
-                  }`}
-                >
-                  <span
-                    style={{ backgroundColor: cfg.swatch }}
-                    className="w-5 h-5 rounded-full flex items-center justify-center text-white"
+      {/* Secondary Sheet: Appearance & Theme */}
+      <BottomSheet
+        open={meSubSheet === "appearance"}
+        onClose={() => setMeSubSheet(null)}
+        title="外观与主题"
+        subtitle="深浅外观、主题强调色与面板材质"
+      >
+        <div className="p-4 space-y-4">
+          <div>
+            <div className="text-[12px] font-medium text-[var(--dl-text-muted)] mb-2">
+              深浅外观
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(
+                [
+                  { id: "system", label: "跟随系统", icon: Smartphone },
+                  { id: "light", label: "浅色", icon: Sun },
+                  { id: "dark", label: "深色", icon: Moon },
+                ] as const
+              ).map((item) => {
+                const Icon = item.icon;
+                const active = preference === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setPreference(item.id)}
+                    className={`py-2.5 rounded-xl border text-[12.5px] font-medium flex items-center justify-center gap-1.5 transition-colors duration-150 ${
+                      active
+                        ? "border-[var(--dl-accent)] bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold"
+                        : "border-[var(--dl-border)] bg-[var(--dl-card)] text-[var(--dl-text-muted)]"
+                    }`}
                   >
-                    {active && <Check size={12} />}
-                  </span>
-                  <span className="text-[11px] text-[var(--dl-text)]">{cfg.label}</span>
-                </button>
-              );
-            })}
+                    <Icon size={14} />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Glass vs Solid */}
-          <div className="flex items-center justify-between pt-1">
-            <span className="text-[13px] text-[var(--dl-text-muted)]">液态磨砂材质</span>
-            <button
-              type="button"
-              onClick={() => setTransparency(transparency === "glass" ? "solid" : "glass")}
-              className={`px-3 py-1 rounded-full text-[12px] font-medium ${
-                transparency === "glass"
-                  ? "bg-[var(--dl-accent)] text-white"
-                  : "bg-[var(--dl-card)] text-[var(--dl-text-muted)]"
-              }`}
-            >
-              {transparency === "glass" ? "已开启叠境毛玻璃" : "纯色低功耗"}
-            </button>
+          <div>
+            <div className="text-[12px] font-medium text-[var(--dl-text-muted)] mb-2">
+              主题强调色
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              {ACCENT_IDS.map((id) => {
+                const cfg = DESIGN_TOKENS.accents[id];
+                const active = accent === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setAccent(id)}
+                    className={`flex-1 py-2.5 rounded-xl border flex flex-col items-center gap-1.5 transition-colors duration-150 ${
+                      active
+                        ? "border-[var(--dl-accent)] bg-[var(--dl-accent-soft)]"
+                        : "border-[var(--dl-border)] bg-[var(--dl-card)]/60"
+                    }`}
+                  >
+                    <span
+                      style={{ backgroundColor: cfg.swatch }}
+                      className="w-5 h-5 rounded-full flex items-center justify-center text-white"
+                    >
+                      {active && <Check size={12} />}
+                    </span>
+                    <span className="text-[11px] text-[var(--dl-text)]">{cfg.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
 
-        {/* Feature Entries */}
-        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] divide-y divide-[var(--dl-border)]/60 overflow-hidden shadow-2xs">
-          <button
-            type="button"
-            onClick={() => setDirectOverlayOpen(true)}
-            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
-          >
-            <Lock size={19} className="text-[var(--dl-accent)]" />
-            <div className="flex-1 min-w-0">
-              <div className="text-[15px] font-medium text-[var(--dl-text)]">
-                一对一加密直连
-              </div>
-              <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
-                免加好友临时房间 · 端到端加密传输
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-[var(--dl-border)]/60">
+            <div className="min-w-0">
+              <div className="text-[14px] font-medium text-[var(--dl-text)]">浮层磨砂材质</div>
+              <div className="text-[11.5px] text-[var(--dl-text-muted)] mt-0.5">
+                低功耗模式下关闭浮动栏毛玻璃模糊
               </div>
             </div>
-            {p2pRoom && (
-              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 text-[11px] font-semibold">
-                进行中
-              </span>
-            )}
-            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setStickerStudioOpen(true)}
-            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
-          >
-            <Sparkles size={19} className="text-[var(--dl-accent)]" />
-            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
-              表情与贴纸工坊
-            </span>
-            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setBotManageOpen(true)}
-            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
-          >
-            <Bot size={19} className="text-[var(--dl-accent)]" />
-            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
-              我的机器人与解绑管理
-            </span>
-            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
-          </button>
-
-          <button
-            type="button"
-            onClick={openEmailSheet}
-            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
-          >
-            <Mail size={19} className="text-[var(--dl-accent)]" />
-            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
-              登录邮箱
-            </span>
-            <span className="text-[12px] text-[var(--dl-text-muted)] truncate max-w-[155px]">
-              {boundEmail || "未绑定"}
-            </span>
-            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setDevicesOpen(true)}
-            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
-          >
-            <Laptop size={19} className="text-[var(--dl-accent)]" />
-            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
-              在线设备与会话管理
-            </span>
-            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setUpdateSheetOpen(true);
-              void checkForUpdates(false);
-            }}
-            className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-[var(--dl-card)]"
-          >
-            <RefreshCw
-              size={19}
-              className={`text-[var(--dl-accent)] ${checkingUpdate ? "animate-spin" : ""}`}
+            <ToggleSwitch
+              checked={transparency === "glass"}
+              onChange={(next) => setTransparency(next ? "glass" : "solid")}
+              ariaLabel="液态磨砂材质"
             />
-            <span className="flex-1 text-[15px] font-medium text-[var(--dl-text)]">
-              检查更新
-            </span>
-            {hasUpdate && latestRelease ? (
-              <span className="px-2 py-0.5 rounded-full bg-rose-500 text-white text-[11px] font-semibold">
-                新版本 v{latestRelease.version}
-              </span>
-            ) : (
-              <span className="text-[12px] text-[var(--dl-text-muted)] font-mono">
-                v{snap.appVersion}
-              </span>
-            )}
-            <ChevronRight size={17} className="text-[var(--dl-text-muted)]" />
-          </button>
-        </div>
-
-        {/* Version & Logout */}
-        <div className="rounded-[24px] bg-[var(--dl-surface)] border border-[var(--dl-border)] p-4 space-y-3 shadow-2xs">
-          <div className="flex items-center justify-between text-[12px] text-[var(--dl-text-muted)]">
-            <span>当前服务节点</span>
-            <span className="font-mono text-[var(--dl-text)]">
-              {snap.apiOrigin.replace(/^https?:\/\//, "")}
-            </span>
           </div>
-          <div className="flex items-center justify-between text-[12px] text-[var(--dl-text-muted)]">
-            <span>客户端版本</span>
-            <span className="font-mono text-[var(--dl-text)]">
-              v{snap.appVersion} ({snap.versionCode})
-            </span>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className="w-full mt-2 py-3 rounded-2xl bg-rose-500/12 text-rose-600 dark:text-rose-400 font-semibold text-[14px] flex items-center justify-center gap-2 active:opacity-80"
-          >
-            <LogOut size={17} />
-            <span>退出当前账号</span>
-          </button>
         </div>
-      </div>
+      </BottomSheet>
 
       {/* Edit Profile Sheet */}
       <BottomSheet
-        open={profileSheetOpen}
-        onClose={() => setProfileSheetOpen(false)}
+        open={meSubSheet === "profile"}
+        onClose={() => setMeSubSheet(null)}
         title="编辑个人资料"
       >
         <div className="p-4 space-y-4">
@@ -794,8 +855,8 @@ export function MeTab() {
 
       {/* Bound Login Email Sheet */}
       <BottomSheet
-        open={emailSheetOpen}
-        onClose={() => setEmailSheetOpen(false)}
+        open={meSubSheet === "email"}
+        onClose={() => setMeSubSheet(null)}
         title="登录邮箱"
         subtitle="绑定后可使用邮箱验证码快捷登录"
       >
@@ -865,13 +926,13 @@ export function MeTab() {
                     setEmailCodeDraft(e.target.value.replace(/\D/g, "").slice(0, 6))
                   }
                   placeholder="6 位数字验证码"
-                  className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] font-mono tracking-widest text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
+                  className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] font-mono tabular-nums tracking-widest text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
                 />
                 <button
                   type="button"
                   disabled={emailBusy || emailCooldown > 0 || !emailDraft.trim()}
                   onClick={() => void handleSendBindCode()}
-                  className="px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[12.5px] font-semibold text-[var(--dl-accent)] shrink-0 disabled:opacity-50"
+                  className="px-3.5 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[12.5px] font-semibold text-[var(--dl-accent)] tabular-nums shrink-0 disabled:opacity-50"
                 >
                   {emailCooldown > 0 ? `${emailCooldown}s` : "获取验证码"}
                 </button>
@@ -908,8 +969,8 @@ export function MeTab() {
 
       {/* Active Devices Sheet */}
       <BottomSheet
-        open={devicesOpen}
-        onClose={() => setDevicesOpen(false)}
+        open={meSubSheet === "devices"}
+        onClose={() => setMeSubSheet(null)}
         title="已登录设备管理"
         subtitle="可随时吊销其他终端的访问会话"
       >
@@ -933,7 +994,7 @@ export function MeTab() {
                       </span>
                     )}
                   </div>
-                  <div className="text-[11px] text-[var(--dl-text-muted)] mt-0.5">
+                  <div className="text-[11px] text-[var(--dl-text-muted)] mt-0.5 tabular-nums">
                     最近活跃：{new Date(d.lastActiveAt).toLocaleString("zh-CN")}
                   </div>
                 </div>
@@ -957,9 +1018,10 @@ export function MeTab() {
         open={updateSheetOpen}
         onClose={() => setUpdateSheetOpen(false)}
         title="检查版本更新"
-        subtitle={`当前版本 v${snap.appVersion} · 原生底座 ${snap.versionCode}${
-          snap.otaActive ? " · 热更生效中" : ""
-        }`}
+        subtitle={`v${snap.appVersion} (${snap.versionCode}) · ${snap.apiOrigin.replace(
+          /^https?:\/\//,
+          ""
+        )}${snap.otaActive ? " · 热更生效中" : ""}`}
       >
         <div className="p-4 space-y-4">
           {checkingUpdate ? (
@@ -1000,7 +1062,7 @@ export function MeTab() {
                           </span>
                         )}
                       </div>
-                      <div className="text-[11px] text-[var(--dl-text-muted)] mt-1">
+                      <div className="text-[11px] text-[var(--dl-text-muted)] mt-1 tabular-nums">
                         最新版本 v{latestRelease.version}
                         {recommendedMode === "ota" && latestRelease.ota?.byteSize
                           ? ` · 热更包 ${formatBytes(latestRelease.ota.byteSize)}`
@@ -1037,15 +1099,18 @@ export function MeTab() {
                             ? "正在应用内拉取秒级热更包…"
                             : "正在应用内下载更新安装包…"}
                         </span>
-                        <span className="font-mono text-[11px] text-[var(--dl-accent)] font-semibold">
+                        <span className="font-mono text-[11px] text-[var(--dl-accent)] font-semibold tabular-nums">
                           {Math.max(0, Math.min(100, updateProgress.percent))}%
                         </span>
                       </div>
                       <div className="h-2 w-full rounded-full bg-[var(--dl-surface)] overflow-hidden">
                         <div
-                          className="h-full rounded-full bg-[var(--dl-accent)] transition-all duration-150"
+                          className="h-full w-full rounded-full bg-[var(--dl-accent)] origin-left transition-transform duration-150"
                           style={{
-                            width: `${Math.max(4, Math.min(100, updateProgress.percent))}%`,
+                            transform: `scaleX(${Math.max(
+                              0.04,
+                              Math.min(1, updateProgress.percent / 100)
+                            )})`,
                           }}
                         />
                       </div>
@@ -1063,7 +1128,7 @@ export function MeTab() {
                             showToast(res.error, "danger");
                           }
                         }}
-                        className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 disabled:opacity-55 active:opacity-90"
+                        className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 disabled:opacity-55 active:opacity-90 transition-opacity duration-150"
                       >
                         <Sparkles size={16} />
                         <span>
@@ -1105,7 +1170,7 @@ export function MeTab() {
                         <button
                           type="button"
                           onClick={() => void resumePendingApkInstall()}
-                          className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 active:opacity-90"
+                          className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 active:opacity-90 transition-opacity duration-150"
                         >
                           <Download size={16} />
                           <span>安装包已就绪 · 调起系统安装器</span>
@@ -1120,7 +1185,7 @@ export function MeTab() {
                               showToast("请开启允许安装此来源应用，返回后自动安装", "info");
                             }
                           }}
-                          className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 disabled:opacity-55 active:opacity-90"
+                          className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 disabled:opacity-55 active:opacity-90 transition-opacity duration-150"
                         >
                           <Download size={16} />
                           <span>

@@ -389,17 +389,17 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
         ok: true,
         status: 200,
         bodyText: JSON.stringify({
-          tag_name: "v1.0.11",
-          name: "DualLane Mobile v1.0.11",
+          tag_name: "v1.0.12",
+          name: "DualLane Mobile v1.0.12",
           body: "- 新增功能与性能优化",
           published_at: "2026-11-16T12:00:00Z",
-          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.11",
+          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.12",
           assets: [
             {
               name: "app-release.apk",
               size: 660000,
               browser_download_url:
-                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.11/app-release.apk",
+                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.12/app-release.apk",
             },
           ],
         }),
@@ -1019,14 +1019,50 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     expect(uploadTxtSpy).toHaveBeenCalledTimes(1);
     expect(sendMsgSpy).toHaveBeenCalledTimes(1);
 
-    // Switch to MeTab and check Background KeepAlive & Collapse cards
+    // Continuous messaging: tapping Send prevents pointer/mouse blur and keeps textarea focused
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+    fireEvent.change(textarea, { target: { value: "测试连续发送不收起输入法" } });
+    const sendBtn = screen.getByLabelText("发送消息");
+    const pointerDownAllowed = fireEvent.pointerDown(sendBtn);
+    const mouseDownAllowed = fireEvent.mouseDown(sendBtn);
+    expect(pointerDownAllowed).toBe(false);
+    expect(mouseDownAllowed).toBe(false);
+    await act(async () => {
+      fireEvent.click(sendBtn);
+    });
+    expect(sendMsgSpy).toHaveBeenCalledTimes(2);
+    expect(document.activeElement).toBe(textarea);
+
+    // Switch to MeTab: verify zero flat switch sprawl on root MeTab & secondary sheet navigation
     act(() => {
       useNavStore.getState().closeChat();
       useNavStore.getState().setActiveTab("me");
     });
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    expect(screen.queryByText("后台常驻实时连接")).not.toBeInTheDocument();
     expect(screen.getByText("消息通知与后台常驻")).toBeInTheDocument();
-    expect(screen.getByText("后台常驻实时连接")).toBeInTheDocument();
     expect(screen.getByText("聊天阅读与自动折叠")).toBeInTheDocument();
+    expect(screen.getByText("外观与主题")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("消息通知与后台常驻"));
+    expect(useNavStore.getState().meSubSheet).toBe("notifications");
+    expect(screen.getByText("后台常驻实时连接")).toBeInTheDocument();
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+
+    act(() => {
+      expect(useNavStore.getState().popBack()).toBe(true);
+    });
+    expect(useNavStore.getState().meSubSheet).toBeNull();
+
+    fireEvent.click(screen.getByText("聊天阅读与自动折叠"));
+    expect(useNavStore.getState().meSubSheet).toBe("reading");
+    expect(screen.getAllByRole("switch")).toHaveLength(5);
+
+    act(() => {
+      expect(useNavStore.getState().popBack()).toBe(true);
+    });
+    expect(useNavStore.getState().meSubSheet).toBeNull();
     unmount();
 
     // Category B3: Recent 8 unicode emojis persisted in StickerDrawer

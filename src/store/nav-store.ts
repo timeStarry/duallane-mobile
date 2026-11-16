@@ -2,6 +2,14 @@ import { create } from "zustand";
 import { nativeBridge } from "@/native/bridge";
 
 export type MobileTabId = "chats" | "contacts" | "me";
+export type MeSubSheetId =
+  | "profile"
+  | "notifications"
+  | "reading"
+  | "appearance"
+  | "email"
+  | "devices"
+  | null;
 
 export interface ToastNotice {
   id: string;
@@ -28,6 +36,7 @@ interface NavState {
   searchOpen: boolean;
   directOverlayOpen: boolean;
   updateSheetOpen: boolean;
+  meSubSheet: MeSubSheetId;
 
   // Sheets & Modals
   actionMessageId: string | null;
@@ -52,6 +61,7 @@ interface NavState {
   setSearchOpen: (open: boolean) => void;
   setDirectOverlayOpen: (open: boolean) => void;
   setUpdateSheetOpen: (open: boolean) => void;
+  setMeSubSheet: (sheet: MeSubSheetId) => void;
 
   setActionMessageId: (messageId: string | null) => void;
   setThreadRootId: (rootId: string | null) => void;
@@ -84,6 +94,7 @@ export const useNavStore = create<NavState>((set, get) => ({
   searchOpen: false,
   directOverlayOpen: false,
   updateSheetOpen: false,
+  meSubSheet: null,
 
   actionMessageId: null,
   threadRootId: null,
@@ -107,7 +118,13 @@ export const useNavStore = create<NavState>((set, get) => ({
 
   setActiveTab: (activeTab) => {
     nativeBridge.haptic("selection");
-    set({ activeTab, activeChatId: null, searchOpen: false, directOverlayOpen: false });
+    set({
+      activeTab,
+      activeChatId: null,
+      searchOpen: false,
+      directOverlayOpen: false,
+      meSubSheet: null,
+    });
     syncHardwareBack(get());
   },
 
@@ -147,6 +164,11 @@ export const useNavStore = create<NavState>((set, get) => ({
 
   setUpdateSheetOpen: (updateSheetOpen) => {
     set({ updateSheetOpen });
+    syncHardwareBack(get());
+  },
+
+  setMeSubSheet: (meSubSheet) => {
+    set({ meSubSheet });
     syncHardwareBack(get());
   },
 
@@ -229,6 +251,7 @@ export const useNavStore = create<NavState>((set, get) => ({
         s.lightboxMedia ||
         s.serverConfigOpen ||
         s.updateSheetOpen ||
+        s.meSubSheet ||
         s.actionMessageId ||
         s.forwardingMessageIds ||
         s.sharedPackId ||
@@ -265,6 +288,11 @@ export const useNavStore = create<NavState>((set, get) => ({
     }
     if (s.updateSheetOpen) {
       set({ updateSheetOpen: false });
+      syncHardwareBack(get());
+      return true;
+    }
+    if (s.meSubSheet) {
+      set({ meSubSheet: null });
       syncHardwareBack(get());
       return true;
     }

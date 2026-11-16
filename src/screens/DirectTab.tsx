@@ -50,6 +50,7 @@ export function DirectTab({
   const [creating, setCreating] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (listRef.current) {
@@ -400,18 +401,44 @@ export function DirectTab({
           <Smile size={20} />
         </button>
         <textarea
+          ref={composerRef}
           rows={1}
+          enterKeyHint="send"
           value={p2pDraft}
+          onFocus={() => setStickerOpen(false)}
           onChange={(e) => setP2PDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              !e.nativeEvent.isComposing &&
+              e.keyCode !== 229
+            ) {
+              e.preventDefault();
+              if (p2pDraft.trim()) {
+                composerRef.current?.focus({ preventScroll: true });
+                void sendP2PMessage(p2pDraft);
+              }
+            }
+          }}
           placeholder="发送端到端加密消息…"
           className="flex-1 max-h-28 py-2 px-3 rounded-2xl bg-[var(--dl-card)] text-[15px] text-[var(--dl-text)] outline-none resize-none"
         />
         <button
           type="button"
-          disabled={!p2pDraft.trim()}
-          onClick={() => void sendP2PMessage(p2pDraft)}
+          tabIndex={-1}
+          aria-disabled={!p2pDraft.trim()}
+          onPointerDown={(e) => e.preventDefault()}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            if (!p2pDraft.trim()) return;
+            composerRef.current?.focus({ preventScroll: true });
+            void sendP2PMessage(p2pDraft);
+          }}
           aria-label="发送直连消息"
-          className="w-9 h-9 rounded-full bg-amber-500 text-white flex items-center justify-center disabled:opacity-40 shrink-0"
+          className={`w-9 h-9 rounded-full bg-amber-500 text-white flex items-center justify-center shrink-0 transition-transform duration-150 ${
+            !p2pDraft.trim() ? "opacity-40 pointer-events-none" : "active:scale-95"
+          }`}
         >
           <Send size={16} />
         </button>

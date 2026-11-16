@@ -5,8 +5,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val resolvedVersionName = System.getenv("DUALLANE_APP_VERSION")?.takeIf { it.isNotBlank() } ?: "1.0.10"
-val resolvedVersionCode = System.getenv("DUALLANE_ANDROID_VERSION_CODE")?.toIntOrNull() ?: 10010
+val resolvedVersionName = System.getenv("DUALLANE_APP_VERSION")?.takeIf { it.isNotBlank() } ?: "1.0.11"
+val resolvedVersionCode = System.getenv("DUALLANE_ANDROID_VERSION_CODE")?.toIntOrNull() ?: 10011
 
 val keystorePath = System.getenv("DUALLANE_ANDROID_KEYSTORE")?.takeIf { it.isNotBlank() }
 val keystoreStorePassword = System.getenv("DUALLANE_ANDROID_STORE_PASSWORD")

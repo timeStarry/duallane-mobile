@@ -339,14 +339,19 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
   const handleSend = async () => {
     const trimmed = textValue.trim();
-    if (!trimmed) return;
+    if (!trimmed || uploading) return;
+    // Keep soft keyboard open continuously like native chat apps (prevent WebView blur)
+    textareaRef.current?.focus({ preventScroll: true });
     nativeBridge.haptic("light");
     if (editingMsg) {
       setDraft(conversationId, "", "");
+      textareaRef.current?.focus({ preventScroll: true });
       await editWorkspaceMessage(conversationId, editingMsg.id, trimmed);
       return;
     }
-    await sendWorkspaceMessage(conversationId, trimmed, replyToId);
+    const sendPromise = sendWorkspaceMessage(conversationId, trimmed, replyToId);
+    textareaRef.current?.focus({ preventScroll: true });
+    await sendPromise;
   };
 
   const handleUploadPick = async (mode: "image" | "file") => {
@@ -618,6 +623,9 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             <button
               key={u.id}
               type="button"
+              tabIndex={-1}
+              onPointerDown={(e) => e.preventDefault()}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => insertMention(u.id, u.displayName)}
               className="w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left active:bg-[var(--dl-card)]"
             >
@@ -659,11 +667,14 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             <button
               key={`${cmd.botId || "b"}_${cmd.command}`}
               type="button"
+              tabIndex={-1}
+              onPointerDown={(e) => e.preventDefault()}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 const token = cmd.command.startsWith("/") ? cmd.command : `/${cmd.command}`;
                 setDraft(conversationId, `${token} `, replyToId);
                 setSlashOpen(false);
-                textareaRef.current?.focus();
+                textareaRef.current?.focus({ preventScroll: true });
               }}
               className="w-full px-3.5 py-2.5 flex items-center justify-between gap-3 text-left active:bg-[var(--dl-card)]"
             >
@@ -758,6 +769,9 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           </div>
           <button
             type="button"
+            tabIndex={-1}
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               if (editingMsg) {
                 setEditingMessageId(null);
@@ -808,12 +822,18 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         <textarea
           ref={textareaRef}
           rows={1}
+          enterKeyHint="send"
           value={textValue}
           onFocus={() => setStickerOpen(false)}
           onPaste={handlePaste}
           onChange={(e) => handleTextChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              !e.nativeEvent.isComposing &&
+              e.keyCode !== 229
+            ) {
               e.preventDefault();
               void handleSend();
             }
@@ -826,7 +846,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           type="button"
           onClick={() => setStickerOpen((v) => !v)}
           aria-label="表情与贴纸"
-          className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+          className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-colors duration-150 ${
             stickerOpen
               ? "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]"
               : "text-[var(--dl-text-muted)] active:bg-[var(--dl-card)]"
@@ -837,10 +857,17 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
         <button
           type="button"
-          disabled={!textValue.trim() || uploading}
+          tabIndex={-1}
+          aria-disabled={!textValue.trim() || uploading}
+          onPointerDown={(e) => e.preventDefault()}
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => void handleSend()}
           aria-label="发送消息"
-          className="w-9 h-9 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center disabled:opacity-40 active:scale-95 transition shrink-0"
+          className={`w-9 h-9 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center shrink-0 transition-transform duration-150 ${
+            !textValue.trim() || uploading
+              ? "opacity-40 pointer-events-none"
+              : "active:scale-95"
+          }`}
         >
           <Send size={16} />
         </button>

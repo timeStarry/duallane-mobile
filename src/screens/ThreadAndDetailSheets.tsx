@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
   Bell,
@@ -79,6 +79,7 @@ export function ThreadAndDetailSheets() {
   const [remarkTargetId, setRemarkTargetId] = useState<string | null>(null);
   const [remarkDraft, setRemarkDraft] = useState("");
   const [savingRemark, setSavingRemark] = useState(false);
+  const threadInputRef = useRef<HTMLInputElement | null>(null);
 
   const activeConv = activeChatId ? conversations[activeChatId] : undefined;
   const threadView = threadRootId ? threadsByRootId[threadRootId] : undefined;
@@ -216,8 +217,10 @@ export function ThreadAndDetailSheets() {
 
   const handleSendThread = async () => {
     if (!threadRootId || !replyText.trim()) return;
+    threadInputRef.current?.focus({ preventScroll: true });
     const body = replyText.trim();
     setReplyText("");
+    threadInputRef.current?.focus({ preventScroll: true });
     try {
       await sendThreadReply(threadRootId, body, alsoToChannel);
     } catch {
@@ -290,17 +293,34 @@ export function ThreadAndDetailSheets() {
             </label>
             <div className="flex items-center gap-2">
               <input
+                ref={threadInputRef}
                 type="text"
+                enterKeyHint="send"
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Enter" &&
+                    !e.nativeEvent.isComposing &&
+                    e.keyCode !== 229
+                  ) {
+                    e.preventDefault();
+                    void handleSendThread();
+                  }
+                }}
                 placeholder="回复该话题…"
                 className="flex-1 px-3.5 py-2 rounded-xl bg-[var(--dl-card)] text-[14px] text-[var(--dl-text)] outline-none"
               />
               <button
                 type="button"
-                disabled={!replyText.trim()}
+                tabIndex={-1}
+                aria-disabled={!replyText.trim()}
+                onPointerDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => void handleSendThread()}
-                className="w-9 h-9 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center disabled:opacity-40"
+                className={`w-9 h-9 rounded-full bg-[var(--dl-accent)] text-white flex items-center justify-center transition-transform duration-150 ${
+                  !replyText.trim() ? "opacity-40 pointer-events-none" : "active:scale-95"
+                }`}
               >
                 <Send size={15} />
               </button>
