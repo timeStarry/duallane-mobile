@@ -155,6 +155,17 @@ export interface BotConnectionInfo {
   lastErrorAt?: string | null;
 }
 
+export const DEFAULT_BOT_PAIRING_SCOPES = [
+  "messages:read_trigger",
+  "messages:read_context",
+  "messages:send",
+  "cards:write",
+  "cards:act",
+  "commands:receive",
+  "files:read_metadata",
+  "files:write",
+] as const;
+
 export interface BotSetupSession {
   id: string;
   bot?: {
@@ -757,14 +768,31 @@ export const mobileApi = {
       `/api/workspace/bots/${encodeURIComponent(botId)}/connection`
     ),
 
+  updateBotSettings: (botId: string, settings: Record<string, unknown>) =>
+    requestJSON<Record<string, unknown>>(
+      `/api/workspace/bots/${encodeURIComponent(botId)}/settings`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(settings),
+      }
+    ),
+
+  updateBotContextGrant: (
+    botId: string,
+    conversationId: string,
+    patch: { allowTrigger?: boolean; allowContext?: boolean; maxMessages?: number }
+  ) =>
+    requestJSON<Record<string, unknown>>(
+      `/api/workspace/bots/${encodeURIComponent(botId)}/context-grants/${encodeURIComponent(conversationId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }
+    ),
+
   createBotSetupSession: (
     botId: string,
-    requestedScopes: string[] = [
-      "messages:read",
-      "messages:write",
-      "cards:write",
-      "conversations:read",
-    ]
+    requestedScopes: string[] = [...DEFAULT_BOT_PAIRING_SCOPES]
   ) =>
     requestJSON<{ session: BotSetupSession; setupUrl: string }>(
       `/api/workspace/bots/${encodeURIComponent(botId)}/setup-sessions`,

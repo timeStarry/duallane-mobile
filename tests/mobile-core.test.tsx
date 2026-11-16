@@ -389,17 +389,17 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
         ok: true,
         status: 200,
         bodyText: JSON.stringify({
-          tag_name: "v1.0.12",
-          name: "DualLane Mobile v1.0.12",
+          tag_name: "v1.0.13",
+          name: "DualLane Mobile v1.0.13",
           body: "- 新增功能与性能优化",
           published_at: "2026-11-16T12:00:00Z",
-          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.12",
+          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.13",
           assets: [
             {
               name: "app-release.apk",
               size: 660000,
               browser_download_url:
-                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.12/app-release.apk",
+                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.13/app-release.apk",
             },
           ],
         }),
@@ -1063,6 +1063,59 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
       expect(useNavStore.getState().popBack()).toBe(true);
     });
     expect(useNavStore.getState().meSubSheet).toBeNull();
+
+    // Bot management: clicking "复制配对指令" requests valid v1 scopes and copies full Agent prompt
+    const listBotsSpy = vi.spyOn(mobileApi, "listBots").mockResolvedValue([
+      { id: "bot_1", botUserId: "u_bot_1", name: "Astra", status: "active" },
+    ]);
+    const listTokensSpy = vi.spyOn(mobileApi, "listBotTokens").mockResolvedValue({ tokens: [] });
+    const createSetupSpy = vi.spyOn(mobileApi, "createBotSetupSession").mockResolvedValue({
+      session: {
+        id: "setup_abc123",
+        status: "created",
+        bot: { id: "bot_1", botUserId: "u_bot_1", name: "Astra" },
+        requestedScopes: [
+          "messages:read_trigger",
+          "messages:read_context",
+          "messages:send",
+          "cards:write",
+          "cards:act",
+          "commands:receive",
+          "files:read_metadata",
+          "files:write",
+        ],
+        approvedScopes: [],
+        requestedConversations: [],
+        approvedConversations: [],
+        expiresAt: "2099-01-01T00:10:00Z",
+        createdAt: "2099-01-01T00:00:00Z",
+      },
+      setupUrl: "/workspace/account/bot?setup=setup_abc123",
+    });
+    const copySpy = vi.spyOn(nativeBridge, "copyText").mockImplementation(() => {});
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("我的机器人与解绑管理"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Astra"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("复制配对指令"));
+    });
+    expect(createSetupSpy).toHaveBeenCalledWith("bot_1");
+    expect(copySpy).toHaveBeenCalledTimes(1);
+    const copiedPrompt = copySpy.mock.calls[0]?.[0] || "";
+    expect(copiedPrompt).toContain("请接入我的 DualLane 机器人「Astra」");
+    expect(copiedPrompt).toContain("/integrations/duallane-agent.mjs");
+    expect(copiedPrompt).toContain("/workspace?setup=setup_abc123");
+    expect(screen.getByText("已复制配对指令")).toBeInTheDocument();
+    expect(screen.getByText(/配对指令已就绪/)).toBeInTheDocument();
+
+    listBotsSpy.mockRestore();
+    listTokensSpy.mockRestore();
+    createSetupSpy.mockRestore();
+    copySpy.mockRestore();
     unmount();
 
     // Category B3: Recent 8 unicode emojis persisted in StickerDrawer

@@ -8,14 +8,18 @@ import {
   Pause,
   Play,
   Plus,
+  RefreshCw,
   Share2,
+  ShieldCheck,
   Trash2,
   Unplug,
+  X,
 } from "lucide-react";
 import { Avatar, BOT_AVATAR_COLORS } from "@/components/Avatar";
 import { BottomSheet } from "@/components/BottomSheet";
 import { nativeBridge } from "@/native/bridge";
 import {
+  DEFAULT_BOT_PAIRING_SCOPES,
   mobileApi,
   type BotSetupSession,
   type BotTokenRecord,
@@ -26,6 +30,41 @@ import { resolveAssetUrl } from "@/shared/emotes";
 import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
+
+function buildPairingPrompt(botName: string, origin: string, sessionId: string): string {
+  const cleanOrigin = origin.replace(/\/+$/, "") || "https://duallane.tsio.top";
+  const skillUrl = `${cleanOrigin}/integrations/duallane-channel.md`;
+  const runtimeUrl = `${cleanOrigin}/integrations/duallane-agent.mjs`;
+  const setupUrl = `${cleanOrigin}/workspace?setup=${encodeURIComponent(sessionId)}`;
+  return [
+    `请接入我的 DualLane 机器人「${botName}」：`,
+    `1. 先阅读接入规范：${skillUrl}`,
+    `2. 无需 npm，直接从当前实例下载零依赖单文件运行时（含 CLI / MCP / 实时监听）：`,
+    `   mkdir -p ~/.duallane/bin && curl -fsSL "${runtimeUrl}" -o ~/.duallane/bin/duallane-agent.mjs && chmod +x ~/.duallane/bin/duallane-agent.mjs`,
+    `3. 使用一次性配对地址发起绑定（无需手动粘贴 Token）：${setupUrl}`,
+    `发起请求后提醒我点击「确认授权」；授权完成后请运行 node ~/.duallane/bin/duallane-agent.mjs daemon install --profile default --agent auto 注册常驻后台守护服务（支持断线自愈重连、私聊/群聊自动唤醒回复与群聊只读安全隔离）。`,
+  ].join("\n");
+}
+
+function copyTextReliable(text: string): void {
+  nativeBridge.copyText(text);
+  if (!nativeBridge.isNativeAndroid() && typeof document !== "undefined") {
+    try {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.setAttribute("readonly", "true");
+      el.style.position = "fixed";
+      el.style.opacity = "0";
+      el.style.pointerEvents = "none";
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    } catch {
+      // Ignore DOM fallback errors
+    }
+  }
+}
 
 export function StickerAndBotSheets() {
   const stickerStudioOpen = useNavStore((s) => s.stickerStudioOpen);
@@ -66,6 +105,17 @@ export function StickerAndBotSheets() {
   const [selectedBot, setSelectedBot] = useState<MobileBotSummary | null>(null);
   const [botTokens, setBotTokens] = useState<BotTokenRecord[]>([]);
   const [setupSession, setSetupSession] = useState<BotSetupSession | null>(null);
+  const [inlineSetupSession, setInlineSetupSession] = useState<BotSetupSession | null>(null);
+  const [pairingPromptText, setPairingPromptText] = useState("");
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [copiedKind, setCopiedKind] = useState<"" | "prompt" | "url">("");
+
+  const markCopiedKind = (kind: "prompt" | "url") => {
+    setCopiedKind(kind);
+    window.setTimeout(() => {
+      setCopiedKind((prev) => (prev === kind ? "" : prev));
+    }, 2200);
+  };
 
   useEffect(() => {
     if (stickerStudioOpen) void refreshLibrary(true);
@@ -95,16 +145,88 @@ export function StickerAndBotSheets() {
     if (botManageOpen) void reloadBots();
   }, [botManageOpen]);
 
+  const refreshSelectedBotTokens = async (botId: string) => {
+    try {
+      const res = await mobileApi.listBotTokens(botId);
+      setBotTokens((res.tokens || []).filter((t) => !t.revokedAt));
+    } catch {
+      setBotTokens([]);
+    }
+  };
+
   useEffect(() => {
     if (!selectedBot) {
       setBotTokens([]);
+      setInlineSetupSession(null);
+      setPairingPromptText("");
       return;
     }
-    void mobileApi
-      .listBotTokens(selectedBot.id)
-      .then((res) => setBotTokens((res.tokens || []).filter((t) => !t.revokedAt)))
-      .catch(() => setBotTokens([]));
+    void refreshSelectedBotTokens(selectedBot.id);
   }, [selectedBot]);
+
+  // Live-poll inline setup session so Agent pairing request & token exchange show up in real time
+  useEffect(() => {
+    const activeId = inlineSetupSession?.id;
+    const status = inlineSetupSession?.status;
+    if (
+      !activeId ||
+      (status !== "created" && status !== "awaiting_user" && status !== "approved")
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void mobileApi
+        .getBotSetupSession(activeId)
+        .then((res) => {
+          if (!res.session) return;
+          setInlineSetupSession((prev) => {
+            const next = res.session;
+            if (prev?.status !== "exchanged" && next.status === "exchanged") {
+              showToast("Agent 已完成凭证换取并成功绑定！", "success");
+              if (next.bot?.id) {
+                void refreshSelectedBotTokens(next.bot.id);
+              }
+            }
+            return next;
+          });
+        })
+        .catch(() => {});
+    }, 2200);
+    return () => window.clearInterval(timer);
+  }, [inlineSetupSession?.id, inlineSetupSession?.status, showToast]);
+
+  const completeBotApproveFlow = async (session: BotSetupSession) => {
+    const validScopes =
+      session.requestedScopes && session.requestedScopes.length > 0
+        ? session.requestedScopes
+        : [...DEFAULT_BOT_PAIRING_SCOPES];
+    const res = await mobileApi.approveBotSetupSession(session.id, validScopes);
+    const targetBotId = session.bot?.id || selectedBot?.id;
+    const targetBotUserId =
+      session.bot?.botUserId ||
+      bots.find((b) => b.id === targetBotId)?.botUserId ||
+      selectedBot?.botUserId;
+    if (targetBotId && targetBotUserId) {
+      await mobileApi.updateBotSettings(targetBotId, { allowDirect: true }).catch(() => {});
+      const dmRes = await mobileApi.createDirectConversation(targetBotUserId).catch(() => null);
+      const convObj = (dmRes?.conversation || dmRes) as Record<string, unknown> | null;
+      const dmConvId = convObj?.id ? String(convObj.id) : "";
+      if (dmConvId) {
+        await mobileApi
+          .updateBotContextGrant(targetBotId, dmConvId, {
+            allowTrigger: true,
+            allowContext: true,
+            maxMessages: 50,
+          })
+          .catch(() => {});
+      }
+      void bootstrapWorkspace().catch(() => {});
+    }
+    if (targetBotId) {
+      void refreshSelectedBotTokens(targetBotId);
+    }
+    return res.session;
+  };
 
   useEffect(() => {
     if (!botSetupSessionId) {
@@ -362,7 +484,7 @@ export function StickerAndBotSheets() {
           setSelectedBot(null);
         }}
         title={selectedBot ? `管理机器人 · ${selectedBot.name}` : "我的 AI 机器人管理"}
-        subtitle="支持一键生成免 Token 配对链接、换头像、暂停与解绑凭证"
+        subtitle="支持一键生成 Agent 配对指令、换头像、暂停与解绑凭证"
         maxHeight="88dvh"
       >
         <div className="p-4 space-y-4">
@@ -380,13 +502,17 @@ export function StickerAndBotSheets() {
                   type="button"
                   onClick={async () => {
                     if (!newBotName.trim()) return;
-                    await mobileApi.createBot(newBotName.trim());
-                    setNewBotName("");
-                    await reloadBots();
-                    await bootstrapWorkspace();
-                    showToast("机器人创建成功", "success");
+                    try {
+                      await mobileApi.createBot(newBotName.trim());
+                      setNewBotName("");
+                      await reloadBots();
+                      await bootstrapWorkspace();
+                      showToast("机器人创建成功", "success");
+                    } catch (err) {
+                      showToast(err instanceof Error ? err.message : "创建机器人失败", "warning");
+                    }
                   }}
-                  className="px-4 py-2.5 rounded-xl bg-[var(--dl-accent)] text-white text-[13px] font-semibold shrink-0"
+                  className="px-4 py-2.5 rounded-xl bg-[var(--dl-accent)] text-white text-[13px] font-semibold shrink-0 active:opacity-85 transition-opacity duration-150"
                 >
                   创建
                 </button>
@@ -402,7 +528,7 @@ export function StickerAndBotSheets() {
                       key={b.id}
                       type="button"
                       onClick={() => setSelectedBot(b)}
-                      className="w-full p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center gap-3 text-left active:opacity-85"
+                      className="w-full p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center gap-3 text-left active:opacity-85 transition-opacity duration-150"
                     >
                       <Avatar
                         name={b.name}
@@ -427,7 +553,7 @@ export function StickerAndBotSheets() {
                           </span>
                         </div>
                         <div className="text-[12px] text-[var(--dl-text-muted)] truncate mt-0.5">
-                          点击生成配对地址、设置主题色或解绑凭证
+                          点击生成配对指令、设置主题色或解绑凭证
                         </div>
                       </div>
                     </button>
@@ -473,12 +599,19 @@ export function StickerAndBotSheets() {
                       <button
                         type="button"
                         onClick={async () => {
-                          const picked = await nativeBridge.pickMedia("image", false);
-                          if (picked.length === 0) return;
-                          await mobileApi.uploadBotAvatar(selectedBot.id, picked[0].id);
-                          await reloadBots();
-                          await bootstrapWorkspace();
-                          showToast("机器人头像已更新", "success");
+                          try {
+                            const picked = await nativeBridge.pickMedia("image", false);
+                            if (picked.length === 0) return;
+                            await mobileApi.uploadBotAvatar(selectedBot.id, picked[0].id);
+                            await reloadBots();
+                            await bootstrapWorkspace();
+                            showToast("机器人头像已更新", "success");
+                          } catch (err) {
+                            showToast(
+                              err instanceof Error ? err.message : "上传机器人头像失败",
+                              "warning"
+                            );
+                          }
                         }}
                         className="relative"
                       >
@@ -509,11 +642,18 @@ export function StickerAndBotSheets() {
                             <button
                               type="button"
                               onClick={async () => {
-                                await mobileApi.deleteBotAvatar(selectedBot.id);
-                                setSelectedBot({ ...selectedBot, avatarUrl: undefined });
-                                await reloadBots();
-                                await bootstrapWorkspace();
-                                showToast("已恢复默认彩色机器人图标", "success");
+                                try {
+                                  await mobileApi.deleteBotAvatar(selectedBot.id);
+                                  setSelectedBot({ ...selectedBot, avatarUrl: undefined });
+                                  await reloadBots();
+                                  await bootstrapWorkspace();
+                                  showToast("已恢复默认彩色机器人图标", "success");
+                                } catch (err) {
+                                  showToast(
+                                    err instanceof Error ? err.message : "恢复默认图标失败",
+                                    "warning"
+                                  );
+                                }
                               }}
                               className="text-[12px] text-[var(--dl-text-muted)]"
                             >
@@ -552,7 +692,7 @@ export function StickerAndBotSheets() {
                               aria-label={preset.label}
                               onClick={() => void handleSelectBotColor(preset.id)}
                               style={{ backgroundImage: preset.gradient }}
-                              className={`aspect-square rounded-xl flex items-center justify-center text-white shadow-2xs transition ${
+                              className={`aspect-square rounded-xl flex items-center justify-center text-white shadow-2xs transition-transform duration-150 ${
                                 active ? "ring-2 ring-offset-2 ring-[var(--dl-accent)] scale-105" : "opacity-88"
                               }`}
                             >
@@ -569,49 +709,213 @@ export function StickerAndBotSheets() {
               <div className="grid grid-cols-2 gap-2.5">
                 <button
                   type="button"
+                  disabled={pairingBusy}
                   onClick={async () => {
-                    const res = await mobileApi.createBotSetupSession(selectedBot.id);
-                    const fullUrl = res.setupUrl.startsWith("http")
-                      ? res.setupUrl
-                      : `${nativeBridge.getSessionSnapshot().apiOrigin}${res.setupUrl}`;
-                    nativeBridge.copyText(fullUrl);
-                    showToast("一次性免 Token 配对链接已复制", "success");
+                    if (selectedBot.status === "paused") {
+                      showToast("机器人处于暂停状态，请先点击右侧「恢复运行」", "warning");
+                      return;
+                    }
+                    setPairingBusy(true);
+                    try {
+                      const res = await mobileApi.createBotSetupSession(selectedBot.id);
+                      const origin =
+                        nativeBridge.getSessionSnapshot().apiOrigin ||
+                        (typeof window !== "undefined" ? window.location.origin : "") ||
+                        "https://duallane.tsio.top";
+                      const prompt = buildPairingPrompt(selectedBot.name, origin, res.session.id);
+                      setInlineSetupSession(res.session);
+                      setPairingPromptText(prompt);
+                      copyTextReliable(prompt);
+                      markCopiedKind("prompt");
+                      showToast("Agent 配对指令已复制，发给任意 AI 即可接入", "success");
+                    } catch (err) {
+                      showToast(
+                        err instanceof Error ? err.message : "生成配对指令失败，请重试",
+                        "warning"
+                      );
+                    } finally {
+                      setPairingBusy(false);
+                    }
                   }}
-                  className="p-3 rounded-2xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold text-[13px] flex items-center justify-center gap-1.5"
+                  className="p-3 rounded-2xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] font-semibold text-[13px] flex items-center justify-center gap-1.5 disabled:opacity-60 active:opacity-85 transition-opacity duration-150"
                 >
-                  <Link2 size={15} />
-                  <span>复制配对地址</span>
+                  {pairingBusy ? (
+                    <RefreshCw size={15} className="animate-spin" />
+                  ) : copiedKind === "prompt" ? (
+                    <Check size={15} />
+                  ) : (
+                    <Copy size={15} />
+                  )}
+                  <span>
+                    {pairingBusy
+                      ? "生成中…"
+                      : copiedKind === "prompt"
+                      ? "已复制配对指令"
+                      : "复制配对指令"}
+                  </span>
                 </button>
 
                 <button
                   type="button"
                   onClick={async () => {
-                    if (selectedBot.status === "paused") {
-                      await mobileApi.resumeBot(selectedBot.id);
-                      setSelectedBot({ ...selectedBot, status: "active" });
-                      showToast("已恢复机器人收发", "success");
-                    } else {
-                      await mobileApi.pauseBot(selectedBot.id);
-                      setSelectedBot({ ...selectedBot, status: "paused" });
-                      showToast("已暂停机器人", "info");
+                    try {
+                      if (selectedBot.status === "paused") {
+                        await mobileApi.resumeBot(selectedBot.id);
+                        setSelectedBot({ ...selectedBot, status: "active" });
+                        showToast("已恢复机器人收发", "success");
+                      } else {
+                        await mobileApi.pauseBot(selectedBot.id);
+                        setSelectedBot({ ...selectedBot, status: "paused" });
+                        showToast("已暂停机器人", "info");
+                      }
+                      void reloadBots();
+                    } catch (err) {
+                      showToast(
+                        err instanceof Error ? err.message : "切换运行状态失败",
+                        "warning"
+                      );
                     }
-                    void reloadBots();
                   }}
-                  className="p-3 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[13px] flex items-center justify-center gap-1.5"
+                  className="p-3 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[13px] flex items-center justify-center gap-1.5 active:opacity-85 transition-opacity duration-150"
                 >
                   {selectedBot.status === "paused" ? <Play size={15} /> : <Pause size={15} />}
                   <span>{selectedBot.status === "paused" ? "恢复运行" : "暂停接收"}</span>
                 </button>
               </div>
 
+              {/* Inline Pairing Session Prompt & Live Approval Card */}
+              {inlineSetupSession &&
+                inlineSetupSession.status !== "denied" &&
+                inlineSetupSession.status !== "expired" &&
+                inlineSetupSession.status !== "revoked" && (
+                  <div className="p-3.5 rounded-2xl border border-[var(--dl-accent)]/35 bg-[var(--dl-accent-soft)]/35 space-y-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-semibold text-[var(--dl-text)] flex items-center gap-1.5">
+                          <ShieldCheck size={15} className="text-[var(--dl-accent)] shrink-0" />
+                          <span>
+                            {inlineSetupSession.status === "exchanged"
+                              ? "Agent 配对已完成"
+                              : inlineSetupSession.status === "approved"
+                              ? "已授权，等待 Agent 换取凭证…"
+                              : inlineSetupSession.status === "awaiting_user"
+                              ? "收到 Agent 配对请求，请确认授权"
+                              : "配对指令已就绪，等待 Agent 发起请求…"}
+                          </span>
+                        </div>
+                        {inlineSetupSession.clientName && (
+                          <div className="text-[11.5px] text-[var(--dl-text-muted)] mt-0.5">
+                            客户端：{inlineSetupSession.clientName}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="关闭配对卡片"
+                        onClick={() => {
+                          setInlineSetupSession(null);
+                          setPairingPromptText("");
+                        }}
+                        className="p-1 rounded-lg text-[var(--dl-text-muted)] active:bg-[var(--dl-card)]"
+                      >
+                        <X size={15} />
+                      </button>
+                    </div>
+
+                    {pairingPromptText && inlineSetupSession.status === "created" && (
+                      <div className="p-2.5 rounded-xl bg-[var(--dl-surface)] border border-[var(--dl-border)] space-y-2">
+                        <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-[var(--dl-text-muted)] max-h-28 overflow-y-auto select-all">
+                          {pairingPromptText}
+                        </pre>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              copyTextReliable(pairingPromptText);
+                              markCopiedKind("prompt");
+                              showToast("配对指令已复制", "success");
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-[var(--dl-accent)] text-white text-[12px] font-semibold flex items-center gap-1 active:opacity-85 transition-opacity duration-150"
+                          >
+                            {copiedKind === "prompt" ? <Check size={13} /> : <Copy size={13} />}
+                            <span>{copiedKind === "prompt" ? "已复制指令" : "再次复制指令"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const origin =
+                                nativeBridge.getSessionSnapshot().apiOrigin ||
+                                (typeof window !== "undefined" ? window.location.origin : "") ||
+                                "https://duallane.tsio.top";
+                              const url = `${origin.replace(/\/+$/, "")}/workspace?setup=${encodeURIComponent(
+                                inlineSetupSession.id
+                              )}`;
+                              copyTextReliable(url);
+                              markCopiedKind("url");
+                              showToast("一次性配对链接已复制", "success");
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-[var(--dl-card)] text-[var(--dl-text)] text-[12px] font-medium flex items-center gap-1 active:opacity-85 transition-opacity duration-150"
+                          >
+                            {copiedKind === "url" ? <Check size={13} /> : <Link2 size={13} />}
+                            <span>{copiedKind === "url" ? "已复制链接" : "仅复制链接"}</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {(inlineSetupSession.status === "created" ||
+                      inlineSetupSession.status === "awaiting_user") && (
+                      <div className="grid grid-cols-2 gap-2.5 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await mobileApi.denyBotSetupSession(inlineSetupSession.id);
+                              setInlineSetupSession(null);
+                              setPairingPromptText("");
+                              showToast("已取消本次配对会话", "info");
+                            } catch (err) {
+                              showToast(
+                                err instanceof Error ? err.message : "拒绝配对失败",
+                                "warning"
+                              );
+                            }
+                          }}
+                          className="py-2 rounded-xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[12.5px] active:opacity-85 transition-opacity duration-150"
+                        >
+                          取消 / 拒绝
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const next = await completeBotApproveFlow(inlineSetupSession);
+                              setInlineSetupSession(next);
+                              showToast("已确认授权，等待 Agent 完成凭证换取", "success");
+                            } catch (err) {
+                              showToast(
+                                err instanceof Error ? err.message : "确认授权失败",
+                                "warning"
+                              );
+                            }
+                          }}
+                          className="py-2 rounded-xl bg-[var(--dl-accent)] text-white font-semibold text-[12.5px] flex items-center justify-center gap-1 active:opacity-85 transition-opacity duration-150"
+                        >
+                          <Check size={14} /> 确认授权
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
               {/* Active Tokens & Unbind */}
               <div className="space-y-2">
-                <div className="text-[12px] font-semibold text-[var(--dl-text-muted)] flex items-center gap-1">
+                <div className="text-[12px] font-semibold text-[var(--dl-text-muted)] flex items-center gap-1 tabular-nums">
                   <KeyRound size={13} /> 已绑定凭证 ({botTokens.length})
                 </div>
                 {botTokens.length === 0 ? (
                   <div className="p-4 rounded-2xl bg-[var(--dl-card)] text-center text-[12px] text-[var(--dl-text-muted)]">
-                    当前无活跃接入凭证，点击上方「复制配对地址」发给 Agent 即可完成接入
+                    当前无活跃接入凭证，点击上方「复制配对指令」发给 Agent 即可完成接入
                   </div>
                 ) : (
                   botTokens.map((tok) => (
@@ -620,7 +924,7 @@ export function StickerAndBotSheets() {
                       className="p-3 rounded-2xl bg-[var(--dl-card)] flex items-center justify-between gap-2"
                     >
                       <div className="min-w-0">
-                        <div className="text-[13px] font-mono font-semibold text-[var(--dl-text)] truncate">
+                        <div className="text-[13px] font-mono font-semibold text-[var(--dl-text)] truncate tabular-nums">
                           凭证 #{tok.id.slice(0, 8)}
                         </div>
                         <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
@@ -630,11 +934,18 @@ export function StickerAndBotSheets() {
                       <button
                         type="button"
                         onClick={async () => {
-                          await mobileApi.revokeBotToken(selectedBot.id, tok.id);
-                          setBotTokens((prev) => prev.filter((x) => x.id !== tok.id));
-                          showToast("已解绑并吊销该机器人凭证", "success");
+                          try {
+                            await mobileApi.revokeBotToken(selectedBot.id, tok.id);
+                            setBotTokens((prev) => prev.filter((x) => x.id !== tok.id));
+                            showToast("已解绑并吊销该机器人凭证", "success");
+                          } catch (err) {
+                            showToast(
+                              err instanceof Error ? err.message : "解绑凭证失败",
+                              "warning"
+                            );
+                          }
                         }}
-                        className="px-3 py-1.5 rounded-xl bg-rose-500/12 text-rose-500 text-[12px] font-semibold flex items-center gap-1 shrink-0"
+                        className="px-3 py-1.5 rounded-xl bg-rose-500/12 text-rose-500 text-[12px] font-semibold flex items-center gap-1 shrink-0 active:opacity-85 transition-opacity duration-150"
                       >
                         <Unplug size={13} /> 解绑
                       </button>
@@ -670,27 +981,31 @@ export function StickerAndBotSheets() {
               <button
                 type="button"
                 onClick={async () => {
-                  await mobileApi.denyBotSetupSession(setupSession.id);
-                  setBotSetupSessionId(null);
-                  showToast("已拒绝授权请求", "info");
+                  try {
+                    await mobileApi.denyBotSetupSession(setupSession.id);
+                    setBotSetupSessionId(null);
+                    showToast("已拒绝授权请求", "info");
+                  } catch (err) {
+                    showToast(err instanceof Error ? err.message : "拒绝授权失败", "warning");
+                  }
                 }}
-                className="py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[14px]"
+                className="py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[14px] active:opacity-85 transition-opacity duration-150"
               >
                 拒绝
               </button>
               <button
                 type="button"
                 onClick={async () => {
-                  await mobileApi.approveBotSetupSession(
-                    setupSession.id,
-                    setupSession.requestedScopes || ["messages:read", "messages:write"]
-                  );
-                  setBotSetupSessionId(null);
-                  showToast("已完成授权绑定！", "success");
+                  try {
+                    await completeBotApproveFlow(setupSession);
+                    setBotSetupSessionId(null);
+                    showToast("已完成授权绑定！", "success");
+                  } catch (err) {
+                    showToast(err instanceof Error ? err.message : "确认授权失败", "warning");
+                  }
                 }}
-                className="py-2.5 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-1.5"
+                className="py-2.5 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-1.5 active:opacity-85 transition-opacity duration-150"
               >
-                <Copy size={14} className="hidden" />
                 <Check size={16} /> 确认授权
               </button>
             </div>

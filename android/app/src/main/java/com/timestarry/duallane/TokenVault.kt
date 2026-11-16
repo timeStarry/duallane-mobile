@@ -232,7 +232,7 @@ class TokenVault(private val appContext: Context) {
     }
 
     private object BuildConfigFallback {
-        const val VERSION_NAME = "1.0.11"
+        const val VERSION_NAME = "1.0.12"
         const val VERSION_CODE = 10009
     }
 
