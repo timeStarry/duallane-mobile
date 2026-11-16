@@ -1,4 +1,5 @@
 import { ArrowUpRight, Megaphone } from "lucide-react";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { nativeBridge } from "@/native/bridge";
 import { useWorkspaceStore } from "@/store/workspace-store";
 
@@ -72,9 +73,7 @@ export function AnnouncementModal() {
         </div>
 
         <div className="px-5 pb-5 max-h-[48vh] overflow-y-auto">
-          <div className="whitespace-pre-line text-[14px] leading-[1.68] text-[var(--dl-text-muted)]">
-            {systemAnnouncement.content}
-          </div>
+          <MarkdownContent content={systemAnnouncement.content} />
         </div>
 
         <div className="px-5 py-3.5 bg-[var(--dl-card)]/70 border-t border-[var(--dl-border)]/70 flex items-center gap-2.5">

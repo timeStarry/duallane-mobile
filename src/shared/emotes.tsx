@@ -50,9 +50,12 @@ export function resolveAssetUrl(pathOrUrl: string | undefined): string {
   const normalized = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
   if (
     nativeBridge.isNativeAndroid() &&
-    (normalized.startsWith("/api/") || normalized.startsWith("/emotes/"))
+    (normalized.startsWith("/api/") ||
+      normalized.startsWith("/emotes/") ||
+      normalized === "/assets/beacon-avatar.png" ||
+      normalized === "/assets/echo-avatar.svg")
   ) {
-    // Native OkHttp shouldInterceptRequest proxies /api/* and /emotes/* with auth & disk cache!
+    // Native OkHttp shouldInterceptRequest proxies with auth & persistent MediaDiskCache!
     return normalized;
   }
   const origin = nativeBridge.getSessionSnapshot().apiOrigin.replace(/\/+$/, "");

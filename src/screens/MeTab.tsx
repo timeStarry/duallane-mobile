@@ -20,13 +20,14 @@ import {
 } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { BottomSheet } from "@/components/BottomSheet";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { nativeBridge } from "@/native/bridge";
 import { mobileApi } from "@/shared/api";
 import type { UserDeviceSummary } from "@/shared/card-kit";
 import { formatBytes } from "@/shared/format";
 import { useThemeStore } from "@/shared/theme-store";
 import { ACCENT_IDS, DESIGN_TOKENS } from "@/shared/tokens";
-import { GITHUB_RELEASES_PAGE_URL, useUpdateStore } from "@/shared/updater";
+import { useUpdateStore } from "@/shared/updater";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
 
@@ -701,13 +702,18 @@ export function MeTab() {
               </div>
 
               {latestRelease.notes && (
-                <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] max-h-48 overflow-y-auto">
-                  <div className="text-[11px] font-semibold text-[var(--dl-text-muted)] mb-1.5">
-                    版本说明
+                <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] max-h-52 overflow-y-auto">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-semibold text-[var(--dl-text-muted)]">
+                      版本说明
+                    </span>
+                    {latestRelease.source === "server" && (
+                      <span className="px-2 py-0.5 rounded-full bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[10px] font-semibold">
+                        当前节点直发
+                      </span>
+                    )}
                   </div>
-                  <div className="text-[12.5px] leading-relaxed text-[var(--dl-text)] whitespace-pre-wrap">
-                    {latestRelease.notes}
-                  </div>
+                  <MarkdownContent content={latestRelease.notes} />
                 </div>
               )}
 
@@ -748,13 +754,14 @@ export function MeTab() {
               type="button"
               onClick={() =>
                 nativeBridge.openExternalUrl(
-                  latestRelease?.htmlUrl || GITHUB_RELEASES_PAGE_URL
+                  latestRelease?.apkUrl ||
+                    `${snap.apiOrigin.replace(/\/+$/, "")}/api/v1/mobile/android/latest.apk`
                 )
               }
               className="py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text-muted)] font-semibold text-[13px] flex items-center justify-center gap-1.5"
             >
               <ExternalLink size={14} />
-              <span>历史发布页</span>
+              <span>直链下载包</span>
             </button>
           </div>
         </div>

@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Base64
 import android.webkit.WebResourceResponse
 import okhttp3.Cache
+import okhttp3.Dispatcher
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -31,8 +32,15 @@ class NetworkGateway(
 ) {
     private val refreshLock = Any()
     private val secureRandom = SecureRandom()
+    val mediaDiskCache = MediaDiskCache(appContext)
 
     val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .dispatcher(
+            Dispatcher().apply {
+                maxRequests = 64
+                maxRequestsPerHost = 24
+            }
+        )
         .cache(Cache(File(appContext.cacheDir, "duallane_http_cache"), 64L * 1024L * 1024L))
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
@@ -256,6 +264,9 @@ class NetworkGateway(
                 )
             }
         }
+        if (response.optBoolean("ok") && method.equals("DELETE", ignoreCase = true) && path.contains("/avatar")) {
+            mediaDiskCache.invalidateMatching { it.contains("/avatar") }
+        }
         return response
     }
 
@@ -307,24 +318,248 @@ class NetworkGateway(
         }
     }
 
-    fun interceptWebViewRequest(url: Uri): WebResourceResponse? {
-        if (url.host != "appassets.androidplatform.net") return null
+    private data class ResolvedMediaTarget(
+        val targetUrl: String,
+        val cacheKey: String,
+        val needsAuth: Boolean,
+        val cacheable: Boolean,
+        val immutable: Boolean,
+        val staleAfterMs: Long,
+    )
+
+    private fun classifyWebViewTarget(url: Uri): ResolvedMediaTarget? {
+        val host = url.host?.lowercase() ?: return null
+        if (host == "avatars.githubusercontent.com") {
+            val rawUrl = url.toString()
+            return ResolvedMediaTarget(
+                targetUrl = rawUrl,
+                cacheKey = "ext:$rawUrl",
+                needsAuth = false,
+                cacheable = true,
+                immutable = false,
+                staleAfterMs = 30L * 60L * 1000L,
+            )
+        }
+        if (host != "appassets.androidplatform.net") return null
         val path = url.encodedPath ?: return null
-        if (!path.startsWith("/api/") && !path.startsWith("/emotes/")) {
+        val isSystemBotAsset = path == "/assets/beacon-avatar.png" || path == "/assets/echo-avatar.svg"
+        if (!path.startsWith("/api/") && !path.startsWith("/emotes/") && !isSystemBotAsset) {
             return null
         }
 
         val query = url.encodedQuery
         val fullPath = if (query.isNullOrBlank()) path else "$path?$query"
-        val targetUrl = "${tokenVault.getApiOrigin()}$fullPath"
+        val apiOrigin = tokenVault.getApiOrigin()
+        val targetUrl = "$apiOrigin$fullPath"
         val needsAuth = path.startsWith("/api/") && !path.startsWith("/api/p2p/")
 
+        val isBuiltInEmote = path.startsWith("/emotes/")
+        val isCustomEmote = path.startsWith("/api/workspace/emotes/")
+        val isChatPreview = path.startsWith("/api/workspace/files/") && path.endsWith("/preview")
+        val isAvatarPath =
+            path.startsWith("/api/workspace/avatars/") ||
+                (path.startsWith("/api/v1/bots/") && path.endsWith("/avatar"))
+        val hasExplicitVersion = !url.getQueryParameter("v").isNullOrBlank()
+
+        val cacheable = isBuiltInEmote || isCustomEmote || isChatPreview || isAvatarPath || isSystemBotAsset
+        val immutable = isBuiltInEmote || isCustomEmote || isChatPreview || (isAvatarPath && hasExplicitVersion)
+        val staleAfterMs = when {
+            immutable -> Long.MAX_VALUE
+            isSystemBotAsset -> 24L * 3600L * 1000L
+            else -> 10L * 60L * 1000L
+        }
+
+        return ResolvedMediaTarget(
+            targetUrl = targetUrl,
+            cacheKey = "origin:$apiOrigin$fullPath",
+            needsAuth = needsAuth,
+            cacheable = cacheable,
+            immutable = immutable,
+            staleAfterMs = staleAfterMs,
+        )
+    }
+
+    private fun buildCachedWebResourceResponse(hit: CachedMediaHit): WebResourceResponse {
+        val headers = mutableMapOf(
+            "Access-Control-Allow-Origin" to "*",
+            "Cache-Control" to "public, max-age=604800",
+            "Content-Length" to hit.byteSize.toString(),
+        )
+        if (!hit.etag.isNullOrBlank()) {
+            headers["ETag"] = hit.etag
+        }
+        return WebResourceResponse(
+            hit.mimeType,
+            null,
+            200,
+            "OK",
+            headers,
+            hit.openStream(),
+        )
+    }
+
+    private fun revalidateCachedMedia(target: ResolvedMediaTarget, existingEtag: String?) {
+        val token = if (target.needsAuth) getValidAccessToken(false) else null
+        executeRawGet(target.targetUrl, token, existingEtag).use { res ->
+            if (res.code == 304) {
+                mediaDiskCache.touchFetchedAt(target.cacheKey)
+                return
+            }
+            if (!res.isSuccessful) return
+            val contentType = (res.header("Content-Type") ?: "application/octet-stream")
+                .substringBefore(';')
+                .trim()
+                .ifBlank { "application/octet-stream" }
+            if (!contentType.startsWith("image/")) return
+            val bytes = res.body?.bytes() ?: return
+            if (bytes.isNotEmpty() && bytes.size <= 16 * 1024 * 1024) {
+                mediaDiskCache.put(
+                    cacheKey = target.cacheKey,
+                    urlHint = target.targetUrl,
+                    mimeType = contentType,
+                    etag = res.header("ETag"),
+                    bytes = bytes,
+                )
+            }
+        }
+    }
+
+    fun prefetchMediaUrls(rawUrls: List<String>) {
+        val origin = tokenVault.getApiOrigin()
+        for (raw in rawUrls) {
+            val cleaned = raw.trim()
+            if (cleaned.isEmpty()) continue
+            val syntheticUri = when {
+                cleaned.startsWith("https://avatars.githubusercontent.com/") -> Uri.parse(cleaned)
+                cleaned.startsWith("/") -> Uri.parse("https://appassets.androidplatform.net$cleaned")
+                cleaned.startsWith(origin) -> {
+                    val rel = cleaned.removePrefix(origin)
+                    if (rel.startsWith("/")) Uri.parse("https://appassets.androidplatform.net$rel") else null
+                }
+                else -> null
+            } ?: continue
+
+            val target = classifyWebViewTarget(syntheticUri) ?: continue
+            if (!target.cacheable) continue
+            if (mediaDiskCache.get(target.cacheKey) != null) continue
+
+            mediaDiskCache.schedulePrefetch {
+                synchronized(mediaDiskCache.keyLock(target.cacheKey)) {
+                    if (mediaDiskCache.get(target.cacheKey) != null) return@synchronized
+                    val token = if (target.needsAuth) getValidAccessToken(false) else null
+                    executeRawGet(target.targetUrl, token, null).use { res ->
+                        if (!res.isSuccessful) return@use
+                        val contentType = (res.header("Content-Type") ?: "application/octet-stream")
+                            .substringBefore(';')
+                            .trim()
+                            .ifBlank { "application/octet-stream" }
+                        if (!contentType.startsWith("image/")) return@use
+                        val bytes = res.body?.bytes() ?: return@use
+                        if (bytes.isNotEmpty() && bytes.size <= 16 * 1024 * 1024) {
+                            mediaDiskCache.put(
+                                cacheKey = target.cacheKey,
+                                urlHint = target.targetUrl,
+                                mimeType = contentType,
+                                etag = res.header("ETag"),
+                                bytes = bytes,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun interceptWebViewRequest(url: Uri): WebResourceResponse? {
+        val target = classifyWebViewTarget(url) ?: return null
+
+        if (target.cacheable) {
+            val hit = mediaDiskCache.get(target.cacheKey)
+            if (hit != null) {
+                if (!target.immutable && System.currentTimeMillis() - hit.fetchedAtMs > target.staleAfterMs) {
+                    mediaDiskCache.scheduleRevalidateOnce(target.cacheKey) {
+                        revalidateCachedMedia(target, hit.etag)
+                    }
+                }
+                return buildCachedWebResourceResponse(hit)
+            }
+        }
+
         return try {
-            var res = executeRawGet(targetUrl, if (needsAuth) getValidAccessToken(false) else null)
-            if (res.code == 401 && needsAuth && tokenVault.isAuthenticated()) {
+            if (target.cacheable) {
+                synchronized(mediaDiskCache.keyLock(target.cacheKey)) {
+                    mediaDiskCache.get(target.cacheKey)?.let { secondHit ->
+                        return buildCachedWebResourceResponse(secondHit)
+                    }
+                    var res = executeRawGet(
+                        target.targetUrl,
+                        if (target.needsAuth) getValidAccessToken(false) else null,
+                        null,
+                    )
+                    if (res.code == 401 && target.needsAuth && tokenVault.isAuthenticated()) {
+                        res.close()
+                        val refreshed = getValidAccessToken(true)
+                        res = executeRawGet(target.targetUrl, refreshed, null)
+                    }
+                    res.use { r ->
+                        val contentTypeHeader = r.header("Content-Type") ?: "application/octet-stream"
+                        val mimeType = contentTypeHeader.substringBefore(';').trim().ifBlank { "application/octet-stream" }
+                        val charset = contentTypeHeader.substringAfter("charset=", "").trim().ifBlank { null }
+                        val bytes = r.body?.bytes() ?: ByteArray(0)
+                        val etag = r.header("ETag")
+
+                        if (r.isSuccessful && mimeType.startsWith("image/") && bytes.isNotEmpty() && bytes.size <= 16 * 1024 * 1024) {
+                            mediaDiskCache.put(
+                                cacheKey = target.cacheKey,
+                                urlHint = target.targetUrl,
+                                mimeType = mimeType,
+                                etag = etag,
+                                bytes = bytes,
+                            )
+                            val headers = mutableMapOf(
+                                "Access-Control-Allow-Origin" to "*",
+                                "Cache-Control" to "public, max-age=604800",
+                                "Content-Length" to bytes.size.toString(),
+                            )
+                            if (!etag.isNullOrBlank()) headers["ETag"] = etag
+                            return WebResourceResponse(
+                                mimeType,
+                                charset,
+                                200,
+                                "OK",
+                                headers,
+                                ByteArrayInputStream(bytes),
+                            )
+                        }
+
+                        val responseHeaders = mutableMapOf(
+                            "Access-Control-Allow-Origin" to "*",
+                        )
+                        r.header("Cache-Control")?.let { responseHeaders["Cache-Control"] = it }
+                        r.header("Content-Disposition")?.let { responseHeaders["Content-Disposition"] = it }
+                        if (!etag.isNullOrBlank()) responseHeaders["ETag"] = etag
+                        val reason = r.message.ifBlank { if (r.isSuccessful) "OK" else "Error" }
+                        return WebResourceResponse(
+                            mimeType,
+                            charset,
+                            r.code.coerceIn(100, 599),
+                            reason,
+                            responseHeaders,
+                            ByteArrayInputStream(bytes),
+                        )
+                    }
+                }
+            }
+
+            var res = executeRawGet(
+                target.targetUrl,
+                if (target.needsAuth) getValidAccessToken(false) else null,
+                null,
+            )
+            if (res.code == 401 && target.needsAuth && tokenVault.isAuthenticated()) {
                 res.close()
                 val refreshed = getValidAccessToken(true)
-                res = executeRawGet(targetUrl, refreshed)
+                res = executeRawGet(target.targetUrl, refreshed, null)
             }
 
             val contentTypeHeader = res.header("Content-Type") ?: "application/octet-stream"
@@ -355,16 +590,19 @@ class NetworkGateway(
                 "utf-8",
                 502,
                 "Bad Gateway",
-                mapOf("Access-Control-Allow-Origin" to "https://appassets.androidplatform.net"),
+                mapOf("Access-Control-Allow-Origin" to "*"),
                 ByteArrayInputStream(ByteArray(0)),
             )
         }
     }
 
-    private fun executeRawGet(targetUrl: String, bearerToken: String?): okhttp3.Response {
+    private fun executeRawGet(targetUrl: String, bearerToken: String?, ifNoneMatch: String?): okhttp3.Response {
         val builder = Request.Builder().url(targetUrl).get()
         if (!bearerToken.isNullOrBlank()) {
             builder.header("Authorization", "Bearer $bearerToken")
+        }
+        if (!ifNoneMatch.isNullOrBlank()) {
+            builder.header("If-None-Match", ifNoneMatch)
         }
         return httpClient.newCall(builder.build()).execute()
     }
@@ -499,12 +737,14 @@ class NetworkGateway(
 
     fun uploadBinaryAvatar(targetPath: String, media: PickedMediaEntry): JSONObject {
         val bytes = readAllMediaBytes(media.uri, 8L * 1024L * 1024L)
-        return executeBinaryUpload(
+        val out = executeBinaryUpload(
             method = "PUT",
             path = targetPath,
             contentType = media.mimeType.ifBlank { "image/png" },
             bytes = bytes,
         )
+        mediaDiskCache.invalidateMatching { it.contains("/avatar") }
+        return out
     }
 
     fun readAllMediaBytes(uri: Uri, maxBytes: Long): ByteArray {

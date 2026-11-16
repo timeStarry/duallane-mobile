@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -118,12 +119,15 @@ class MainActivity : ComponentActivity() {
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
 
+        val initialDark = isSystemDarkMode()
+        val initialBgHex = if (initialDark) "#0B1017" else "#EEF2F6"
+
         val wv = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(Color.parseColor("#0B111B"))
+            setBackgroundColor(Color.parseColor(initialBgHex))
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
@@ -182,6 +186,7 @@ class MainActivity : ComponentActivity() {
 
         webView = wv
         setContentView(wv)
+        applySystemBarsAppearance(initialDark, initialBgHex)
         installWindowInsetsListeners(wv)
 
         handleIntentIfPresent(intent)
@@ -196,6 +201,18 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntentIfPresent(intent)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val isDark = (newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        if (isPageLoaded) {
+            nativeBridge.emitSystemTheme(if (isDark) "dark" else "light")
+        }
+    }
+
+    fun isSystemDarkMode(): Boolean {
+        return (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
     }
 
     override fun onResume() {

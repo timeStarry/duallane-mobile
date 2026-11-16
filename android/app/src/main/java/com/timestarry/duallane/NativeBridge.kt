@@ -44,6 +44,7 @@ class NativeBridge(
             put("appVersion", cfg.appVersion)
             put("versionCode", cfg.versionCode)
             put("platform", "android")
+            put("systemTheme", if (activity.isSystemDarkMode()) "dark" else "light")
         }.toString()
     }
 
@@ -305,6 +306,21 @@ class NativeBridge(
         }
     }
 
+    @JavascriptInterface
+    fun prefetchMedia(urlsJson: String) {
+        runCatching {
+            val arr = JSONArray(urlsJson)
+            val list = ArrayList<String>(minOf(arr.length(), 48))
+            for (i in 0 until minOf(arr.length(), 48)) {
+                val u = arr.optString(i, "").trim()
+                if (u.isNotEmpty()) list.add(u)
+            }
+            if (list.isNotEmpty()) {
+                networkGateway.prefetchMediaUrls(list)
+            }
+        }
+    }
+
     private fun registerPickedUri(uri: Uri): PickedMediaEntry {
         val resolver = activity.contentResolver
         var fileName = "attachment"
@@ -391,6 +407,12 @@ class NativeBridge(
     fun emitInsets(safeTopCssPx: Int, safeBottomCssPx: Int, imeHeightCssPx: Int) {
         evalJs(
             "window.__duallaneSetInsets && window.__duallaneSetInsets($safeTopCssPx, $safeBottomCssPx, $imeHeightCssPx);"
+        )
+    }
+
+    fun emitSystemTheme(mode: String) {
+        evalJs(
+            "window.__duallaneOnSystemTheme && window.__duallaneOnSystemTheme(${JSONObject.quote(mode)});"
         )
     }
 

@@ -20,9 +20,11 @@ import { App } from "@/App";
 import { nativeBridge } from "@/native/bridge";
 import { compareSemver, useUpdateStore } from "@/shared/updater";
 import { Avatar } from "@/components/Avatar";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { mobileApi } from "@/shared/api";
+import { initializeMobileTheme, resolveSystemMode, useThemeStore } from "@/shared/theme-store";
 
-describe("DualLane Mobile Clean-Room v1.0.6 Core", () => {
+describe("DualLane Mobile Clean-Room v1.0.7 Core", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useNavStore.setState({
@@ -261,40 +263,115 @@ describe("DualLane Mobile Clean-Room v1.0.6 Core", () => {
     expect(useNavStore.getState().directOverlayOpen).toBe(false);
   });
 
-  it("renders bot avatar theme colors and detects new GitHub APK releases", async () => {
-    expect(compareSemver("1.0.6", "1.0.6")).toBe(0);
-    expect(compareSemver("v1.0.7", "1.0.6")).toBe(1);
-    expect(compareSemver("1.0.5", "1.0.6")).toBe(-1);
+  it("prioritizes same-origin server APK releases and falls back cleanly to GitHub", async () => {
+    expect(compareSemver("1.0.7", "1.0.7")).toBe(0);
+    expect(compareSemver("v1.0.8", "1.0.7")).toBe(1);
+    expect(compareSemver("1.0.6", "1.0.7")).toBe(-1);
 
     const { container } = render(<Avatar name="Astra" kind="bot" color="violet" />);
     const tile = container.querySelector('[data-avatar-kind="bot"]');
     expect(tile?.getAttribute("data-bot-color")).toBe("violet");
 
-    const reqSpy = vi.spyOn(nativeBridge, "request").mockResolvedValue({
+    // 1. Same-origin server release takes priority with zero GitHub call
+    const srvSpy = vi.spyOn(nativeBridge, "request").mockResolvedValueOnce({
       ok: true,
       status: 200,
       bodyText: JSON.stringify({
-        tag_name: "v1.0.7",
-        name: "DualLane Mobile v1.0.7",
-        body: "- 新增功能与性能优化",
-        published_at: "2026-11-15T12:00:00Z",
-        html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.7",
-        assets: [
-          {
-            name: "app-release.apk",
-            size: 162000,
-            browser_download_url:
-              "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.7/app-release.apk",
-          },
-        ],
+        release: {
+          enabled: true,
+          version: "1.0.8",
+          versionCode: 10008,
+          title: "DualLane Android v1.0.8",
+          notes: "### 新增与优化\n- **站内同源分发**：免代理秒下",
+          byteSize: 658000,
+          sha256: "abc123",
+          downloadUrl: "/api/v1/mobile/android/latest.apk",
+        },
       }),
     });
 
-    const result = await useUpdateStore.getState().checkForUpdates(false);
-    expect(result.hasUpdate).toBe(true);
-    expect(result.release?.version).toBe("1.0.7");
-    expect(result.release?.apkSizeBytes).toBe(162000);
-    reqSpy.mockRestore();
+    const srvResult = await useUpdateStore.getState().checkForUpdates(false);
+    expect(srvResult.hasUpdate).toBe(true);
+    expect(srvResult.release?.source).toBe("server");
+    expect(srvResult.release?.version).toBe("1.0.8");
+    expect(srvResult.release?.apkUrl).toBe(
+      "https://duallane.tsio.top/api/v1/mobile/android/latest.apk"
+    );
+    expect(srvSpy).toHaveBeenCalledTimes(1);
+    srvSpy.mockRestore();
+
+    // 2. Falls back to GitHub Releases when server returns 404
+    const fbSpy = vi
+      .spyOn(nativeBridge, "request")
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        bodyText: JSON.stringify({ error: { code: "v1.release_not_published" } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        bodyText: JSON.stringify({
+          tag_name: "v1.0.8",
+          name: "DualLane Mobile v1.0.8",
+          body: "- 新增功能与性能优化",
+          published_at: "2026-11-16T12:00:00Z",
+          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.8",
+          assets: [
+            {
+              name: "app-release.apk",
+              size: 660000,
+              browser_download_url:
+                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.8/app-release.apk",
+            },
+          ],
+        }),
+      });
+
+    const fbResult = await useUpdateStore.getState().checkForUpdates(false);
+    expect(fbResult.hasUpdate).toBe(true);
+    expect(fbResult.release?.source).toBe("github");
+    expect(fbResult.release?.apkSizeBytes).toBe(660000);
+    fbSpy.mockRestore();
+  });
+
+  it("renders structured MarkdownContent without raw syntax and honors native Android systemTheme", () => {
+    render(
+      <MarkdownContent
+        content={"### 版本亮点\n- **持久图片缓存**：表情与头像离线秒开\n- 支持 `1.0.7` 同源更新"}
+      />
+    );
+    expect(screen.getByText("版本亮点")).toBeInTheDocument();
+    expect(screen.queryByText(/###/)).not.toBeInTheDocument();
+    expect(screen.getByText("持久图片缓存").tagName).toBe("STRONG");
+    expect(screen.getByText("1.0.7").tagName).toBe("CODE");
+
+    // Verify native Android systemTheme="light" overrides broken dark WebView matchMedia
+    const isNativeSpy = vi.spyOn(nativeBridge, "isNativeAndroid").mockReturnValue(true);
+    const snapSpy = vi.spyOn(nativeBridge, "getSessionSnapshot").mockReturnValue({
+      authenticated: false,
+      apiOrigin: "https://duallane.tsio.top",
+      appVersion: "1.0.7",
+      versionCode: 10007,
+      platform: "android",
+      systemTheme: "light",
+    });
+
+    useThemeStore.getState().setPreference("system");
+    initializeMobileTheme();
+    expect(resolveSystemMode()).toBe("light");
+    expect(useThemeStore.getState().resolvedMode).toBe("light");
+    expect(document.documentElement.dataset.themeMode).toBe("light");
+
+    // Simulate live OS Quick Settings toggle to dark mode
+    act(() => {
+      window.__duallaneOnSystemTheme?.("dark");
+    });
+    expect(useThemeStore.getState().resolvedMode).toBe("dark");
+    expect(document.documentElement.dataset.themeMode).toBe("dark");
+
+    isNativeSpy.mockRestore();
+    snapSpy.mockRestore();
   });
 
   it("supports bound email verification code login on EntryScreen", async () => {

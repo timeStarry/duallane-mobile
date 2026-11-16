@@ -1019,6 +1019,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         void useEmoteStore.getState().refreshLibrary(true);
         connectRealtime(parsed.eventCursor);
 
+        // Prewarm member & conversation avatars into persistent native MediaDiskCache
+        const avatarUrls: string[] = [];
+        if (parsed.currentUser.avatarUrl) avatarUrls.push(parsed.currentUser.avatarUrl);
+        for (const cid of parsed.conversationOrder.slice(0, 24)) {
+          const av = parsed.conversations[cid]?.avatarUrl;
+          if (av) avatarUrls.push(av);
+        }
+        for (const m of Object.values(parsed.members).slice(0, 32)) {
+          if (m.avatarUrl) avatarUrls.push(m.avatarUrl);
+        }
+        if (avatarUrls.length > 0) {
+          nativeBridge.prefetchMedia(avatarUrls);
+        }
+
         // Background prefetch top conversations so tapping any chat renders 0ms with full history
         const prefetchIds = parsed.conversationOrder
           .filter((cid) => (mergedMessages[cid]?.length || 0) < 2)
@@ -1054,6 +1068,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       teardownP2P();
       window.localStorage.removeItem(SHELL_CACHE_KEY);
       window.localStorage.removeItem(MESSAGES_CACHE_KEY);
+      useEmoteStore.getState().clearCache();
       nativeBridge.logout();
       useNavStore.setState({
         entryLane: "welcome",

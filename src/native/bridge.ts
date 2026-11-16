@@ -19,6 +19,7 @@ export interface NativeSessionSnapshot {
   appVersion: string;
   versionCode: number;
   platform: string;
+  systemTheme?: "light" | "dark";
 }
 
 interface RawAndroidBridge {
@@ -42,6 +43,7 @@ interface RawAndroidBridge {
   openExternalUrl(url: string): void;
   syncSystemBars(mode: "light" | "dark", bgHex: string): void;
   setCanGoBack(canGoBack: boolean): void;
+  prefetchMedia?(urlsJson: string): void;
 }
 
 declare global {
@@ -53,6 +55,7 @@ declare global {
     __duallaneOnDeepLink?: (url: string) => void;
     __duallaneOnBackPressed?: () => void;
     __duallaneSetInsets?: (safeTop: number, safeBottom: number, imeHeight: number) => void;
+    __duallaneOnSystemTheme?: (mode: string) => void;
   }
 }
 
@@ -76,6 +79,7 @@ const browserPickedFiles = new Map<string, File>();
 
 let oauthListeners: Array<(res: { ok: boolean; error?: string }) => void> = [];
 let deepLinkListeners: Array<(url: string) => void> = [];
+let systemThemeListeners: Array<(mode: "light" | "dark") => void> = [];
 let backPressHandler: (() => boolean) | null = null;
 
 function ensureGlobalCallbacks() {
@@ -141,6 +145,15 @@ function ensureGlobalCallbacks() {
       root.style.setProperty("--ime-height", `${Math.max(0, imeHeight)}px`);
     };
   }
+
+  if (!window.__duallaneOnSystemTheme) {
+    window.__duallaneOnSystemTheme = (rawMode) => {
+      const mode: "light" | "dark" = rawMode === "dark" ? "dark" : "light";
+      for (const cb of systemThemeListeners) {
+        cb(mode);
+      }
+    };
+  }
 }
 
 ensureGlobalCallbacks();
@@ -181,9 +194,13 @@ export const nativeBridge = {
         return {
           authenticated: Boolean(raw.authenticated),
           apiOrigin: raw.apiOrigin || DEFAULT_ORIGIN,
-          appVersion: raw.appVersion || "1.0.6",
-          versionCode: raw.versionCode || 10006,
+          appVersion: raw.appVersion || "1.0.7",
+          versionCode: raw.versionCode || 10007,
           platform: raw.platform || "android",
+          systemTheme:
+            raw.systemTheme === "dark" || raw.systemTheme === "light"
+              ? raw.systemTheme
+              : undefined,
         };
       } catch {
         // Fallback below
@@ -194,8 +211,8 @@ export const nativeBridge = {
     return {
       authenticated: false,
       apiOrigin: storedOrigin || DEFAULT_ORIGIN,
-      appVersion: "1.0.6",
-      versionCode: 10006,
+      appVersion: "1.0.7",
+      versionCode: 10007,
       platform: "web",
     };
   },
@@ -589,6 +606,25 @@ export const nativeBridge = {
     if (this.isNativeAndroid() && window.DualLaneNative) {
       window.DualLaneNative.setCanGoBack(canGoBack);
     }
+  },
+
+  prefetchMedia(urls: string[]): void {
+    if (!this.isNativeAndroid() || !window.DualLaneNative?.prefetchMedia) return;
+    const deduped = Array.from(new Set(urls.map((u) => u.trim()).filter(Boolean))).slice(0, 48);
+    if (deduped.length === 0) return;
+    try {
+      window.DualLaneNative.prefetchMedia(JSON.stringify(deduped));
+    } catch {
+      // non-fatal
+    }
+  },
+
+  onSystemThemeChange(cb: (mode: "light" | "dark") => void): () => void {
+    ensureGlobalCallbacks();
+    systemThemeListeners.push(cb);
+    return () => {
+      systemThemeListeners = systemThemeListeners.filter((x) => x !== cb);
+    };
   },
 
   onOAuthResult(cb: (res: { ok: boolean; error?: string }) => void): () => void {

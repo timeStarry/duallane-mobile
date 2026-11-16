@@ -23,7 +23,13 @@ interface ThemeState {
 
 const STORAGE_KEY = "duallane-v1-appearance";
 
-function resolveSystemMode(): ThemeMode {
+export function resolveSystemMode(): ThemeMode {
+  if (nativeBridge.isNativeAndroid()) {
+    const sys = nativeBridge.getSessionSnapshot().systemTheme;
+    if (sys === "light" || sys === "dark") {
+      return sys;
+    }
+  }
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return "light";
   }
@@ -174,9 +180,27 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   },
 }));
 
+let themeListenersInstalled = false;
+
 export function initializeMobileTheme() {
   const s = useThemeStore.getState();
-  applyMobileThemeTokens(s.resolvedMode, s.accent, s.transparency, s.reducedMotion);
+  const effectiveMode = s.preference === "system" ? resolveSystemMode() : s.preference;
+  if (effectiveMode !== s.resolvedMode) {
+    useThemeStore.setState({ resolvedMode: effectiveMode });
+  }
+  applyMobileThemeTokens(effectiveMode, s.accent, s.transparency, s.reducedMotion);
+
+  if (themeListenersInstalled) return;
+  themeListenersInstalled = true;
+
+  nativeBridge.onSystemThemeChange((nextMode) => {
+    const cur = useThemeStore.getState();
+    if (cur.preference === "system") {
+      applyMobileThemeTokens(nextMode, cur.accent, cur.transparency, cur.reducedMotion);
+      useThemeStore.setState({ resolvedMode: nextMode });
+    }
+  });
+
   if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     media.addEventListener("change", () => {

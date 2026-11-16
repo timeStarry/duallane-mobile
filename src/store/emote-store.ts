@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { nativeBridge } from "@/native/bridge";
 import {
   mobileApi,
   type CustomEmoteDTO,
@@ -9,6 +10,7 @@ import {
 import { visibleEmotePacks } from "@/shared/emotes";
 
 const TAB_ORDER_STORAGE_KEY = "duallane:v1:emote-tab-order";
+const LIBRARY_CACHE_STORAGE_KEY = "duallane:mobile:emote-library:v1";
 
 function loadStoredTabOrder(): string[] {
   try {
@@ -26,6 +28,37 @@ function saveStoredTabOrder(order: string[]) {
     window.localStorage.setItem(TAB_ORDER_STORAGE_KEY, JSON.stringify(order));
   } catch {
     // ignore
+  }
+}
+
+interface CachedEmoteLibrarySnapshot {
+  emotes: CustomEmoteDTO[];
+  collections: EmoteCollectionDTO[];
+  settings: EmoteSettingsDTO | null;
+}
+
+function loadCachedLibrary(): CachedEmoteLibrarySnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LIBRARY_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CachedEmoteLibrarySnapshot>;
+    return {
+      emotes: Array.isArray(parsed.emotes) ? parsed.emotes : [],
+      collections: Array.isArray(parsed.collections) ? parsed.collections : [],
+      settings: parsed.settings || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedLibrary(snapshot: CachedEmoteLibrarySnapshot) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LIBRARY_CACHE_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // ignore storage quota errors
   }
 }
 
@@ -47,6 +80,7 @@ interface EmoteState {
   tabOrder: string[];
 
   refreshLibrary: (withSettings?: boolean) => Promise<void>;
+  clearCache: () => void;
   hydrateTabOrderFromPreferences: (rawOrder: unknown) => void;
   moveTab: (tabId: string, direction: "left" | "right") => string[];
   getOrderedTabs: () => EmoteTabDescriptor[];
@@ -62,9 +96,10 @@ interface EmoteState {
   deleteCollection: (collectionId: string, disposition?: "keep" | "remove") => Promise<void>;
 }
 
-function applyLibraryPayload(lib: EmoteLibraryDTO) {
-  const emotes = Array.isArray(lib.emotes) ? lib.emotes : [];
-  const collections = Array.isArray(lib.collections) ? lib.collections : [];
+function buildCustomSrcMap(
+  emotes: CustomEmoteDTO[],
+  collections: EmoteCollectionDTO[]
+): Record<string, string> {
   const customSrcMap: Record<string, string> = {};
   for (const e of emotes) {
     if (e.id && e.src) customSrcMap[e.id] = e.src;
@@ -74,16 +109,48 @@ function applyLibraryPayload(lib: EmoteLibraryDTO) {
       if (item.id && item.src) customSrcMap[item.id] = item.src;
     }
   }
-  return { emotes, collections, customSrcMap };
+  return customSrcMap;
 }
 
+function applyLibraryPayload(lib: EmoteLibraryDTO) {
+  const emotes = Array.isArray(lib.emotes) ? lib.emotes : [];
+  const collections = Array.isArray(lib.collections) ? lib.collections : [];
+  return {
+    emotes,
+    collections,
+    customSrcMap: buildCustomSrcMap(emotes, collections),
+  };
+}
+
+function scheduleEmoteMediaPrewarm(
+  emotes: CustomEmoteDTO[],
+  collections: EmoteCollectionDTO[]
+) {
+  const urls: string[] = [];
+  for (const e of emotes.slice(0, 24)) {
+    urls.push(e.src || `/api/workspace/emotes/custom/${encodeURIComponent(e.id)}`);
+  }
+  for (const col of collections.slice(0, 4)) {
+    for (const item of (col.items || []).slice(0, 8)) {
+      urls.push(item.src || `/api/workspace/emotes/custom/${encodeURIComponent(item.id)}`);
+    }
+  }
+  if (urls.length > 0) {
+    nativeBridge.prefetchMedia(urls);
+  }
+}
+
+const initialCached = loadCachedLibrary();
+
 export const useEmoteStore = create<EmoteState>((set, get) => ({
-  loaded: false,
+  loaded: Boolean(initialCached),
   loading: false,
-  emotes: [],
-  collections: [],
-  customSrcMap: {},
-  settings: null,
+  emotes: initialCached?.emotes || [],
+  collections: initialCached?.collections || [],
+  customSrcMap: initialCached
+    ? buildCustomSrcMap(initialCached.emotes, initialCached.collections)
+    : {},
+  settings: initialCached?.settings || null,
   tabOrder: loadStoredTabOrder(),
 
   refreshLibrary: async (withSettings = true) => {
@@ -94,15 +161,40 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
         withSettings ? mobileApi.getEmoteSettings().catch(() => null) : Promise.resolve(null),
       ]);
       const mapped = applyLibraryPayload(lib);
-      set((s) => ({
+      const nextSettings = settingsRes?.settings || get().settings;
+      set({
         loaded: true,
         loading: false,
         ...mapped,
-        settings: settingsRes?.settings || s.settings,
-      }));
+        settings: nextSettings,
+      });
+      saveCachedLibrary({
+        emotes: mapped.emotes,
+        collections: mapped.collections,
+        settings: nextSettings,
+      });
+      scheduleEmoteMediaPrewarm(mapped.emotes, mapped.collections);
     } catch {
       set({ loading: false });
     }
+  },
+
+  clearCache: () => {
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.removeItem(LIBRARY_CACHE_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+    }
+    set({
+      loaded: false,
+      loading: false,
+      emotes: [],
+      collections: [],
+      customSrcMap: {},
+      settings: null,
+    });
   },
 
   hydrateTabOrderFromPreferences: (rawOrder) => {
@@ -126,7 +218,9 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
         collection: col,
       })),
       ...visibleEmotePacks
-        .filter((p) => (!enabledPackIds || enabledPackIds.length === 0 ? true : enabledPackIds.includes(p.id)))
+        .filter((p) =>
+          !enabledPackIds || enabledPackIds.length === 0 ? true : enabledPackIds.includes(p.id)
+        )
         .map((p) => ({
           id: `pack:${p.id}`,
           label: p.label,
