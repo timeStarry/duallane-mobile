@@ -501,7 +501,7 @@ export function MessageItem({
                   : "bg-[var(--dl-bubble-peer)] text-[var(--dl-text)] border border-[var(--dl-border)]"
               }`}
             >
-              {/* Telegram / Feishu Frosted Accent Reply Quote */}
+              {/* Feishu-Inspired Lightweight DualLane Reply Quote */}
               {(replyTarget || msg.replyToId) && (
                 <div
                   role="button"
@@ -517,28 +517,30 @@ export function MessageItem({
                       onJumpToMessage?.(msg.replyToId);
                     }
                   }}
-                  className={`mb-1.5 w-full max-w-full min-w-0 overflow-hidden rounded-[10px] border-l-[3px] py-1.5 pl-2.5 pr-3 text-left transition active:opacity-80 ${
-                    isOwn
-                      ? "bg-black/16 border-white/85 text-white/95"
-                      : "bg-[var(--dl-accent-soft)]/70 border-[var(--dl-accent)] text-[var(--dl-text)]"
+                  className={`mb-1.5 -mx-1 flex w-full max-w-full min-w-0 items-stretch gap-2 overflow-hidden rounded-md px-1 py-0.5 text-left transition ${
+                    isOwn ? "active:bg-white/10" : "active:bg-black/5 dark:active:bg-white/5"
                   }`}
                 >
-                  <div
-                    className={`font-semibold text-[11px] leading-tight truncate ${
-                      isOwn ? "text-white" : "text-[var(--dl-accent)]"
+                  <span
+                    aria-hidden="true"
+                    className={`my-[2.5px] w-[2px] shrink-0 rounded-full ${
+                      isOwn ? "bg-white/45" : "bg-[var(--dl-text-muted)]/40"
+                    }`}
+                  />
+                  <span
+                    className={`min-w-0 flex-1 line-clamp-2 text-[12.5px] leading-[1.45] [overflow-wrap:anywhere] break-all ${
+                      isOwn ? "text-white/78" : "text-[var(--dl-text-muted)]"
                     }`}
                   >
-                    {replyTarget?.senderName || "引用消息"}
-                  </div>
-                  <div
-                    className={`mt-0.5 text-[12px] leading-[1.35] line-clamp-2 [overflow-wrap:anywhere] break-all ${
-                      isOwn ? "text-white/85" : "text-[var(--dl-text-muted)]"
-                    }`}
-                  >
-                    {replyTarget
-                      ? formatConversationPreviewText(replyTarget.plainText) || "[媒体消息]"
-                      : "原消息已不在当前窗口"}
-                  </div>
+                    <span className={`font-medium ${isOwn ? "text-white/90" : "text-[var(--dl-text)]/80"}`}>
+                      {replyTarget ? `回复 ${replyTarget.senderName}：` : "引用消息："}
+                    </span>
+                    <span>
+                      {replyTarget
+                        ? formatConversationPreviewText(replyTarget.plainText) || "[媒体消息]"
+                        : "原消息已不在当前窗口"}
+                    </span>
+                  </span>
                 </div>
               )}
 

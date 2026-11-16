@@ -558,22 +558,26 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         </div>
       )}
 
-      {/* Telegram / Feishu Style Reply / Edit Banner */}
+      {/* Feishu-Inspired Lightweight Reply / Edit Banner */}
       {(replyTarget || editingMsg) && (
         <div className="px-3.5 py-2 bg-[var(--dl-surface)] border-t border-[var(--dl-border)] flex items-center justify-between gap-2 shrink-0 overflow-hidden">
-          <div className="min-w-0 flex-1 flex items-center gap-2.5 overflow-hidden">
+          <div className="min-w-0 flex-1 flex items-center gap-2 overflow-hidden">
             {editingMsg ? (
-              <Edit3 size={15} className="text-[var(--dl-accent)] shrink-0" />
+              <Edit3 size={14} className="text-[var(--dl-accent)] shrink-0" />
             ) : (
-              <Reply size={15} className="text-[var(--dl-accent)] shrink-0" />
+              <Reply size={14} className="text-[var(--dl-text-muted)] shrink-0" />
             )}
-            <div className="min-w-0 flex-1 border-l-[2.5px] border-[var(--dl-accent)] pl-2.5 overflow-hidden">
-              <div className="text-[11px] font-semibold text-[var(--dl-accent)] truncate leading-tight">
-                {editingMsg ? "编辑消息" : `回复 ${replyTarget?.senderName}`}
-              </div>
-              <div className="text-[12px] text-[var(--dl-text-muted)] truncate leading-snug">
-                {editingMsg ? editingMsg.plainText : replyTarget?.plainText || "[媒体消息]"}
-              </div>
+            <span
+              aria-hidden="true"
+              className="h-3.5 w-[2px] shrink-0 rounded-full bg-[var(--dl-text-muted)]/40"
+            />
+            <div className="min-w-0 flex-1 truncate text-[12.5px] leading-snug text-[var(--dl-text-muted)]">
+              <span className="font-medium text-[var(--dl-text)]/80">
+                {editingMsg ? "编辑消息：" : `回复 ${replyTarget?.senderName}：`}
+              </span>
+              <span>
+                {(editingMsg ? editingMsg.plainText : replyTarget?.plainText) || "[媒体消息]"}
+              </span>
             </div>
           </div>
           <button

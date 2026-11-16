@@ -35,6 +35,7 @@ export function App() {
   const hasUpdate = useUpdateStore((s) => s.hasUpdate);
 
   useEffect(() => {
+    nativeBridge.markBundleHealthy();
     void bootstrapWorkspace();
   }, [bootstrapWorkspace]);
 

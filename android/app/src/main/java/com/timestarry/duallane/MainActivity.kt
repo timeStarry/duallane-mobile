@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebResourceRequest
@@ -22,11 +23,13 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
+import java.io.File
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
@@ -36,12 +39,14 @@ class MainActivity : ComponentActivity() {
     private lateinit var tokenVault: TokenVault
     private lateinit var networkGateway: NetworkGateway
     private lateinit var realtimeManager: RealtimeManager
+    private lateinit var appUpdateManager: AppUpdateManager
     private lateinit var nativeBridge: NativeBridge
 
     private var webView: WebView? = null
     private var isPageLoaded = false
     private var pendingDeepLink: String? = null
     private var pendingPickerCallback: ((List<Uri>) -> Unit)? = null
+    private var pendingInstallApk: File? = null
 
     private var lastSafeTopPx = 0
     private var lastSafeBottomPx = 0
@@ -89,6 +94,18 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { _ -> }
 
+    private val requestInstallPackagesLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        val pending = pendingInstallApk
+        if (pending != null && pending.isFile) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                pendingInstallApk = null
+                launchPackageInstallerIntent(pending)
+            }
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -96,6 +113,8 @@ class MainActivity : ComponentActivity() {
 
         tokenVault = TokenVault(applicationContext)
         networkGateway = NetworkGateway(applicationContext, tokenVault)
+        appUpdateManager = AppUpdateManager(applicationContext, networkGateway)
+        appUpdateManager.prepareBootState()
         realtimeManager = RealtimeManager(
             appContext = applicationContext,
             networkGateway = networkGateway,
@@ -109,14 +128,25 @@ class MainActivity : ComponentActivity() {
             webViewProvider = { webView },
             networkGateway = networkGateway,
             realtimeManager = realtimeManager,
+            appUpdateManager = appUpdateManager,
             ioExecutor = ioExecutor,
         )
 
         onBackPressedDispatcher.addCallback(this, backPressedCallback)
 
+        val builtInAssetsHandler = WebViewAssetLoader.AssetsPathHandler(this)
         val assetLoader = WebViewAssetLoader.Builder()
             .setDomain("appassets.androidplatform.net")
-            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .addPathHandler("/assets/www/") { relPath ->
+                val activeOtaDir = appUpdateManager.getActiveWwwDir()
+                if (activeOtaDir != null) {
+                    WebViewAssetLoader.InternalStoragePathHandler(this, activeOtaDir).handle(relPath)
+                        ?: builtInAssetsHandler.handle("www/$relPath")
+                } else {
+                    builtInAssetsHandler.handle("www/$relPath")
+                }
+            }
+            .addPathHandler("/assets/", builtInAssetsHandler)
             .build()
 
         val initialDark = isSystemDarkMode()
@@ -190,6 +220,7 @@ class MainActivity : ComponentActivity() {
         installWindowInsetsListeners(wv)
 
         handleIntentIfPresent(intent)
+        startOtaWatchdog()
         wv.loadUrl(START_ASSET_URL)
 
         if (tokenVault.isAuthenticated()) {
@@ -371,6 +402,57 @@ class MainActivity : ComponentActivity() {
         }.onFailure {
             runCatching {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            }
+        }
+    }
+
+    fun reloadForOtaUpdate() {
+        isPageLoaded = false
+        startOtaWatchdog()
+        webView?.apply {
+            clearCache(false)
+            loadUrl(START_ASSET_URL)
+        }
+    }
+
+    fun requestInstallApk(apkFile: File): String {
+        if (!apkFile.isFile || apkFile.length() <= 128L) {
+            throw IllegalStateException("未找到已下载的安装包文件")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            pendingInstallApk = apkFile
+            val permIntent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName")
+            )
+            requestInstallPackagesLauncher.launch(permIntent)
+            return "permission_requested"
+        }
+        pendingInstallApk = null
+        launchPackageInstallerIntent(apkFile)
+        return "launched"
+    }
+
+    private fun launchPackageInstallerIntent(apkFile: File) {
+        val contentUri = FileProvider.getUriForFile(
+            this,
+            "$packageName.fileprovider",
+            apkFile
+        )
+        val installIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(contentUri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(installIntent)
+    }
+
+    private fun startOtaWatchdog() {
+        appUpdateManager.startBootWatchdogIfNeeded {
+            isPageLoaded = false
+            webView?.apply {
+                clearCache(true)
+                loadUrl(START_ASSET_URL)
             }
         }
     }

@@ -17,9 +17,20 @@ export interface NativeSessionSnapshot {
   authenticated: boolean;
   apiOrigin: string;
   appVersion: string;
+  nativeVersion?: string;
   versionCode: number;
+  otaActive?: boolean;
+  otaBundleId?: string;
   platform: string;
   systemTheme?: "light" | "dark";
+}
+
+export interface NativeUpdateProgressEvent {
+  kind: "ota" | "apk";
+  phase: "downloading" | "verifying" | "ready";
+  percent: number;
+  downloadedBytes: number;
+  totalBytes: number;
 }
 
 interface RawAndroidBridge {
@@ -44,6 +55,19 @@ interface RawAndroidBridge {
   syncSystemBars(mode: "light" | "dark", bgHex: string): void;
   setCanGoBack(canGoBack: boolean): void;
   prefetchMedia?(urlsJson: string): void;
+  markBundleHealthy?(): void;
+  downloadAndStageOta?(
+    callId: string,
+    url: string,
+    sha256: string,
+    version: string,
+    bundleId: string,
+    minNativeVersionCode: number
+  ): void;
+  applyStagedOta?(): void;
+  rollbackOta?(): void;
+  downloadAndInstallApk?(callId: string, url: string, sha256: string, version: string): void;
+  installPendingApk?(callId: string): void;
 }
 
 declare global {
@@ -56,6 +80,7 @@ declare global {
     __duallaneOnBackPressed?: () => void;
     __duallaneSetInsets?: (safeTop: number, safeBottom: number, imeHeight: number) => void;
     __duallaneOnSystemTheme?: (mode: string) => void;
+    __duallaneOnUpdateProgress?: (payloadJson: string) => void;
   }
 }
 
@@ -80,6 +105,7 @@ const browserPickedFiles = new Map<string, File>();
 let oauthListeners: Array<(res: { ok: boolean; error?: string }) => void> = [];
 let deepLinkListeners: Array<(url: string) => void> = [];
 let systemThemeListeners: Array<(mode: "light" | "dark") => void> = [];
+let updateProgressListeners: Array<(ev: NativeUpdateProgressEvent) => void> = [];
 let backPressHandler: (() => boolean) | null = null;
 
 function ensureGlobalCallbacks() {
@@ -154,6 +180,19 @@ function ensureGlobalCallbacks() {
       }
     };
   }
+
+  if (!window.__duallaneOnUpdateProgress) {
+    window.__duallaneOnUpdateProgress = (payloadJson) => {
+      try {
+        const parsed = JSON.parse(payloadJson) as NativeUpdateProgressEvent;
+        for (const cb of updateProgressListeners) {
+          cb(parsed);
+        }
+      } catch {
+        // ignore malformed progress event
+      }
+    };
+  }
 }
 
 ensureGlobalCallbacks();
@@ -194,8 +233,11 @@ export const nativeBridge = {
         return {
           authenticated: Boolean(raw.authenticated),
           apiOrigin: raw.apiOrigin || DEFAULT_ORIGIN,
-          appVersion: raw.appVersion || "1.0.8",
-          versionCode: raw.versionCode || 10008,
+          appVersion: raw.appVersion || "1.0.9",
+          nativeVersion: raw.nativeVersion || raw.appVersion || "1.0.9",
+          versionCode: raw.versionCode || 10009,
+          otaActive: Boolean(raw.otaActive),
+          otaBundleId: raw.otaBundleId ? String(raw.otaBundleId) : undefined,
           platform: raw.platform || "android",
           systemTheme:
             raw.systemTheme === "dark" || raw.systemTheme === "light"
@@ -211,8 +253,10 @@ export const nativeBridge = {
     return {
       authenticated: false,
       apiOrigin: storedOrigin || DEFAULT_ORIGIN,
-      appVersion: "1.0.8",
-      versionCode: 10008,
+      appVersion: "1.0.9",
+      nativeVersion: "1.0.9",
+      versionCode: 10009,
+      otaActive: false,
       platform: "web",
     };
   },
@@ -617,6 +661,87 @@ export const nativeBridge = {
     } catch {
       // non-fatal
     }
+  },
+
+  markBundleHealthy(): void {
+    if (!this.isNativeAndroid() || !window.DualLaneNative?.markBundleHealthy) return;
+    try {
+      window.DualLaneNative.markBundleHealthy();
+    } catch {
+      // non-fatal
+    }
+  },
+
+  downloadAndStageOta(input: {
+    url: string;
+    sha256: string;
+    version: string;
+    bundleId: string;
+    minNativeVersionCode: number;
+  }): Promise<{ ok: boolean; version: string; bundleId: string }> {
+    if (!this.isNativeAndroid() || !window.DualLaneNative?.downloadAndStageOta) {
+      return Promise.reject(new Error("当前环境不支持原生热更新"));
+    }
+    return invokeNativeAsync((callId) => {
+      window.DualLaneNative!.downloadAndStageOta!(
+        callId,
+        input.url,
+        input.sha256,
+        input.version,
+        input.bundleId,
+        input.minNativeVersionCode
+      );
+    });
+  },
+
+  applyStagedOta(): void {
+    if (this.isNativeAndroid() && window.DualLaneNative?.applyStagedOta) {
+      window.DualLaneNative.applyStagedOta();
+    } else if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  },
+
+  rollbackOta(): void {
+    if (this.isNativeAndroid() && window.DualLaneNative?.rollbackOta) {
+      window.DualLaneNative.rollbackOta();
+    }
+  },
+
+  downloadAndInstallApk(input: {
+    url: string;
+    sha256?: string;
+    version: string;
+  }): Promise<{ ok: boolean; status: string }> {
+    if (!this.isNativeAndroid() || !window.DualLaneNative?.downloadAndInstallApk) {
+      this.openExternalUrl(input.url);
+      return Promise.resolve({ ok: true, status: "external" });
+    }
+    return invokeNativeAsync((callId) => {
+      window.DualLaneNative!.downloadAndInstallApk!(
+        callId,
+        input.url,
+        input.sha256 || "",
+        input.version
+      );
+    });
+  },
+
+  installPendingApk(): Promise<{ ok: boolean; status: string }> {
+    if (!this.isNativeAndroid() || !window.DualLaneNative?.installPendingApk) {
+      return Promise.reject(new Error("未找到待安装文件"));
+    }
+    return invokeNativeAsync((callId) => {
+      window.DualLaneNative!.installPendingApk!(callId);
+    });
+  },
+
+  onUpdateProgress(cb: (ev: NativeUpdateProgressEvent) => void): () => void {
+    ensureGlobalCallbacks();
+    updateProgressListeners.push(cb);
+    return () => {
+      updateProgressListeners = updateProgressListeners.filter((x) => x !== cb);
+    };
   },
 
   onSystemThemeChange(cb: (mode: "light" | "dark") => void): () => void {

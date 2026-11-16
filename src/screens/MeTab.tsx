@@ -57,9 +57,18 @@ export function MeTab() {
 
   const checkingUpdate = useUpdateStore((s) => s.checking);
   const hasUpdate = useUpdateStore((s) => s.hasUpdate);
+  const recommendedMode = useUpdateStore((s) => s.recommendedMode);
   const latestRelease = useUpdateStore((s) => s.latestRelease);
   const updateError = useUpdateStore((s) => s.error);
+  const installingUpdate = useUpdateStore((s) => s.installing);
+  const installKind = useUpdateStore((s) => s.installKind);
+  const updateProgress = useUpdateStore((s) => s.progress);
+  const otaStagedBundleId = useUpdateStore((s) => s.otaStagedBundleId);
+  const apkPermissionPending = useUpdateStore((s) => s.apkPermissionPending);
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates);
+  const performOtaUpdate = useUpdateStore((s) => s.performOtaUpdate);
+  const performApkUpdate = useUpdateStore((s) => s.performApkUpdate);
+  const resumePendingApkInstall = useUpdateStore((s) => s.resumePendingApkInstall);
 
   const [profileSheetOpen, setProfileSheetOpen] = useState(false);
   const [emailSheetOpen, setEmailSheetOpen] = useState(false);
@@ -661,7 +670,9 @@ export function MeTab() {
         open={updateSheetOpen}
         onClose={() => setUpdateSheetOpen(false)}
         title="检查版本更新"
-        subtitle={`当前安装版本 v${snap.appVersion} (${snap.versionCode})`}
+        subtitle={`当前版本 v${snap.appVersion} · 原生底座 ${snap.versionCode}${
+          snap.otaActive ? " · 热更生效中" : ""
+        }`}
       >
         <div className="p-4 space-y-4">
           {checkingUpdate ? (
@@ -669,83 +680,188 @@ export function MeTab() {
               <RefreshCw size={22} className="animate-spin text-[var(--dl-accent)]" />
               <span className="text-[13px]">正在查询最新版本…</span>
             </div>
-          ) : updateError ? (
-            <div className="p-4 rounded-2xl bg-rose-500/10 text-rose-600 dark:text-rose-300 text-[13px] space-y-2">
-              <div className="font-semibold">无法获取更新信息</div>
-              <div className="text-[12px] opacity-90">{updateError}</div>
-            </div>
-          ) : latestRelease ? (
-            <div className="space-y-3">
-              <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[15px] font-bold text-[var(--dl-text)]">
-                      {latestRelease.title || `v${latestRelease.version}`}
-                    </span>
-                    {hasUpdate ? (
-                      <span className="px-2 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-semibold">
-                        有可用更新
-                      </span>
-                    ) : (
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-semibold">
-                        已是最新
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-[var(--dl-text-muted)] mt-1">
-                    最新版本 v{latestRelease.version}
-                    {latestRelease.apkSizeBytes > 0
-                      ? ` · 安装包 ${formatBytes(latestRelease.apkSizeBytes)}`
-                      : ""}
-                  </div>
-                </div>
-              </div>
-
-              {latestRelease.notes && (
-                <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] max-h-52 overflow-y-auto">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[11px] font-semibold text-[var(--dl-text-muted)]">
-                      版本说明
-                    </span>
-                    {latestRelease.source === "server" && (
-                      <span className="px-2 py-0.5 rounded-full bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[10px] font-semibold">
-                        当前节点直发
-                      </span>
-                    )}
-                  </div>
-                  <MarkdownContent content={latestRelease.notes} />
+          ) : (
+            <>
+              {updateError && (
+                <div className="p-3.5 rounded-2xl bg-rose-500/10 text-rose-600 dark:text-rose-300 text-[13px] space-y-1">
+                  <div className="font-semibold">更新操作未完成</div>
+                  <div className="text-[12px] opacity-90">{updateError}</div>
                 </div>
               )}
 
-              {hasUpdate && (
-                <button
-                  type="button"
-                  onClick={() => nativeBridge.openExternalUrl(latestRelease.apkUrl)}
-                  className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 active:opacity-90"
-                >
-                  <Download size={16} />
-                  <span>
-                    立即下载安装包
-                    {latestRelease.apkSizeBytes > 0
-                      ? ` (${formatBytes(latestRelease.apkSizeBytes)})`
-                      : ""}
-                  </span>
-                </button>
+              {latestRelease && (
+                <div className="space-y-3">
+                  <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[15px] font-bold text-[var(--dl-text)]">
+                          {latestRelease.title || `v${latestRelease.version}`}
+                        </span>
+                        {hasUpdate ? (
+                          recommendedMode === "ota" ? (
+                            <span className="px-2 py-0.5 rounded-full bg-[var(--dl-accent)] text-white text-[10px] font-semibold">
+                              支持秒级热更
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-semibold">
+                              有可用更新
+                            </span>
+                          )
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-semibold">
+                            已是最新
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-[var(--dl-text-muted)] mt-1">
+                        最新版本 v{latestRelease.version}
+                        {recommendedMode === "ota" && latestRelease.ota?.byteSize
+                          ? ` · 热更包 ${formatBytes(latestRelease.ota.byteSize)}`
+                          : latestRelease.apkSizeBytes > 0
+                          ? ` · 安装包 ${formatBytes(latestRelease.apkSizeBytes)}`
+                          : ""}
+                      </div>
+                    </div>
+                  </div>
+
+                  {latestRelease.notes && (
+                    <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] max-h-52 overflow-y-auto">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[11px] font-semibold text-[var(--dl-text-muted)]">
+                          版本说明
+                        </span>
+                        {latestRelease.source === "server" && (
+                          <span className="px-2 py-0.5 rounded-full bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[10px] font-semibold">
+                            当前节点直发
+                          </span>
+                        )}
+                      </div>
+                      <MarkdownContent content={latestRelease.notes} />
+                    </div>
+                  )}
+
+                  {installingUpdate && updateProgress && (
+                    <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2">
+                      <div className="flex items-center justify-between text-[12px]">
+                        <span className="font-medium text-[var(--dl-text)]">
+                          {updateProgress.phase === "verifying"
+                            ? "正在校验完整性摘要…"
+                            : installKind === "ota"
+                            ? "正在应用内拉取秒级热更包…"
+                            : "正在应用内下载更新安装包…"}
+                        </span>
+                        <span className="font-mono text-[11px] text-[var(--dl-accent)] font-semibold">
+                          {Math.max(0, Math.min(100, updateProgress.percent))}%
+                        </span>
+                      </div>
+                      <div className="h-2 w-full rounded-full bg-[var(--dl-surface)] overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-[var(--dl-accent)] transition-all duration-150"
+                          style={{
+                            width: `${Math.max(4, Math.min(100, updateProgress.percent))}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {hasUpdate && recommendedMode === "ota" && latestRelease.ota && (
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        disabled={installingUpdate}
+                        onClick={async () => {
+                          const res = await performOtaUpdate(true);
+                          if (!res.ok && res.error) {
+                            showToast(res.error, "danger");
+                          }
+                        }}
+                        className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 disabled:opacity-55 active:opacity-90"
+                      >
+                        <Sparkles size={16} />
+                        <span>
+                          {otaStagedBundleId === latestRelease.ota.bundleId
+                            ? "热更已就绪 · 立即秒级生效（免安装）"
+                            : `立即秒级热更（免安装${
+                                latestRelease.ota.byteSize > 0
+                                  ? ` · ${formatBytes(latestRelease.ota.byteSize)}`
+                                  : ""
+                              }）`}
+                        </span>
+                      </button>
+
+                      {latestRelease.apkSizeBytes > 0 &&
+                        (latestRelease.versionCode || 0) > (snap.versionCode || 0) && (
+                          <button
+                            type="button"
+                            disabled={installingUpdate}
+                            onClick={async () => {
+                              const res = await performApkUpdate();
+                              if (res.status === "permission_requested") {
+                                showToast("请允许安装未知来源应用，授权后将自动调起安装", "info");
+                              }
+                            }}
+                            className="w-full py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-medium text-[12.5px] flex items-center justify-center gap-1.5 disabled:opacity-50"
+                          >
+                            <Download size={14} />
+                            <span>
+                              应用内下载完整安装包 ({formatBytes(latestRelease.apkSizeBytes)})
+                            </span>
+                          </button>
+                        )}
+                    </div>
+                  )}
+
+                  {hasUpdate && recommendedMode === "apk" && (
+                    <div className="space-y-2">
+                      {apkPermissionPending ? (
+                        <button
+                          type="button"
+                          onClick={() => void resumePendingApkInstall()}
+                          className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 active:opacity-90"
+                        >
+                          <Download size={16} />
+                          <span>安装包已就绪 · 调起系统安装器</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={installingUpdate}
+                          onClick={async () => {
+                            const res = await performApkUpdate();
+                            if (res.status === "permission_requested") {
+                              showToast("请开启允许安装此来源应用，返回后自动安装", "info");
+                            }
+                          }}
+                          className="w-full py-3 rounded-2xl bg-[var(--dl-accent)] text-white font-semibold text-[14px] flex items-center justify-center gap-2 disabled:opacity-55 active:opacity-90"
+                        >
+                          <Download size={16} />
+                          <span>
+                            应用内下载并安装
+                            {latestRelease.apkSizeBytes > 0
+                              ? ` (${formatBytes(latestRelease.apkSizeBytes)})`
+                              : ""}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
-            </div>
-          ) : null}
+            </>
+          )}
 
           <div className="grid grid-cols-2 gap-2.5">
             <button
               type="button"
-              disabled={checkingUpdate}
+              disabled={checkingUpdate || installingUpdate}
               onClick={async () => {
                 const res = await checkForUpdates(false);
                 if (!res.error && !res.hasUpdate) {
                   showToast("当前已是最新版本", "success");
                 }
               }}
-              className="py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[13px] flex items-center justify-center gap-1.5"
+              className="py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text)] font-semibold text-[13px] flex items-center justify-center gap-1.5 disabled:opacity-50"
             >
               <RefreshCw size={14} className={checkingUpdate ? "animate-spin" : ""} />
               <span>重新检查</span>
@@ -761,7 +877,7 @@ export function MeTab() {
               className="py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-text-muted)] font-semibold text-[13px] flex items-center justify-center gap-1.5"
             >
               <ExternalLink size={14} />
-              <span>直链下载包</span>
+              <span>浏览器备用下载</span>
             </button>
           </div>
         </div>

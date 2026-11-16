@@ -30,6 +30,7 @@ class NativeBridge(
     private val webViewProvider: () -> WebView?,
     private val networkGateway: NetworkGateway,
     private val realtimeManager: RealtimeManager,
+    private val appUpdateManager: AppUpdateManager,
     private val ioExecutor: ExecutorService,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -38,11 +39,15 @@ class NativeBridge(
     @JavascriptInterface
     fun getBootstrapInfo(): String {
         val cfg = networkGateway.tokenVault.bundledConfig
+        val ota = appUpdateManager.getActiveOtaState()
         return JSONObject().apply {
             put("authenticated", networkGateway.tokenVault.isAuthenticated())
             put("apiOrigin", networkGateway.tokenVault.getApiOrigin())
-            put("appVersion", cfg.appVersion)
+            put("appVersion", ota?.version ?: cfg.appVersion)
+            put("nativeVersion", cfg.appVersion)
             put("versionCode", cfg.versionCode)
+            put("otaActive", ota != null)
+            put("otaBundleId", ota?.bundleId ?: "")
             put("platform", "android")
             put("systemTheme", if (activity.isSystemDarkMode()) "dark" else "light")
         }.toString()
@@ -321,6 +326,108 @@ class NativeBridge(
         }
     }
 
+    @JavascriptInterface
+    fun markBundleHealthy() {
+        appUpdateManager.markBundleHealthy()
+    }
+
+    @JavascriptInterface
+    fun downloadAndStageOta(
+        callId: String,
+        url: String,
+        sha256: String,
+        version: String,
+        bundleId: String,
+        minNativeVersionCode: Int,
+    ) {
+        ioExecutor.execute {
+            try {
+                val state = appUpdateManager.downloadAndStageOta(
+                    rawUrl = url,
+                    expectedSha256 = sha256,
+                    version = version,
+                    bundleId = bundleId,
+                    minNativeVersionCode = minNativeVersionCode,
+                    onProgress = { phase, pct, read, total ->
+                        emitUpdateProgress("ota", phase, pct, read, total)
+                    },
+                )
+                val res = JSONObject().apply {
+                    put("ok", true)
+                    put("version", state.version)
+                    put("bundleId", state.bundleId)
+                }
+                resolveCall(callId, true, res.toString())
+            } catch (err: Throwable) {
+                resolveCall(callId, false, err.message ?: "下载热更资源失败")
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun applyStagedOta() {
+        mainHandler.post {
+            activity.reloadForOtaUpdate()
+        }
+    }
+
+    @JavascriptInterface
+    fun rollbackOta() {
+        appUpdateManager.clearActiveOta()
+        mainHandler.post {
+            activity.reloadForOtaUpdate()
+        }
+    }
+
+    @JavascriptInterface
+    fun downloadAndInstallApk(
+        callId: String,
+        url: String,
+        sha256: String,
+        version: String,
+    ) {
+        ioExecutor.execute {
+            try {
+                val apkFile = appUpdateManager.downloadApkUpdate(
+                    rawUrl = url,
+                    expectedSha256 = sha256,
+                    version = version,
+                    onProgress = { phase, pct, read, total ->
+                        emitUpdateProgress("apk", phase, pct, read, total)
+                    },
+                )
+                mainHandler.post {
+                    try {
+                        val status = activity.requestInstallApk(apkFile)
+                        resolveCall(
+                            callId,
+                            true,
+                            JSONObject().put("ok", true).put("status", status).toString()
+                        )
+                    } catch (err: Throwable) {
+                        resolveCall(callId, false, err.message ?: "调起系统安装器失败")
+                    }
+                }
+            } catch (err: Throwable) {
+                resolveCall(callId, false, err.message ?: "下载安装包失败")
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun installPendingApk(callId: String) {
+        mainHandler.post {
+            try {
+                val pending = appUpdateManager.getPendingApkFile()
+                    ?: throw IllegalStateException("请先下载更新安装包")
+                val status = activity.requestInstallApk(pending)
+                resolveCall(callId, true, JSONObject().put("ok", true).put("status", status).toString())
+            } catch (err: Throwable) {
+                resolveCall(callId, false, err.message ?: "调起系统安装器失败")
+            }
+        }
+    }
+
     private fun registerPickedUri(uri: Uri): PickedMediaEntry {
         val resolver = activity.contentResolver
         var fileName = "attachment"
@@ -413,6 +520,25 @@ class NativeBridge(
     fun emitSystemTheme(mode: String) {
         evalJs(
             "window.__duallaneOnSystemTheme && window.__duallaneOnSystemTheme(${JSONObject.quote(mode)});"
+        )
+    }
+
+    fun emitUpdateProgress(
+        kind: String,
+        phase: String,
+        percent: Int,
+        downloadedBytes: Long,
+        totalBytes: Long,
+    ) {
+        val payload = JSONObject().apply {
+            put("kind", kind)
+            put("phase", phase)
+            put("percent", percent)
+            put("downloadedBytes", downloadedBytes)
+            put("totalBytes", totalBytes)
+        }.toString()
+        evalJs(
+            "window.__duallaneOnUpdateProgress && window.__duallaneOnUpdateProgress(${JSONObject.quote(payload)});"
         )
     }
 

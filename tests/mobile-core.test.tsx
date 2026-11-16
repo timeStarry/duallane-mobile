@@ -25,7 +25,7 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { mobileApi } from "@/shared/api";
 import { initializeMobileTheme, resolveSystemMode, useThemeStore } from "@/shared/theme-store";
 
-describe("DualLane Mobile Clean-Room v1.0.8 Core", () => {
+describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useNavStore.setState({
@@ -54,9 +54,15 @@ describe("DualLane Mobile Clean-Room v1.0.8 Core", () => {
     useUpdateStore.setState({
       checking: false,
       hasUpdate: false,
+      recommendedMode: "apk",
       latestRelease: null,
       lastCheckedAt: null,
       error: null,
+      installing: false,
+      installKind: null,
+      progress: null,
+      otaStagedBundleId: null,
+      apkPermissionPending: false,
     });
   });
 
@@ -271,44 +277,96 @@ describe("DualLane Mobile Clean-Room v1.0.8 Core", () => {
     expect(useNavStore.getState().directOverlayOpen).toBe(false);
   });
 
-  it("prioritizes same-origin server APK releases and falls back cleanly to GitHub", async () => {
-    expect(compareSemver("1.0.8", "1.0.8")).toBe(0);
-    expect(compareSemver("v1.0.9", "1.0.8")).toBe(1);
-    expect(compareSemver("1.0.7", "1.0.8")).toBe(-1);
+  it("prioritizes same-origin server APK & OTA releases, gates minNativeVersionCode, and falls back to GitHub", async () => {
+    expect(compareSemver("1.0.9", "1.0.9")).toBe(0);
+    expect(compareSemver("v1.0.10", "1.0.9")).toBe(1);
+    expect(compareSemver("1.0.8", "1.0.9")).toBe(-1);
 
     const { container } = render(<Avatar name="Astra" kind="bot" color="violet" />);
     const tile = container.querySelector('[data-avatar-kind="bot"]');
     expect(tile?.getAttribute("data-bot-color")).toBe("violet");
 
-    // 1. Same-origin server release takes priority with zero GitHub call
+    // 1. Native Android with compatible versionCode selects instant OTA mode ("ota")
+    const isNatSpy = vi.spyOn(nativeBridge, "isNativeAndroid").mockReturnValue(true);
+    const snapSpy = vi.spyOn(nativeBridge, "getSessionSnapshot").mockReturnValue({
+      authenticated: true,
+      apiOrigin: "https://duallane.tsio.top",
+      appVersion: "1.0.9",
+      nativeVersion: "1.0.9",
+      versionCode: 10050,
+      otaActive: false,
+      platform: "android",
+    });
     const srvSpy = vi.spyOn(nativeBridge, "request").mockResolvedValueOnce({
       ok: true,
       status: 200,
       bodyText: JSON.stringify({
         release: {
           enabled: true,
-          version: "1.0.9",
-          versionCode: 10009,
-          title: "DualLane Android v1.0.9",
-          notes: "### 新增与优化\n- **站内同源分发**：免代理秒下",
+          version: "1.0.10",
+          versionCode: 10050,
+          title: "DualLane Android v1.0.10",
+          notes: "### 新增与优化\n- **秒级热更新**：免安装即时生效",
           byteSize: 658000,
-          sha256: "abc123",
+          sha256: "a".repeat(64),
           downloadUrl: "/api/v1/mobile/android/latest.apk",
+          ota: {
+            enabled: true,
+            version: "1.0.10",
+            bundleId: "bbbbbbbbbbbb",
+            minNativeVersionCode: 10050,
+            byteSize: 182000,
+            sha256: "b".repeat(64),
+            downloadUrl: "/api/v1/mobile/android/latest-ota.zip",
+          },
         },
       }),
     });
 
     const srvResult = await useUpdateStore.getState().checkForUpdates(false);
     expect(srvResult.hasUpdate).toBe(true);
-    expect(srvResult.release?.source).toBe("server");
-    expect(srvResult.release?.version).toBe("1.0.9");
-    expect(srvResult.release?.apkUrl).toBe(
-      "https://duallane.tsio.top/api/v1/mobile/android/latest.apk"
+    expect(useUpdateStore.getState().recommendedMode).toBe("ota");
+    expect(srvResult.release?.ota?.otaUrl).toBe(
+      "https://duallane.tsio.top/api/v1/mobile/android/latest-ota.zip"
     );
     expect(srvSpy).toHaveBeenCalledTimes(1);
-    srvSpy.mockRestore();
 
-    // 2. Falls back to GitHub Releases when server returns 404
+    // 2. When minNativeVersionCode exceeds current shell versionCode, safely downgrades to in-app APK install ("apk")
+    srvSpy.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      bodyText: JSON.stringify({
+        release: {
+          enabled: true,
+          version: "1.1.0",
+          versionCode: 10100,
+          title: "DualLane Android v1.1.0",
+          notes: "- 原生层升级",
+          byteSize: 675000,
+          sha256: "c".repeat(64),
+          downloadUrl: "/api/v1/mobile/android/latest.apk",
+          ota: {
+            enabled: true,
+            version: "1.1.0",
+            bundleId: "cccccccccccc",
+            minNativeVersionCode: 10100,
+            byteSize: 185000,
+            sha256: "d".repeat(64),
+            downloadUrl: "/api/v1/mobile/android/latest-ota.zip",
+          },
+        },
+      }),
+    });
+
+    await useUpdateStore.getState().checkForUpdates(false);
+    expect(useUpdateStore.getState().hasUpdate).toBe(true);
+    expect(useUpdateStore.getState().recommendedMode).toBe("apk");
+
+    srvSpy.mockRestore();
+    isNatSpy.mockRestore();
+    snapSpy.mockRestore();
+
+    // 3. Falls back to GitHub Releases when server returns 404
     const fbSpy = vi
       .spyOn(nativeBridge, "request")
       .mockResolvedValueOnce({
@@ -320,17 +378,17 @@ describe("DualLane Mobile Clean-Room v1.0.8 Core", () => {
         ok: true,
         status: 200,
         bodyText: JSON.stringify({
-          tag_name: "v1.0.9",
-          name: "DualLane Mobile v1.0.9",
+          tag_name: "v1.0.10",
+          name: "DualLane Mobile v1.0.10",
           body: "- 新增功能与性能优化",
           published_at: "2026-11-16T12:00:00Z",
-          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.9",
+          html_url: "https://github.com/timeStarry/duallane-mobile/releases/tag/v1.0.10",
           assets: [
             {
               name: "app-release.apk",
               size: 660000,
               browser_download_url:
-                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.9/app-release.apk",
+                "https://github.com/timeStarry/duallane-mobile/releases/download/v1.0.10/app-release.apk",
             },
           ],
         }),

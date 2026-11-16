@@ -16,7 +16,7 @@ export function isAccentId(value: unknown): value is AccentId {
 }
 
 export const DESIGN_TOKENS = {
-  version: "1.0.8",
+  version: "1.0.9",
   modes: {
     light: {
       bg: "#eef2f6",
