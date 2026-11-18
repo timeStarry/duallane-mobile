@@ -59,6 +59,7 @@ function saveStoredTabOrder(order: string[]) {
 
 interface CachedEmoteLibrarySnapshot {
   emotes: CustomEmoteDTO[];
+  favoriteEmotes: CustomEmoteDTO[];
   collections: EmoteCollectionDTO[];
   settings: EmoteSettingsDTO | null;
 }
@@ -71,6 +72,8 @@ function loadCachedLibrary(): CachedEmoteLibrarySnapshot | null {
     const parsed = JSON.parse(raw) as Partial<CachedEmoteLibrarySnapshot>;
     return {
       emotes: Array.isArray(parsed.emotes) ? parsed.emotes : [],
+      // Older snapshots cannot distinguish individual favorites from pack contents.
+      favoriteEmotes: Array.isArray(parsed.favoriteEmotes) ? parsed.favoriteEmotes : [],
       collections: Array.isArray(parsed.collections) ? parsed.collections : [],
       settings: parsed.settings || null,
     };
@@ -100,6 +103,7 @@ interface EmoteState {
   loaded: boolean;
   loading: boolean;
   emotes: CustomEmoteDTO[];
+  favoriteEmotes: CustomEmoteDTO[];
   collections: EmoteCollectionDTO[];
   customSrcMap: Record<string, string>;
   settings: EmoteSettingsDTO | null;
@@ -141,9 +145,14 @@ function buildCustomSrcMap(
 
 function applyLibraryPayload(lib: EmoteLibraryDTO) {
   const emotes = Array.isArray(lib.emotes) ? lib.emotes : [];
+  const entries = Array.isArray(lib.entries) ? lib.entries : [];
+  const favoriteEmotes = entries.flatMap((entry) =>
+    entry.type === "emote" && entry.emote ? [entry.emote] : []
+  );
   const collections = Array.isArray(lib.collections) ? lib.collections : [];
   return {
     emotes,
+    favoriteEmotes,
     collections,
     customSrcMap: buildCustomSrcMap(emotes, collections),
   };
@@ -173,6 +182,7 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
   loaded: Boolean(initialCached),
   loading: false,
   emotes: initialCached?.emotes || [],
+  favoriteEmotes: initialCached?.favoriteEmotes || [],
   collections: initialCached?.collections || [],
   customSrcMap: initialCached
     ? buildCustomSrcMap(initialCached.emotes, initialCached.collections)
@@ -197,6 +207,7 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
       });
       saveCachedLibrary({
         emotes: mapped.emotes,
+        favoriteEmotes: mapped.favoriteEmotes,
         collections: mapped.collections,
         settings: nextSettings,
       });
@@ -218,6 +229,7 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
       loaded: false,
       loading: false,
       emotes: [],
+      favoriteEmotes: [],
       collections: [],
       customSrcMap: {},
       settings: null,
@@ -328,6 +340,7 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
     set({ settings: optimistic });
     saveCachedLibrary({
       emotes: get().emotes,
+      favoriteEmotes: get().favoriteEmotes,
       collections: get().collections,
       settings: optimistic,
     });
@@ -336,6 +349,7 @@ export const useEmoteStore = create<EmoteState>((set, get) => ({
       set({ settings: res.settings });
       saveCachedLibrary({
         emotes: get().emotes,
+        favoriteEmotes: get().favoriteEmotes,
         collections: get().collections,
         settings: res.settings,
       });

@@ -34,7 +34,7 @@ import {
   type MobileBotConversationItem,
   type MobileBotSummary,
 } from "@/shared/api";
-import { resolveAssetUrl } from "@/shared/emotes";
+import { resolveAssetUrl, resolveLibraryStickerSrc } from "@/shared/emotes";
 import {
   buildBotPairingPrompt as buildPairingPrompt,
   parseBotAccessPolicy, privateAssistantGroupPolicy, validateBotAccessPolicy, withBotAccessPolicy,
@@ -127,7 +127,7 @@ export function StickerAndBotSheets() {
   const openChat = useNavStore((s) => s.openChat);
   const showToast = useNavStore((s) => s.showToast);
 
-  const emotes = useEmoteStore((s) => s.emotes);
+  const favoriteEmotes = useEmoteStore((s) => s.favoriteEmotes);
   const collections = useEmoteStore((s) => s.collections);
   const refreshLibrary = useEmoteStore((s) => s.refreshLibrary);
   const uploadStickers = useEmoteStore((s) => s.uploadStickers);
@@ -530,9 +530,7 @@ export function StickerAndBotSheets() {
                   {(col.items || []).slice(0, 6).map((item) => (
                     <img
                       key={item.id}
-                      src={resolveAssetUrl(
-                        item.src || `/api/workspace/emotes/${encodeURIComponent(item.id)}/content`
-                      )}
+                      src={resolveLibraryStickerSrc(item)}
                       alt={item.label}
                       className="w-10 h-10 object-contain rounded-lg bg-[var(--dl-surface)] p-1"
                     />
@@ -545,7 +543,7 @@ export function StickerAndBotSheets() {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[12px] font-semibold text-[var(--dl-text-muted)]">
-                单枚收藏贴纸 ({emotes.length})
+                单枚收藏贴纸 ({favoriteEmotes.length})
               </span>
               <button
                 type="button"
@@ -557,15 +555,13 @@ export function StickerAndBotSheets() {
               </button>
             </div>
             <div className="grid grid-cols-5 gap-2">
-              {emotes.map((em) => (
+              {favoriteEmotes.map((em) => (
                 <div
                   key={em.id}
                   className="relative aspect-square rounded-2xl bg-[var(--dl-card)] p-2 flex items-center justify-center"
                 >
                   <img
-                    src={resolveAssetUrl(
-                      em.src || `/api/workspace/emotes/${encodeURIComponent(em.id)}/content`
-                    )}
+                    src={resolveLibraryStickerSrc(em)}
                     alt={em.label}
                     className="w-full h-full object-contain"
                   />

@@ -82,6 +82,8 @@ export interface V1Message {
   id: string;
   clientMessageId?: string;
   conversationId: string;
+  creationSeq?: number;
+  hiddenByCurrentUser?: boolean;
   kind?: "user" | "bot" | "system";
   senderId: string;
   senderName: string;
@@ -126,6 +128,10 @@ export interface V1Conversation {
   avatarUrl?: string;
   avatarEmoji?: string;
   unreadCount: number;
+  lastReadAt?: string;
+  lastReadMessageId?: string;
+  lastReadSeq?: number;
+  firstUnreadMessageId?: string;
   mentionCount: number;
   pinnedMessageIds: string[];
   memberIds: string[];
@@ -136,6 +142,37 @@ export interface V1Conversation {
   lastMessageRecalled?: boolean;
   notificationLevel?: ConversationNotificationLevel;
   peerLastReadAt?: string;
+}
+
+function nonnegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function latestReadAnchorId(messages: readonly V1Message[]): string | undefined {
+  let last: V1Message | undefined;
+  let latestCreation: V1Message | undefined;
+  for (const message of messages) {
+    if (message.hiddenByCurrentUser || message.status === "sending" || message.status === "failed") continue;
+    last = message;
+    if (message.creationSeq !== undefined && message.creationSeq > (latestCreation?.creationSeq ?? 0)) {
+      latestCreation = message;
+    }
+  }
+  return (latestCreation ?? last)?.id;
+}
+
+function projectedUnread(raw: Record<string, unknown>, previous?: V1Conversation) {
+  const seq = nonnegativeInteger(raw.lastReadSeq);
+  if (seq !== undefined && seq < (previous?.lastReadSeq ?? -1)) return { unreadCount: previous?.unreadCount };
+  const count = nonnegativeInteger(raw.unreadCount);
+  return {
+    unreadCount: count,
+    ...(count === 0 || raw.firstUnreadMessageId === null ? { firstUnreadMessageId: undefined }
+      : typeof raw.firstUnreadMessageId === "string" ? { firstUnreadMessageId: raw.firstUnreadMessageId } : {}),
+    ...(typeof raw.lastReadMessageId === "string" ? { lastReadMessageId: raw.lastReadMessageId } : {}),
+    ...(typeof raw.lastReadAt === "string" ? { lastReadAt: raw.lastReadAt } : {}),
+    ...(seq !== undefined ? { lastReadSeq: seq } : {}),
+  };
 }
 
 export interface DraftEntry {
@@ -184,7 +221,7 @@ interface WorkspaceState {
   bootstrapWorkspace: () => Promise<void>;
   logout: () => Promise<void>;
   loadConversationMessages: (conversationId: string) => Promise<boolean>;
-  markRead: (conversationId: string) => void;
+  markRead: (conversationId: string, options?: { explicit?: boolean; messageId?: string }) => void;
   setDraft: (conversationId: string, text: string, replyToMessageId?: string, mentions?: ComposerMention[]) => void;
   setEditingMessageId: (messageId: string | null) => void;
   jumpToMessage: (conversationId: string, messageId: string) => void;
@@ -840,6 +877,8 @@ export function mapRawMessage(
     id,
     clientMessageId: m.clientMessageId ? String(m.clientMessageId) : undefined,
     conversationId,
+    creationSeq: nonnegativeInteger(m.creationSeq),
+    hiddenByCurrentUser: typeof m.hiddenByCurrentUser === "boolean" ? m.hiddenByCurrentUser : undefined,
     kind,
     senderId,
     senderName:
@@ -1059,6 +1098,10 @@ export function parseBootstrapPayload(raw: Record<string, unknown>) {
       avatarUrl: resolvedAvatar.avatarUrl,
       avatarEmoji: resolvedAvatar.avatarEmoji,
       unreadCount: Number(c.unreadCount || 0),
+      lastReadAt: typeof c.lastReadAt === "string" ? c.lastReadAt : undefined,
+      lastReadMessageId: typeof c.lastReadMessageId === "string" ? c.lastReadMessageId : undefined,
+      lastReadSeq: typeof c.lastReadSeq === "number" ? c.lastReadSeq : undefined,
+      firstUnreadMessageId: typeof c.firstUnreadMessageId === "string" ? c.firstUnreadMessageId : undefined,
       mentionCount: Number(c.mentionCount || 0),
       pinnedMessageIds: Array.isArray(c.pinnedMessageIds) ? c.pinnedMessageIds.map(String) : [],
       memberIds: cleanedMemberIds,
@@ -1176,6 +1219,54 @@ function teardownP2P() {
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
+  const pendingReads = new Map<string, { messageId?: string; queuedMessageId?: string; arrived: Set<string> }>();
+  const seenCreatedMessages = new Set<string>();
+  const canReadConversation = (conversationId: string) => {
+    const nav = useNavStore.getState();
+    return get().readingConversationId === conversationId && nav.activeChatId === conversationId &&
+      !nav.searchOpen && !nav.directOverlayOpen && !nav.lightboxMedia && !nav.chatDetailOpen &&
+      !nav.threadRootId && !nav.serverConfigOpen && !nav.botManageOpen &&
+      !nav.updateSheetOpen && !nav.pendingExternalUrl &&
+      (typeof document === "undefined" || (!document.hidden && document.visibilityState !== "hidden"));
+  };
+  const confirmRead = (conversationId: string, response: Record<string, unknown>, unchanged?: V1Conversation) => {
+    set((state) => {
+      const conversation = state.conversations[conversationId];
+      if (!conversation) return state;
+      const readAt = typeof response.readAt === "string" ? response.readAt : "";
+      const readMs = Date.parse(readAt);
+      const previousReadMs = Date.parse(conversation.lastReadAt || "");
+      const readSeq = typeof response.lastReadSeq === "number" ? response.lastReadSeq : undefined;
+      if (readSeq !== undefined && conversation.lastReadSeq !== undefined && readSeq < conversation.lastReadSeq) return state;
+      if (readSeq === undefined && Number.isFinite(previousReadMs) && (!Number.isFinite(readMs) || readMs < previousReadMs)) return state;
+      const lastReadMessageId = typeof response.lastReadMessageId === "string" ? response.lastReadMessageId : "";
+      // A realtime projection of the newly committed marker already includes
+      // changes that could have happened after the HTTP snapshot was taken.
+      if (unchanged && lastReadMessageId && unchanged.lastReadMessageId !== lastReadMessageId &&
+        conversation.lastReadMessageId === lastReadMessageId) return state;
+      const messages = state.messagesByConv[conversationId] || [];
+      const boundaryIndex = messages.findIndex((message) => message.id === lastReadMessageId);
+      const newerMessages = messages.filter((message, index) =>
+        (readSeq !== undefined && message.creationSeq !== undefined ? message.creationSeq > readSeq : boundaryIndex >= 0 && index > boundaryIndex) &&
+        message.senderId !== state.currentUser?.id && message.kind !== "system" && !message.recalledAt && !message.hiddenByCurrentUser &&
+        (message.creationSeq !== undefined || !message.threadRootId) && (message.status === "sent" || message.status === "read"));
+      const hasNewerMessage = Number.isFinite(readMs) && Date.parse(conversation.lastMessageAt || "") > readMs;
+      const clearsSnapshot = Number.isFinite(readMs) ? !hasNewerMessage : conversation === unchanged;
+      const arrived = unchanged ? pendingReads.get(conversationId)?.arrived : undefined;
+      const concurrent = newerMessages.filter((message) => arrived?.has(message.id));
+      const snapshotCount = nonnegativeInteger(response.unreadCount) ?? Math.max(newerMessages.length, clearsSnapshot ? 0 : conversation.unreadCount);
+      const unreadCount = Math.max(concurrent.length, snapshotCount);
+      const mentionCount = nonnegativeInteger(response.mentionCount) ?? (unreadCount === 0 ? 0 : conversation.mentionCount);
+      return { conversations: { ...state.conversations, [conversationId]: {
+        ...conversation, unreadCount, mentionCount,
+        ...(Number.isFinite(readMs) ? { lastReadAt: previousReadMs > readMs ? conversation.lastReadAt : readAt } : {}),
+        ...(lastReadMessageId ? { lastReadMessageId } : {}),
+        ...(readSeq !== undefined ? { lastReadSeq: readSeq } : {}),
+        firstUnreadMessageId: unreadCount === 0 ? undefined : typeof response.firstUnreadMessageId === "string"
+          ? response.firstUnreadMessageId : concurrent[0]?.id,
+      } } };
+    });
+  };
   const connectRealtime = (initialCursor: number) => {
     teardownWorkspaceRealtime();
     let cursor = Math.max(latestRealtimeCursor, Math.max(0, Math.trunc(initialCursor || 0)));
@@ -1513,6 +1604,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     },
 
     logout: async () => {
+      pendingReads.clear();
+      seenCreatedMessages.clear();
       teardownWorkspaceRealtime();
       teardownP2P();
       window.localStorage.removeItem(SHELL_CACHE_KEY);
@@ -1548,10 +1641,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     })),
 
     loadConversationMessages: async (conversationId) => {
+      const actorId = get().currentUser?.id;
+      const previousIds = new Set((get().messagesByConv[conversationId] || []).map((message) => message.id));
       try {
         const res = await mobileApi.listMessages(conversationId, 90);
         const rawList = Array.isArray(res.messages) ? res.messages : [];
         const s = get();
+        if (s.currentUser?.id !== actorId) return false;
         const conv = s.conversations[conversationId];
         const mapped = rawList.map((m) =>
           mapRawMessage(conversationId, m, s.members, {
@@ -1563,7 +1659,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         set((state) => ({
           messagesByConv: {
             ...state.messagesByConv,
-            [conversationId]: mapped,
+            [conversationId]: [...mapped, ...(state.messagesByConv[conversationId] || []).filter((message) =>
+              !mapped.some((fresh) => fresh.id === message.id || (message.clientMessageId && fresh.clientMessageId === message.clientMessageId)) &&
+              (!previousIds.has(message.id) || message.status === "sending" || message.status === "failed"))],
           },
         }));
         return true;
@@ -1573,19 +1671,30 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       }
     },
 
-    markRead: (conversationId) => {
-      nativeBridge.clearConversationNotification(conversationId);
+    markRead: (conversationId, options) => {
+      if (!options?.explicit && !canReadConversation(conversationId)) return;
       const conv = get().conversations[conversationId];
-      if (!conv) return;
-      if (conv.unreadCount > 0 || conv.mentionCount > 0) {
-        set((s) => ({
-          conversations: {
-            ...s.conversations,
-            [conversationId]: { ...conv, unreadCount: 0, mentionCount: 0 },
-          },
-        }));
-      }
-      void mobileApi.markConversationRead(conversationId).catch(() => {});
+      if (!conv || (!options?.explicit && conv.unreadCount === 0 && conv.mentionCount === 0)) return;
+      const messageId = options?.explicit ? undefined : options?.messageId || latestReadAnchorId(get().messagesByConv[conversationId] || []);
+      if (!options?.explicit && !messageId) return;
+      const pending = pendingReads.get(conversationId);
+      if (pending) { if (messageId && messageId !== pending.messageId) pending.queuedMessageId = messageId; return; }
+      const attempt: { messageId?: string; queuedMessageId?: string; arrived: Set<string> } = { messageId, arrived: new Set() };
+      const actorId = get().currentUser?.id;
+      pendingReads.set(conversationId, attempt);
+      let succeeded = false;
+      void mobileApi.markConversationRead(conversationId, messageId).then((response) => {
+        if (get().currentUser?.id !== actorId || pendingReads.get(conversationId) !== attempt) return;
+        succeeded = true;
+        confirmRead(conversationId, response, conv);
+        if (get().conversations[conversationId]?.unreadCount === 0) nativeBridge.clearConversationNotification(conversationId);
+      }).catch(() => {
+        // A failed write must leave the authoritative unread projection intact.
+      }).finally(() => {
+        if (pendingReads.get(conversationId) !== attempt) return;
+        pendingReads.delete(conversationId);
+        if (succeeded && attempt.queuedMessageId && canReadConversation(conversationId)) get().markRead(conversationId, { messageId: attempt.queuedMessageId });
+      });
     },
 
     setDraft: (conversationId, text, replyToMessageId, mentions) => {
@@ -2394,18 +2503,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         const readAt = String(payload.readAt || payload.lastReadAt || eventObj.createdAt || "");
         const readMs = Date.parse(readAt);
         if (!convId || !readerId || !Number.isFinite(readMs)) return;
+        if (get().currentUser?.id === readerId) {
+          confirmRead(convId, { ...payload, readAt });
+          return;
+        }
 
         set((s) => {
-          if (s.currentUser?.id && readerId === s.currentUser.id) {
-            const prev = s.conversations[convId];
-            if (!prev) return s;
-            return {
-              conversations: {
-                ...s.conversations,
-                [convId]: { ...prev, unreadCount: 0, mentionCount: 0 },
-              },
-            };
-          }
           const prevConv = s.conversations[convId];
           const prevPeerMs = prevConv?.peerLastReadAt ? Date.parse(prevConv.peerLastReadAt) : 0;
           const nextPeerLastReadAt =
@@ -2483,13 +2586,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         evType === "message.edited"
       ) {
         const rawMsg = (payload.message || {}) as Record<string, unknown>;
+        const rawConversation = (payload.conversation || {}) as Record<string, unknown>;
         const convId = String(
           rawMsg.conversationId || payload.conversationId || eventObj.conversationId || ""
         );
         if (!convId || !rawMsg.id) return;
-        const activeChatId = useNavStore.getState().activeChatId;
-        const currentlyReading = convId === activeChatId && get().readingConversationId === convId &&
-          (typeof document === "undefined" || document.visibilityState !== "hidden");
         const sSnap = get();
         const snapConv = sSnap.conversations[convId];
         const mapped = mapRawMessage(convId, rawMsg, sSnap.members, {
@@ -2497,11 +2598,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           convKind: snapConv?.kind,
           peerLastReadAt: snapConv?.peerLastReadAt,
         });
+        if (evType === "message.created") mapped.creationSeq ??= nonnegativeInteger(eventObj.seq);
         const isOwn = Boolean(sSnap.currentUser?.id && mapped.senderId === sSnap.currentUser.id);
         const isSys = mapped.kind === "system";
 
-        if (evType === "message.created" && !isOwn && !isSys && currentlyReading) {
-          void mobileApi.markConversationRead(convId).catch(() => {});
+        const messageKey = `${sSnap.currentUser?.id}:${convId}:${mapped.id}`;
+        const creationSeq = Number(eventObj.seq || 0);
+        const replayedCreation = evType === "message.created" && (seenCreatedMessages.has(messageKey) ||
+          snapConv?.lastReadMessageId === mapped.id ||
+          (creationSeq > 0 && typeof snapConv?.lastReadSeq === "number" && creationSeq <= snapConv.lastReadSeq));
+        if (evType === "message.created") {
+          seenCreatedMessages.add(messageKey);
+          if (seenCreatedMessages.size > 2000) seenCreatedMessages.delete(seenCreatedMessages.values().next().value!);
         }
 
         set((s) => {
@@ -2536,6 +2644,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
                       ? {
                           ...item,
                           ...mapped,
+                          creationSeq: mapped.creationSeq ?? item.creationSeq,
+                          hiddenByCurrentUser: mapped.hiddenByCurrentUser ?? item.hiddenByCurrentUser,
                           recalledAt: recalledTs,
                           blocks: [],
                           reactions: {},
@@ -2545,6 +2655,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
                       : {
                           ...item,
                           ...mapped,
+                          creationSeq: mapped.creationSeq ?? item.creationSeq,
+                          hiddenByCurrentUser: mapped.hiddenByCurrentUser ?? item.hiddenByCurrentUser,
                           status: item.status === "read" ? "read" : resolvedStatus,
                         }
                     : item
@@ -2578,19 +2690,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
                 ((prevConv?.kind === "group" || !prevConv) && mapped.plainText.includes("@所有人"))
             );
 
-          const nextUnread =
-            currentlyReading
-              ? 0
-              : evType === "message.created" && matchIdx < 0 && !isOwn && !isSys
-              ? (prevConv?.unreadCount || 0) + 1
-              : prevConv?.unreadCount || 0;
-
-          const nextMention =
-            currentlyReading
-              ? 0
-              : mentionedMe && matchIdx < 0
-              ? (prevConv?.mentionCount || 0) + 1
-              : prevConv?.mentionCount || 0;
+          const unread = projectedUnread(rawConversation, prevConv);
+          const arrived = evType === "message.created" && matchIdx < 0 && !replayedCreation && !isOwn && !isSys &&
+            !recalledTs && !mapped.hiddenByCurrentUser && unread.unreadCount !== 0;
+          if (arrived) pendingReads.get(convId)?.arrived.add(mapped.id);
+          const nextUnread = unread.unreadCount ?? (prevConv?.unreadCount || 0) + Number(arrived);
+          const nextMention = nextUnread === 0 ? 0 : (prevConv?.mentionCount || 0) + Number(arrived && mentionedMe);
 
           const isRecalledEvent = Boolean(evType === "message.recalled" || recalledTs);
           const summaryText = isRecalledEvent
@@ -2614,6 +2719,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
               [convId]: prevConv
                 ? {
                     ...prevConv,
+                    ...unread,
                     lastMessageText: summaryText,
                     lastMessageAt:
                       evType === "message.created"
@@ -2627,6 +2733,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
                     peerLastReadAt: nextPeerLastReadAt,
                   }
                 : {
+                    ...unread,
                     id: convId,
                     kind: "group",
                     title: mapped.senderName || "新对话",
@@ -2693,11 +2800,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           set((s) => {
             const prev = s.conversations[convId];
             if (!prev) return s;
+            const unread = projectedUnread(convObj, prev);
             return {
               conversations: {
                 ...s.conversations,
                 [convId]: {
                   ...prev,
+                  ...unread,
+                  unreadCount: unread.unreadCount ?? prev.unreadCount,
+                  mentionCount: nonnegativeInteger(convObj.mentionCount) ?? (unread.unreadCount === 0 ? 0 : prev.mentionCount),
                   ...(typeof convObj.title === "string" && convObj.title.trim() && prev.kind === "group"
                     ? { title: convObj.title.trim() }
                     : {}),

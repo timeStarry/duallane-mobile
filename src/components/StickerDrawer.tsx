@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowLeft, ArrowRight, Plus, Settings2, Share2, Sparkles } from "lucide-react";
 import { mobileApi, type CustomEmoteDTO } from "@/shared/api";
-import { getBuiltInEmote, resolveAssetUrl, visibleEmotePacks } from "@/shared/emotes";
+import { getBuiltInEmote, resolveAssetUrl, resolveLibraryStickerSrc, visibleEmotePacks } from "@/shared/emotes";
 import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
@@ -45,7 +45,7 @@ export function StickerDrawer({
   onInsertToken: (token: string) => void;
   onSendBuiltInSticker: (token: string) => void;
 }) {
-  const emotes = useEmoteStore((s) => s.emotes);
+  const favoriteEmotes = useEmoteStore((s) => s.favoriteEmotes);
   const getOrderedTabs = useEmoteStore((s) => s.getOrderedTabs);
   const moveTab = useEmoteStore((s) => s.moveTab);
   const updateUserPreferences = useWorkspaceStore((s) => s.updateUserPreferences);
@@ -80,12 +80,14 @@ export function StickerDrawer({
   };
 
   const handleSendStickerItem = (em: CustomEmoteDTO) => {
-    if (em.sourceType === "builtin" && em.emoteKey) {
-      const builtIn = getBuiltInEmote(em.emoteKey);
-      if (builtIn) {
+    if (em.kind === "builtin" || em.sourceType === "builtin") {
+      const builtIn = em.emoteKey ? getBuiltInEmote(em.emoteKey) : undefined;
+      if (builtIn?.kind === "image") {
         onSendBuiltInSticker(builtIn.token);
-        return;
+      } else {
+        showToast("这枚贴纸当前不可用", "warning");
       }
+      return;
     }
     if (conversationId) {
       void sendCustomSticker(conversationId, em.id);
@@ -193,32 +195,22 @@ export function StickerDrawer({
                   <span className="text-[10px]">添加</span>
                 </button>
               )}
-              {emotes.map((em) => {
-                const builtInSrc =
-                  em.sourceType === "builtin" && em.emoteKey
-                    ? getBuiltInEmote(em.emoteKey)?.src
-                    : undefined;
-                return (
-                  <button
-                    key={em.id}
-                    type="button"
-                    onClick={() => handleSendStickerItem(em)}
-                    className="aspect-square rounded-2xl p-1.5 flex items-center justify-center active:bg-[var(--dl-card)] active:scale-95 transition"
-                  >
-                    <img
-                      src={resolveAssetUrl(
-                        em.src ||
-                          builtInSrc ||
-                          `/api/workspace/emotes/${encodeURIComponent(em.id)}/content`
-                      )}
-                      alt={em.label}
-                      className="w-full h-full object-contain"
-                    />
-                  </button>
-                );
-              })}
+              {favoriteEmotes.map((em) => (
+                <button
+                  key={em.id}
+                  type="button"
+                  onClick={() => handleSendStickerItem(em)}
+                  className="aspect-square rounded-2xl p-1.5 flex items-center justify-center active:bg-[var(--dl-card)] active:scale-95 transition"
+                >
+                  <img
+                    src={resolveLibraryStickerSrc(em)}
+                    alt={em.label}
+                    className="w-full h-full object-contain"
+                  />
+                </button>
+              ))}
             </div>
-            {emotes.length === 0 && (
+            {favoriteEmotes.length === 0 && (
               <p className="text-center text-[12px] text-[var(--dl-text-muted)] mt-6">
                 长按聊天中的图片或贴纸即可一键收藏到这里
               </p>
@@ -243,30 +235,20 @@ export function StickerDrawer({
               )}
             </div>
             <div className="grid grid-cols-5 gap-2">
-              {(activeTab.collection.items || []).map((em) => {
-                const builtInSrc =
-                  em.sourceType === "builtin" && em.emoteKey
-                    ? getBuiltInEmote(em.emoteKey)?.src
-                    : undefined;
-                return (
-                  <button
-                    key={em.id}
-                    type="button"
-                    onClick={() => handleSendStickerItem(em)}
-                    className="aspect-square rounded-2xl p-1.5 flex items-center justify-center active:bg-[var(--dl-card)] active:scale-95 transition"
-                  >
-                    <img
-                      src={resolveAssetUrl(
-                        em.src ||
-                          builtInSrc ||
-                          `/api/workspace/emotes/${encodeURIComponent(em.id)}/content`
-                      )}
-                      alt={em.label}
-                      className="w-full h-full object-contain"
-                    />
-                  </button>
-                );
-              })}
+              {(activeTab.collection.items || []).map((em) => (
+                <button
+                  key={em.id}
+                  type="button"
+                  onClick={() => handleSendStickerItem(em)}
+                  className="aspect-square rounded-2xl p-1.5 flex items-center justify-center active:bg-[var(--dl-card)] active:scale-95 transition"
+                >
+                  <img
+                    src={resolveLibraryStickerSrc(em)}
+                    alt={em.label}
+                    className="w-full h-full object-contain"
+                  />
+                </button>
+              ))}
             </div>
           </div>
         )}
