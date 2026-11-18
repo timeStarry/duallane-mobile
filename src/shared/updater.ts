@@ -106,6 +106,11 @@ interface GitHubReleasePayload {
 }
 
 export type RecommendedUpdateMode = "ota" | "apk";
+interface UpdateCheckResult {
+  hasUpdate: boolean;
+  release: MobileReleaseInfo | null;
+  error?: string;
+}
 
 interface UpdateState {
   checking: boolean;
@@ -150,6 +155,20 @@ function resolveDownloadUrl(
 
 let progressSubscribed = false;
 let deferredOtaReloadRegistered = false;
+let updateCheckInFlight: Promise<UpdateCheckResult> | null = null;
+
+// Startup, resume and React Strict Mode must observe the same completed policy
+// decision, never a stale "not required" snapshot while another check is pending.
+function coalesceUpdateCheck(check: (silent: boolean) => Promise<UpdateCheckResult>) {
+  return (silent = false): Promise<UpdateCheckResult> => {
+    if (updateCheckInFlight) return updateCheckInFlight;
+    const pending = check(silent);
+    updateCheckInFlight = pending;
+    const clearPending = () => { if (updateCheckInFlight === pending) updateCheckInFlight = null; };
+    void pending.then(clearPending, clearPending);
+    return pending;
+  };
+}
 
 function isUserActivelyTypingInComposer(): boolean {
   if (isMobileWritePending() || hasMobileDrafts()) return true;
@@ -221,10 +240,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
     otaStagedBundleId: null,
     apkPermissionPending: false,
 
-    checkForUpdates: async (silent = false) => {
-      if (get().checking) {
-        return { hasUpdate: get().hasUpdate, release: get().latestRelease };
-      }
+    checkForUpdates: coalesceUpdateCheck(async (silent = false): Promise<UpdateCheckResult> => {
       set({ checking: true, ...(silent ? {} : { error: null }) });
       const snap = nativeBridge.getSessionSnapshot();
       const currentVersion = snap.appVersion;
@@ -404,7 +420,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
         set({ checking: false, ...(silent ? {} : { error: msg }) });
         return { hasUpdate: false, release: null, error: msg };
       }
-    },
+    }),
 
     performOtaUpdate: async (autoReload = true) => {
       const ota = get().latestRelease?.ota;

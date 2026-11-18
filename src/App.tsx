@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MessageCircle, User, Users } from "lucide-react";
 import { AnnouncementModal } from "./components/AnnouncementModal";
 import { BrandLogo } from "./components/BrandLogo";
@@ -37,6 +37,7 @@ export function App() {
   const hasUpdate = useUpdateStore((s) => s.hasUpdate);
   const recommendedMode = useUpdateStore((s) => s.recommendedMode);
   const requiredNativeUpdate = useUpdateStore((s) => s.requiredNativeUpdate);
+  const [nativePolicyReady, setNativePolicyReady] = useState(() => !nativeBridge.isNativeAndroid());
   const wasRequired = useRef(false);
 
   useEffect(() => {
@@ -45,14 +46,18 @@ export function App() {
   }, [requiredNativeUpdate, bootstrapWorkspace]);
 
   useEffect(() => {
+    let cancelled = false;
     nativeBridge.markBundleHealthy();
     if (nativeBridge.isNativeAndroid()) {
       void useUpdateStore.getState().checkForUpdates(true).finally(() => {
+        if (cancelled) return;
+        setNativePolicyReady(true);
         if (!useUpdateStore.getState().requiredNativeUpdate) void bootstrapWorkspace();
       });
     } else {
       void bootstrapWorkspace();
     }
+    return () => { cancelled = true; };
   }, [bootstrapWorkspace]);
 
   // Auto-check & auto-apply OTA hot-updates when returning to foreground (throttled to 45s)
@@ -109,7 +114,7 @@ export function App() {
 
   if (requiredNativeUpdate) return <RequiredNativeUpdate />;
 
-  if (authStatus === "checking") {
+  if (authStatus === "checking" || !nativePolicyReady) {
     return (
       <div className="h-full w-full flex flex-col items-center justify-center bg-[var(--dl-bg)] gap-3">
         <BrandLogo size={56} withTile />

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { nativeBridge } from "@/native/bridge";
 import { useUpdateStore } from "@/shared/updater";
@@ -107,6 +108,39 @@ describe("native mandatory update and OTA compatibility", () => {
       useUpdateStore.setState({ checkForUpdates: oldCheck });
     }
   });
+
+  for (const [description, minimum, expectedBootstraps] of [
+    ["blocked old host", 10100, 0],
+    ["supported host", 0, 1],
+  ] as const) {
+    it(`waits for the real delayed native policy under Strict Mode: ${description}`, async () => {
+      let complete: ((response: ReturnType<typeof json>) => void) | undefined;
+      const pending = new Promise<ReturnType<typeof json>>((resolve) => { complete = resolve; });
+      const request = vi.spyOn(nativeBridge, "request").mockReturnValue(pending);
+      const oldBootstrap = useWorkspaceStore.getState().bootstrapWorkspace;
+      const bootstrap = vi.fn().mockResolvedValue(undefined);
+      useWorkspaceStore.setState({ authStatus: "authenticated", bootstrapWorkspace: bootstrap });
+      // Disable an otherwise eligible OTA; this test isolates native-policy startup.
+      const body = release(minimum); body.release.ota.enabled = false;
+      try {
+        render(<StrictMode><App /></StrictMode>);
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(bootstrap).not.toHaveBeenCalled();
+        expect(screen.queryByLabelText("主导航栏")).not.toBeInTheDocument();
+        if (!complete) throw new Error("native policy request never started");
+        await act(async () => { complete!(json(body)); await pending; });
+        await vi.waitFor(() => {
+          expect(useUpdateStore.getState().checking).toBe(false);
+          expect(bootstrap).toHaveBeenCalledTimes(expectedBootstraps);
+        });
+        if (minimum > 0) expect(screen.getByTestId("required-native-update")).toBeInTheDocument();
+      } finally {
+        cleanup();
+        useWorkspaceStore.setState({ bootstrapWorkspace: oldBootstrap });
+      }
+    });
+  }
 
   it("keeps APK upgrades visible when an older host has the newest OTA version", async () => {
     const body = release(0);
