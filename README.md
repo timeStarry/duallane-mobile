@@ -1,4 +1,4 @@
-# DualLane Mobile (`v1.0.4`)
+# DualLane Mobile (`v1.1.0`)
 
 **DualLane 净室重构轻量原生移动端（Android）** —— 与 DualLane PC `v1.0.4` 共享统一视觉语言（`04 · 叠境双晶` 品牌体系、5 套主色、浅色/深色/跟随系统、毛玻璃/纯色质感）与完整双通道能力，采用 **纯原生 Kotlin 系统宿主 + 本地预置高性能移动交互层** 构建，摒弃旧版臃肿跨端运行时，安装包体积由 `~128 MB` 精简至 **`~2.5 MB`** 级别。
 
@@ -35,3 +35,10 @@ pnpm build:icons
 # 构建 Android 安装包 (需 JDK 17 + Android SDK 36)
 cd android && ./gradlew assembleDebug assembleRelease bundleRelease
 ```
+
+
+## 1.1 更新与交付
+
+本版补齐新版助手权限、接入指引、群审批、服务端交互卡片、未读回看与键盘提及。
+原生安装包版本与界面热更版本独立比较；最低可用原生版本与热更兼容下限分别设置。
+详细验收、旧壳限制和分阶段发布顺序见 [发布说明](docs/releases/1.1.0.md)。

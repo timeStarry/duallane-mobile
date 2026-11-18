@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { nativeBridge, type NativeUpdateProgressEvent } from "@/native/bridge";
+import { hasMobileDrafts, isMobileWritePending, subscribeMobileWriteActivity } from "./activity";
+import { NATIVE_POLICY_CHANGED, NATIVE_POLICY_REFRESH, nativeUpgradeRequired, readNativeUpgradePolicy, saveNativeUpgradePolicy } from "./native-upgrade";
 
 export const SERVER_LATEST_RELEASE_API = "/api/v1/mobile/releases/latest";
 export const GITHUB_LATEST_RELEASE_API =
@@ -19,7 +21,9 @@ export interface MobileOtaInfo {
 
 export interface MobileReleaseInfo {
   version: string;
+  apkVersion?: string;
   versionCode?: number;
+  minimumSupportedNativeVersionCode?: number;
   tagName: string;
   title: string;
   notes: string;
@@ -69,6 +73,8 @@ interface ServerReleasePayload {
     enabled?: boolean;
     version?: string;
     versionCode?: number;
+    apkVersion?: string;
+    minimumSupportedNativeVersionCode?: number;
     tagName?: string;
     title?: string;
     notes?: string;
@@ -104,6 +110,9 @@ export type RecommendedUpdateMode = "ota" | "apk";
 interface UpdateState {
   checking: boolean;
   hasUpdate: boolean;
+  hasApkUpdate: boolean;
+  requiredNativeUpdate: boolean;
+  minimumSupportedNativeVersionCode: number;
   recommendedMode: RecommendedUpdateMode;
   latestRelease: MobileReleaseInfo | null;
   lastCheckedAt: string | null;
@@ -143,6 +152,7 @@ let progressSubscribed = false;
 let deferredOtaReloadRegistered = false;
 
 function isUserActivelyTypingInComposer(): boolean {
+  if (isMobileWritePending() || hasMobileDrafts()) return true;
   if (typeof document === "undefined") return false;
   const el = document.activeElement;
   if (!el) return false;
@@ -164,15 +174,30 @@ function applyStagedOtaImmediatelyOrOnIdle(): void {
     if (!isUserActivelyTypingInComposer()) {
       window.removeEventListener("focusout", tryApply, true);
       document.removeEventListener("visibilitychange", tryApply);
+      window.removeEventListener("input", tryApply, true);
+      unsubscribe();
       deferredOtaReloadRegistered = false;
       nativeBridge.applyStagedOta();
     }
   };
   window.addEventListener("focusout", tryApply, true);
+  window.addEventListener("input", tryApply, true);
   document.addEventListener("visibilitychange", tryApply);
+  const unsubscribe = subscribeMobileWriteActivity(tryApply);
 }
 
 export const useUpdateStore = create<UpdateState>((set, get) => {
+  if (typeof window !== "undefined") {
+    window.addEventListener(NATIVE_POLICY_REFRESH, () => { void get().checkForUpdates(true); });
+    window.addEventListener(NATIVE_POLICY_CHANGED, () => {
+      const snapshot = nativeBridge.getSessionSnapshot();
+      const policy = readNativeUpgradePolicy(snapshot.apiOrigin);
+      set({
+        requiredNativeUpdate: nativeBridge.isNativeAndroid() && nativeUpgradeRequired(snapshot.versionCode, policy),
+        minimumSupportedNativeVersionCode: policy?.minimumSupportedNativeVersionCode || 0,
+      });
+    });
+  }
   if (!progressSubscribed && typeof window !== "undefined") {
     progressSubscribed = true;
     nativeBridge.onUpdateProgress((ev) => {
@@ -183,6 +208,9 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
   return {
     checking: false,
     hasUpdate: false,
+    hasApkUpdate: false,
+    requiredNativeUpdate: false,
+    minimumSupportedNativeVersionCode: 0,
     recommendedMode: "apk",
     latestRelease: null,
     lastCheckedAt: null,
@@ -200,11 +228,26 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
       set({ checking: true, ...(silent ? {} : { error: null }) });
       const snap = nativeBridge.getSessionSnapshot();
       const currentVersion = snap.appVersion;
+      const currentNativeVersion = snap.nativeVersion || snap.appVersion;
       const currentVersionCode = snap.versionCode || 0;
+      const cachedPolicy = readNativeUpgradePolicy(snap.apiOrigin);
+      let cachedRequired = nativeBridge.isNativeAndroid() && nativeUpgradeRequired(currentVersionCode, cachedPolicy);
+      set({ requiredNativeUpdate: cachedRequired, minimumSupportedNativeVersionCode: cachedPolicy?.minimumSupportedNativeVersionCode || 0 });
 
       // 1. Primary: Check same-origin DualLane server release endpoint
       try {
         const srvRes = await nativeBridge.request("GET", SERVER_LATEST_RELEASE_API);
+        if (srvRes.status === 404 && cachedRequired) {
+          const recovery = await nativeBridge.request("GET", "/api/v1/mobile/native-policy");
+          if (recovery.ok) {
+            const policy: unknown = JSON.parse(recovery.bodyText);
+            if (policy && typeof policy === "object") {
+              const values = policy as Record<string, unknown>;
+              const restored = saveNativeUpgradePolicy(snap.apiOrigin, values.minimumSupportedNativeVersionCode, values.latestNativeVersionCode);
+              if (restored) cachedRequired = nativeUpgradeRequired(currentVersionCode, restored);
+            }
+          }
+        }
         if (srvRes.ok && srvRes.bodyText) {
           const parsed = JSON.parse(srvRes.bodyText) as ServerReleasePayload;
           const rel = parsed.release;
@@ -212,6 +255,10 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
             const cleanVersion = String(rel.version).trim().replace(/^v/i, "");
             const apkUrl = resolveDownloadUrl(rel.downloadUrl, snap.apiOrigin);
             const versionCode = Number(rel.versionCode || 0);
+            const minimumSupportedNativeVersionCode = rel.minimumSupportedNativeVersionCode ?? 0;
+            const policy = saveNativeUpgradePolicy(snap.apiOrigin, minimumSupportedNativeVersionCode, versionCode);
+            if (!policy) throw new Error("移动端更新策略无效");
+            const requiredNativeUpdate = nativeBridge.isNativeAndroid() && nativeUpgradeRequired(currentVersionCode, policy);
 
             let otaInfo: MobileOtaInfo | undefined;
             if (rel.ota && rel.ota.enabled !== false && rel.ota.sha256) {
@@ -235,7 +282,9 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
 
             const release: MobileReleaseInfo = {
               version: cleanVersion,
+              apkVersion: String(rel.apkVersion || cleanVersion),
               versionCode: versionCode > 0 ? versionCode : undefined,
+              minimumSupportedNativeVersionCode,
               tagName: String(rel.tagName || `v${cleanVersion}`).trim(),
               title: String(rel.title || `DualLane Android v${cleanVersion}`).trim(),
               notes: String(rel.notes || "").trim(),
@@ -260,22 +309,21 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
                     snap.otaBundleId !== otaInfo.bundleId))
             );
 
-            const semverCmp = compareSemver(cleanVersion, currentVersion);
             const hasApkUpdate =
               release.apkSizeBytes > 0 &&
-              (semverCmp > 0 ||
-                (semverCmp === 0 &&
-                  versionCode > 0 &&
-                  currentVersionCode > 0 &&
-                  versionCode > currentVersionCode &&
-                  !snap.otaActive));
+              (versionCode > 0 && currentVersionCode > 0
+                ? versionCode > currentVersionCode
+                : compareSemver(release.apkVersion || cleanVersion, currentNativeVersion) > 0);
 
-            const hasUpdate = canUseOta || hasApkUpdate;
-            const recommendedMode: RecommendedUpdateMode = canUseOta ? "ota" : "apk";
+            const hasUpdate = canUseOta || hasApkUpdate || requiredNativeUpdate;
+            const recommendedMode: RecommendedUpdateMode = canUseOta && !requiredNativeUpdate ? "ota" : "apk";
 
             set({
               checking: false,
               hasUpdate,
+              hasApkUpdate,
+              requiredNativeUpdate,
+              minimumSupportedNativeVersionCode,
               recommendedMode,
               latestRelease: release,
               lastCheckedAt: new Date().toISOString(),
@@ -283,7 +331,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
             });
 
             // Non-release OTA hot-updates never ask the user to click: download & apply automatically!
-            if (canUseOta && otaInfo) {
+            if (canUseOta && otaInfo && !requiredNativeUpdate) {
               void get().performOtaUpdate(true);
             }
 
@@ -322,8 +370,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
 
         const version = tagName.replace(/^v/i, "");
         const assets = Array.isArray(raw.assets) ? raw.assets : [];
-        const apkAsset =
-          assets.find((item) => item.name?.toLowerCase().endsWith(".apk")) || assets[0];
+        const apkAsset = assets.find((item) => item.name?.toLowerCase().endsWith(".apk"));
+        if (!apkAsset?.browser_download_url || Number(apkAsset.size || 0) <= 0) throw new Error("未获取到完整可用的 APK 安装包");
         const htmlUrl = raw.html_url || GITHUB_RELEASES_PAGE_URL;
         const release: MobileReleaseInfo = {
           version,
@@ -338,10 +386,13 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
           source: "github",
         };
 
-        const hasUpdate = compareSemver(version, currentVersion) > 0;
+        const hasApkUpdate = compareSemver(version, currentNativeVersion) > 0;
+        const hasUpdate = hasApkUpdate || cachedRequired;
         set({
           checking: false,
           hasUpdate,
+          hasApkUpdate,
+          requiredNativeUpdate: cachedRequired,
           recommendedMode: "apk",
           latestRelease: release,
           lastCheckedAt: new Date().toISOString(),
@@ -429,7 +480,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => {
         const res = await nativeBridge.downloadAndInstallApk({
           url: rel.apkUrl,
           sha256: rel.sha256,
-          version: rel.version,
+          version: rel.apkVersion || rel.version,
         });
         set({
           installing: false,

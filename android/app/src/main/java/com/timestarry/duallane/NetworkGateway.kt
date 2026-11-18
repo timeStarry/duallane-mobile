@@ -307,6 +307,9 @@ class NetworkGateway(
         if (!bearerToken.isNullOrBlank()) {
             builder.header("Authorization", "Bearer $bearerToken")
         }
+        if (targetUrl.startsWith("${tokenVault.getApiOrigin()}/api/")) {
+            builder.header("X-DualLane-Native-Version-Code", tokenVault.bundledConfig.versionCode.toString())
+        }
 
         httpClient.newCall(builder.build()).execute().use { res ->
             val respText = res.body?.string().orEmpty()
@@ -598,6 +601,9 @@ class NetworkGateway(
 
     private fun executeRawGet(targetUrl: String, bearerToken: String?, ifNoneMatch: String?): okhttp3.Response {
         val builder = Request.Builder().url(targetUrl).get()
+        if (targetUrl.startsWith("${tokenVault.getApiOrigin()}/api/")) {
+            builder.header("X-DualLane-Native-Version-Code", tokenVault.bundledConfig.versionCode.toString())
+        }
         if (!bearerToken.isNullOrBlank()) {
             builder.header("Authorization", "Bearer $bearerToken")
         }
@@ -906,6 +912,7 @@ class NetworkGateway(
         for ((k, v) in extraHeaders) {
             builder.header(k, v)
         }
+        builder.header("X-DualLane-Native-Version-Code", tokenVault.bundledConfig.versionCode.toString())
         httpClient.newCall(builder.build()).execute().use { resp ->
             return resp.code to resp.body?.string().orEmpty()
         }

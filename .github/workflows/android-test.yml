@@ -20,8 +20,6 @@ jobs:
     env:
       APP_ENV: test
       CI: '1'
-      DUALLANE_APP_VERSION: '1.0.7'
-      DUALLANE_ANDROID_VERSION_CODE: '10007'
       EXPO_PUBLIC_API_ORIGIN: ${{ vars.DUALLANE_API_ORIGIN }}
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +53,18 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      - name: Resolve package version and test smoke helpers
+        run: |
+          node --input-type=module - <<'JS'
+          import { readFileSync } from 'node:fs';
+          const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+          const [major, minor, patch] = version.split('.').map(Number);
+          process.env.INPUT_APP_VERSION = version;
+          process.env.INPUT_VERSION_CODE = String(major * 10000 + minor * 100 + patch);
+          await import('./scripts/resolve-android-version.mjs');
+          JS
+          python3 -m unittest discover -s scripts -p 'test_android_smoke.py' -v
 
       - name: Install dependencies and build mobile bundle
         run: |
@@ -116,6 +126,8 @@ jobs:
           assert root.find('uses-sdk').attrib[android + 'targetSdkVersion'] == '36'
           with zipfile.ZipFile('artifacts/android-test/duallane-test-signed.apk') as apk:
               app_config = json.loads(apk.read('assets/app.config'))
+          assert app_config['version'] == os.environ['DUALLANE_APP_VERSION']
+          assert str(app_config['android']['versionCode']) == os.environ['DUALLANE_ANDROID_VERSION_CODE']
           assert app_config['extra']['apiOrigin'] == os.environ['EXPO_PUBLIC_API_ORIGIN']
           with open('artifacts/android-test/app-config.json', 'w', encoding='utf-8') as output:
               json.dump(app_config, output, ensure_ascii=False, indent=2)
@@ -151,9 +163,13 @@ jobs:
             sleep 2
           done
 
-          trap 'timeout 10 adb logcat -d -s AndroidRuntime:E > artifacts/android-test/runtime-errors.txt || true' EXIT
+          collect_logs() {
+            timeout 15 adb logcat -d -v threadtime -b main -b system -b crash -b events > artifacts/android-test/logcat.txt || return 1
+            timeout 10 adb shell ps -A -o PID,NAME,ARGS > artifacts/android-test/processes.txt || return 1
+          }
+          trap 'collect_logs || true' EXIT
           adb install artifacts/android-test/duallane-test-signed.apk
-          adb logcat -c
+          adb logcat -b all -c
           adb shell cmd uimode night no
           for launch in cold restart dark; do
             if [[ "$launch" == dark ]]; then
@@ -162,12 +178,14 @@ jobs:
             adb shell am force-stop com.timestarry.duallane
             adb shell am start -W -n com.timestarry.duallane/.MainActivity
             sleep 5
-            adb shell pidof com.timestarry.duallane
             python3 scripts/android-smoke-login.py "$launch"
             adb exec-out screencap -p > "artifacts/android-test/$launch.png"
           done
-          adb logcat -d -s AndroidRuntime:E > artifacts/android-test/runtime-errors.txt
-          test ! -s artifacts/android-test/runtime-errors.txt || ! grep -E 'FATAL EXCEPTION' artifacts/android-test/runtime-errors.txt
+          collect_logs
+          python3 scripts/check-android-runtime-errors.py \
+            --log artifacts/android-test/logcat.txt \
+            --process-evidence artifacts/android-test/process-evidence.jsonl \
+            --report artifacts/android-test/runtime-report.json
 
       - name: Preserve package smoke evidence
         if: always()

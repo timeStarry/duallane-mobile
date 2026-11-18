@@ -25,6 +25,9 @@ import {
 import { useEmoteStore } from "./emote-store";
 import { useNavStore } from "./nav-store";
 import { useUpdateStore } from "@/shared/updater";
+import { beginMobileWrite, setMobileDraftActivity } from "@/shared/activity";
+import { readWorkspaceCardReferences, projectWorkspaceCard, type WorkspaceCardReference } from "@/shared/workspace-cards";
+import type { ComposerMention } from "@/shared/chat-navigation";
 
 export interface V1User {
   id: string;
@@ -104,6 +107,7 @@ export interface V1Message {
   reactions: Record<string, { count: number; reactedByMe: boolean }>;
   attachments?: V1MessageAttachment[];
   card?: DualLaneCardKitDocument;
+  cardReferences?: WorkspaceCardReference[];
 }
 
 export type ConversationNotificationLevel = "all" | "mentions" | "muted";
@@ -137,6 +141,7 @@ export interface V1Conversation {
 export interface DraftEntry {
   text: string;
   replyToMessageId?: string;
+  mentions?: ComposerMention[];
 }
 
 interface WorkspaceState {
@@ -158,6 +163,9 @@ interface WorkspaceState {
   collapsePrefs: CollapsePreferences;
   messageCollapseOverrides: Record<string, boolean>;
   messagesByConv: Record<string, V1Message[]>;
+  cardRevisions: Record<string, number>;
+  readingConversationId: string | null;
+  setConversationReading: (conversationId: string, reading: boolean) => void;
   members: Record<string, V1User>;
   threadsByRootId: Record<string, ThreadViewResponse>;
 
@@ -175,9 +183,9 @@ interface WorkspaceState {
   setPendingInviteCode: (code: string) => void;
   bootstrapWorkspace: () => Promise<void>;
   logout: () => Promise<void>;
-  loadConversationMessages: (conversationId: string) => Promise<void>;
+  loadConversationMessages: (conversationId: string) => Promise<boolean>;
   markRead: (conversationId: string) => void;
-  setDraft: (conversationId: string, text: string, replyToMessageId?: string) => void;
+  setDraft: (conversationId: string, text: string, replyToMessageId?: string, mentions?: ComposerMention[]) => void;
   setEditingMessageId: (messageId: string | null) => void;
   jumpToMessage: (conversationId: string, messageId: string) => void;
 
@@ -185,7 +193,8 @@ interface WorkspaceState {
     conversationId: string,
     text: string,
     replyToId?: string,
-    attachments?: V1MessageAttachment[]
+    attachments?: V1MessageAttachment[],
+    contentBlocks?: Array<Extract<V1MessageBlock, { type: "text" | "mention" }>>
   ) => Promise<void>;
   sendCustomSticker: (
     conversationId: string,
@@ -394,7 +403,24 @@ function syncNativeNotificationState(state: {
 function loadCachedDrafts(): Record<string, DraftEntry> {
   try {
     const raw = window.localStorage.getItem(DRAFTS_CACHE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, DraftEntry>) : {};
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const drafts: Record<string, DraftEntry> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.text !== "string") continue;
+      const draftText = entry.text;
+      const mentions = Array.isArray(entry.mentions) ? entry.mentions.filter((item): item is ComposerMention => {
+        if (!item || typeof item !== "object") return false;
+        const mention = item as Record<string, unknown>;
+        return typeof mention.userId === "string" && typeof mention.label === "string" &&
+          Number.isSafeInteger(mention.start) && Number.isSafeInteger(mention.end) && Number(mention.start) >= 0 &&
+          Number(mention.end) <= draftText.length && draftText.slice(Number(mention.start), Number(mention.end)) === `@${mention.label}`;
+      }) : undefined;
+      drafts[id] = { text: draftText, replyToMessageId: typeof entry.replyToMessageId === "string" ? entry.replyToMessageId : undefined, mentions };
+    }
+    return drafts;
   } catch {
     return {};
   }
@@ -482,13 +508,15 @@ export function buildTextAndMentionBlocks(
 ): Array<Record<string, unknown>> {
   if (!text) return [];
   const candidateIds = conv?.memberIds || [];
-  const candidates = [
+  const namedCandidates = [
     ...(conv?.kind === "group" ? [{ id: "all", displayName: "所有人" }] : []),
     ...candidateIds
       .filter((uid) => Boolean(uid && uid !== currentUserId && members[uid]?.displayName))
       .map((uid) => ({ id: uid, displayName: members[uid].displayName.trim() }))
       .filter((item) => item.displayName.length > 0),
   ].sort((a, b) => b.displayName.length - a.displayName.length);
+  const candidates = namedCandidates.filter((candidate) =>
+    namedCandidates.filter((other) => other.displayName === candidate.displayName).length === 1);
 
   if (candidates.length === 0 || !text.includes("@")) {
     return [{ type: "text", text }];
@@ -861,6 +889,7 @@ export function mapRawMessage(
     reactions: recalledAt ? {} : mapRawReactions(m.reactions),
     attachments: recalledAt ? undefined : mapRawAttachments(m.attachments, id),
     card: recalledAt ? undefined : (m.card as DualLaneCardKitDocument | undefined),
+    cardReferences: recalledAt ? undefined : readWorkspaceCardReferences(m.content),
   };
 }
 
@@ -1273,6 +1302,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     collapsePrefs: loadLocalCollapsePrefs(),
     messageCollapseOverrides: loadMsgCollapseOverrides(),
     messagesByConv: loadCachedMessages(),
+    cardRevisions: {},
+    readingConversationId: null,
     members: initialHydration?.members ?? {},
     threadsByRootId: {},
 
@@ -1504,11 +1535,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         conversations: {},
         conversationOrder: [],
         messagesByConv: {},
+        cardRevisions: {},
+        readingConversationId: null,
         members: {},
         p2pRoom: null,
         p2pMessages: [],
       });
     },
+
+    setConversationReading: (conversationId, reading) => set((state) => ({
+      readingConversationId: reading ? conversationId : state.readingConversationId === conversationId ? null : state.readingConversationId,
+    })),
 
     loadConversationMessages: async (conversationId) => {
       try {
@@ -1529,8 +1566,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
             [conversationId]: mapped,
           },
         }));
+        return true;
       } catch {
         // keep optimistic or bootstrap messages
+        return false;
       }
     },
 
@@ -1549,7 +1588,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       void mobileApi.markConversationRead(conversationId).catch(() => {});
     },
 
-    setDraft: (conversationId, text, replyToMessageId) => {
+    setDraft: (conversationId, text, replyToMessageId, mentions) => {
       set((s) => {
         const nextDrafts = { ...s.drafts };
         const effectiveReply =
@@ -1560,6 +1599,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           nextDrafts[conversationId] = {
             text,
             replyToMessageId: effectiveReply || undefined,
+            mentions: mentions ?? (nextDrafts[conversationId]?.text === text ? nextDrafts[conversationId]?.mentions : undefined),
           };
         }
         persistDrafts(nextDrafts);
@@ -1580,16 +1620,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       }, 2500);
     },
 
-    sendWorkspaceMessage: async (conversationId, text, replyToId, attachments) => {
+    sendWorkspaceMessage: async (conversationId, text, replyToId, attachments, contentBlocks) => {
       const user = get().currentUser;
       const trimmed = text.trim();
       const attList = attachments && attachments.length > 0 ? attachments : undefined;
       if (!user || (!trimmed && !attList)) return;
 
       const convSnap = get().conversations[conversationId];
-      const parsedBlocks = trimmed
+      const parsedBlocks: Array<Record<string, unknown>> = contentBlocks ?? (trimmed
         ? buildTextAndMentionBlocks(trimmed, convSnap, get().members, user.id)
-        : [];
+        : []);
       const optimisticBlocks: V1MessageBlock[] = parsedBlocks.map((b) =>
         b.type === "mention"
           ? { type: "mention", userId: String(b.userId), label: String(b.label) }
@@ -1636,6 +1676,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       }));
       get().setDraft(conversationId, "", "");
 
+      const releaseWrite = beginMobileWrite();
       try {
         const requestBlocks: Array<Record<string, unknown>> = [...parsedBlocks];
         for (const a of attList || []) {
@@ -1702,6 +1743,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
           },
         }));
         useNavStore.getState().showToast("消息发送失败，请重试", "danger");
+      } finally {
+        releaseWrite();
       }
     },
 
@@ -2278,7 +2321,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     triggerCardAction: async (cardId, actionId, payload, expectedRevision = 1) => {
       nativeBridge.haptic("light");
       const res = await mobileApi.invokeCardAction(cardId, actionId, payload, expectedRevision);
-      const updatedCard = res.card as DualLaneCardKitDocument | undefined;
+      const outcome = res.action;
+      if (!outcome || typeof outcome !== "object" || !("ok" in outcome) || outcome.ok !== true) {
+        throw new Error("卡片操作回执无效");
+      }
+      const resolved = await mobileApi.resolveCard(cardId);
+      const reference = Object.values(get().messagesByConv).flatMap((list) => list.flatMap((message) => message.cardReferences || []))
+        .find((entry) => entry.cardId === cardId);
+      const updatedCard = reference ? projectWorkspaceCard(reference, resolved.card) : undefined;
       if (updatedCard?.cardId) {
         set((s) => {
           const nextByConv: Record<string, V1Message[]> = {};
@@ -2438,6 +2488,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         );
         if (!convId || !rawMsg.id) return;
         const activeChatId = useNavStore.getState().activeChatId;
+        const currentlyReading = convId === activeChatId && get().readingConversationId === convId &&
+          (typeof document === "undefined" || document.visibilityState !== "hidden");
         const sSnap = get();
         const snapConv = sSnap.conversations[convId];
         const mapped = mapRawMessage(convId, rawMsg, sSnap.members, {
@@ -2448,7 +2500,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         const isOwn = Boolean(sSnap.currentUser?.id && mapped.senderId === sSnap.currentUser.id);
         const isSys = mapped.kind === "system";
 
-        if (evType === "message.created" && !isOwn && !isSys && convId === activeChatId) {
+        if (evType === "message.created" && !isOwn && !isSys && currentlyReading) {
           void mobileApi.markConversationRead(convId).catch(() => {});
         }
 
@@ -2527,14 +2579,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
             );
 
           const nextUnread =
-            convId === activeChatId
+            currentlyReading
               ? 0
               : evType === "message.created" && matchIdx < 0 && !isOwn && !isSys
               ? (prevConv?.unreadCount || 0) + 1
               : prevConv?.unreadCount || 0;
 
           const nextMention =
-            convId === activeChatId
+            currentlyReading
               ? 0
               : mentionedMe && matchIdx < 0
               ? (prevConv?.mentionCount || 0) + 1
@@ -2616,17 +2668,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       }
 
       if (evType === "card.updated") {
-        const updatedCard = (payload.card || payload) as DualLaneCardKitDocument | undefined;
-        if (!updatedCard?.cardId) return;
-        set((s) => {
-          const nextByConv: Record<string, V1Message[]> = {};
-          for (const [cid, list] of Object.entries(s.messagesByConv)) {
-            nextByConv[cid] = list.map((m) =>
-              m.card?.cardId === updatedCard.cardId ? { ...m, card: updatedCard } : m
-            );
-          }
-          return { messagesByConv: nextByConv };
-        });
+        const changed = (payload.card && typeof payload.card === "object" ? payload.card : payload) as Record<string, unknown>;
+        const cardId = typeof changed.cardId === "string" ? changed.cardId : "";
+        const revision = Number(changed.revision);
+        if (!cardId || !Number.isSafeInteger(revision) || revision < 1) return;
+        set((state) => ({ cardRevisions: { ...state.cardRevisions, [cardId]: Math.max(revision, state.cardRevisions[cardId] || 0) } }));
         return;
       }
 
@@ -2961,6 +3007,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
 });
 
 useWorkspaceStore.subscribe((state, prevState) => {
+  if (state.drafts !== prevState.drafts || state.p2pDraft !== prevState.p2pDraft) syncDraftActivity(state);
   if (state.messagesByConv !== prevState.messagesByConv && state.authStatus === "authenticated") {
     schedulePersistMessages(state.messagesByConv, state.conversationOrder);
   }
@@ -2973,3 +3020,14 @@ useWorkspaceStore.subscribe((state, prevState) => {
     syncNativeNotificationState(state);
   }
 });
+
+const registeredDrafts = new Set<string>();
+function syncDraftActivity(state: Pick<WorkspaceState, "drafts" | "p2pDraft">) {
+  const current = new Set(Object.entries(state.drafts).filter(([, draft]) => Boolean(draft.text || draft.replyToMessageId)).map(([id]) => `workspace:${id}`));
+  if (state.p2pDraft) current.add("private-direct");
+  for (const id of registeredDrafts) if (!current.has(id)) setMobileDraftActivity(id, false);
+  for (const id of current) setMobileDraftActivity(id, true);
+  registeredDrafts.clear();
+  for (const id of current) registeredDrafts.add(id);
+}
+syncDraftActivity(useWorkspaceStore.getState());

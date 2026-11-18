@@ -1,3 +1,6 @@
+import { beginMobileWrite } from "@/shared/activity";
+import { isNativeBusinessPath, nativeUpgradeRequired, NATIVE_POLICY_REFRESH, NATIVE_UPGRADE_CODE, NATIVE_VERSION_HEADER, readNativeUpgradePolicy, recordNativeUpgradeResponse } from "@/shared/native-upgrade";
+
 export interface NativeHttpResponse {
   status: number;
   ok: boolean;
@@ -166,7 +169,10 @@ function ensureGlobalCallbacks() {
       else if (eventType === "close") {
         wsListeners.delete(socketId);
         listener.onClose?.();
-      } else if (eventType === "error") listener.onError?.(payload);
+      } else if (eventType === "error") {
+        if (payload === NATIVE_UPGRADE_CODE) window.dispatchEvent(new CustomEvent(NATIVE_POLICY_REFRESH));
+        listener.onError?.(payload);
+      }
     };
   }
 
@@ -238,6 +244,15 @@ function nextCallId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+async function invokeNativeWrite<T>(fn: (callId: string) => void): Promise<T> {
+  const snapshot = nativeBridge.getSessionSnapshot();
+  if (nativeUpgradeRequired(snapshot.versionCode, readNativeUpgradePolicy(snapshot.apiOrigin))) {
+    throw new Error("请安装新版 DualLane 后继续使用");
+  }
+  const release = beginMobileWrite();
+  try { return await invokeNativeAsync<T>(fn); } finally { release(); }
+}
+
 function invokeNativeAsync<T>(fn: (callId: string) => void): Promise<T> {
   ensureGlobalCallbacks();
   const callId = nextCallId("nc");
@@ -271,9 +286,9 @@ export const nativeBridge = {
         return {
           authenticated: Boolean(raw.authenticated),
           apiOrigin: raw.apiOrigin || DEFAULT_ORIGIN,
-          appVersion: raw.appVersion || "1.0.14",
-          nativeVersion: raw.nativeVersion || raw.appVersion || "1.0.14",
-          versionCode: raw.versionCode || 10014,
+          appVersion: raw.appVersion || "未知",
+          nativeVersion: raw.nativeVersion || (!raw.otaActive ? raw.appVersion : "") || "未知",
+          versionCode: Number.isSafeInteger(raw.versionCode) && Number(raw.versionCode) > 0 ? Number(raw.versionCode) : 0,
           otaActive: Boolean(raw.otaActive),
           otaBundleId: raw.otaBundleId ? String(raw.otaBundleId) : undefined,
           platform: raw.platform || "android",
@@ -291,11 +306,11 @@ export const nativeBridge = {
     return {
       authenticated: false,
       apiOrigin: storedOrigin || DEFAULT_ORIGIN,
-      appVersion: "1.0.14",
-      nativeVersion: "1.0.14",
-      versionCode: 10014,
+      appVersion: this.isNativeAndroid() ? "未知" : "1.1.0",
+      nativeVersion: this.isNativeAndroid() ? "未知" : "1.1.0",
+      versionCode: this.isNativeAndroid() ? 0 : 10100,
       otaActive: false,
-      platform: "web",
+      platform: this.isNativeAndroid() ? "android" : "web",
     };
   },
 
@@ -394,10 +409,21 @@ export const nativeBridge = {
     path: string,
     options?: { headers?: Record<string, string>; body?: string }
   ): Promise<NativeHttpResponse> {
-    const headers = options?.headers || {};
+    const headers = { ...options?.headers };
     const bodyText = options?.body || "";
     if (this.isNativeAndroid() && window.DualLaneNative) {
-      return invokeNativeAsync<NativeHttpResponse>((callId) => {
+      const snapshot = this.getSessionSnapshot();
+      if (path.startsWith("/api/")) {
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase() === NATIVE_VERSION_HEADER.toLowerCase()) delete headers[key];
+        }
+        headers[NATIVE_VERSION_HEADER] = String(snapshot.versionCode);
+      }
+      const policy = readNativeUpgradePolicy(snapshot.apiOrigin);
+      if (isNativeBusinessPath(path) && nativeUpgradeRequired(snapshot.versionCode, policy)) {
+        return { status: 426, ok: false, bodyText: JSON.stringify({ error: { code: NATIVE_UPGRADE_CODE, message: "请安装新版 DualLane 后继续使用", ...policy } }) };
+      }
+      const response = await invokeNativeAsync<NativeHttpResponse>((callId) => {
         window.DualLaneNative!.httpRequest(
           callId,
           method.toUpperCase(),
@@ -406,6 +432,8 @@ export const nativeBridge = {
           bodyText
         );
       });
+      if (path.startsWith("/api/") && response.status === 426) recordNativeUpgradeResponse(snapshot.apiOrigin, response.bodyText);
+      return response;
     }
     const origin = path.startsWith("http") ? "" : this.getSessionSnapshot().apiOrigin;
     const res = await fetch(`${origin}${path}`, {
@@ -470,7 +498,7 @@ export const nativeBridge = {
     usedToday?: number;
   }> {
     if (this.isNativeAndroid() && window.DualLaneNative) {
-      return invokeNativeAsync((callId) => {
+      return invokeNativeWrite((callId) => {
         window.DualLaneNative!.uploadConversationFile(callId, conversationId, pickedFileId);
       });
     }
@@ -538,7 +566,7 @@ export const nativeBridge = {
   }> {
     const cleanName = fileName.trim() || "pasted.txt";
     if (this.isNativeAndroid() && window.DualLaneNative?.uploadTextAttachment) {
-      return invokeNativeAsync((callId) => {
+      return invokeNativeWrite((callId) => {
         window.DualLaneNative!.uploadTextAttachment!(callId, conversationId, cleanName, content);
       });
     }
@@ -601,7 +629,7 @@ export const nativeBridge = {
     addToLibrary = true
   ): Promise<{ emote: Record<string, unknown> }> {
     if (this.isNativeAndroid() && window.DualLaneNative) {
-      return invokeNativeAsync((callId) => {
+      return invokeNativeWrite((callId) => {
         window.DualLaneNative!.uploadCustomEmote(callId, pickedFileId, collectionId, addToLibrary);
       });
     }
@@ -629,7 +657,7 @@ export const nativeBridge = {
 
   async uploadBinaryAvatar(targetPath: string, pickedFileId: string): Promise<Record<string, unknown>> {
     if (this.isNativeAndroid() && window.DualLaneNative) {
-      return invokeNativeAsync((callId) => {
+      return invokeNativeWrite((callId) => {
         window.DualLaneNative!.uploadBinaryAvatar(callId, targetPath, pickedFileId);
       });
     }
@@ -666,6 +694,11 @@ export const nativeBridge = {
     authenticated: boolean,
     listener: WsListener
   ): { send: (data: string) => void; close: () => void } {
+    const snapshot = this.getSessionSnapshot();
+    if (this.isNativeAndroid() && isNativeBusinessPath(path) && nativeUpgradeRequired(snapshot.versionCode, readNativeUpgradePolicy(snapshot.apiOrigin))) {
+      queueMicrotask(() => listener.onError?.(NATIVE_UPGRADE_CODE));
+      return { send: () => {}, close: () => {} };
+    }
     ensureGlobalCallbacks();
     const socketId = nextCallId("ws");
     wsListeners.set(socketId, listener);

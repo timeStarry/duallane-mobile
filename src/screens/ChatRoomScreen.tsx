@@ -1,7 +1,8 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowLeft,
+  ArrowUp,
   AtSign,
   BellOff,
   Copy,
@@ -29,8 +30,19 @@ import { isMessageEffectivelyCollapsed, MessageItem } from "@/components/Message
 import { StickerDrawer } from "@/components/StickerDrawer";
 import { nativeBridge } from "@/native/bridge";
 import { mobileApi, type BotCommandSpec } from "@/shared/api";
+import { beginMobileWrite, setMobileDraftActivity } from "@/shared/activity";
+import {
+  buildSelectedMentionBlocks,
+  captureUnreadNavigation,
+  chatAutocompleteKeyAction,
+  insertComposerMention,
+  reconcileComposerMentions,
+  revealChatAutocompleteOption,
+  type UnreadNavigation,
+} from "@/shared/chat-navigation";
 import { isSingleBuiltInSticker } from "@/shared/emotes";
 import { formatBytes, formatDateDivider, isSameCalendarDay } from "@/shared/format";
+import { useThemeStore } from "@/shared/theme-store";
 import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import {
@@ -70,6 +82,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
   const loadConversationMessages = useWorkspaceStore((s) => s.loadConversationMessages);
   const markRead = useWorkspaceStore((s) => s.markRead);
+  const setConversationReading = useWorkspaceStore((s) => s.setConversationReading);
   const setDraft = useWorkspaceStore((s) => s.setDraft);
   const setEditingMessageId = useWorkspaceStore((s) => s.setEditingMessageId);
   const setLocalMessageCollapsed = useWorkspaceStore((s) => s.setLocalMessageCollapsed);
@@ -97,11 +110,19 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [botCommands, setBotCommands] = useState<BotCommandSpec[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
-  const [hugePaste, setHugePaste] = useState<{
+  const [dismissedMentionText, setDismissedMentionText] = useState<string | null>(null);
+  const [menuSelection, setMenuSelection] = useState({ key: "", index: 0 });
+  const [unreadNavigation, setUnreadNavigation] = useState<UnreadNavigation | null>(null);
+  const [hugePaste, setHugePasteState] = useState<{
     text: string;
     charCount: number;
     byteSize: number;
   } | null>(null);
+  const setHugePaste = useCallback((value: typeof hugePaste) => {
+    setMobileDraftActivity(`large-paste:${conversationId}`, Boolean(value));
+    setHugePasteState(value);
+  }, [conversationId]);
+  useEffect(() => () => setMobileDraftActivity(`large-paste:${conversationId}`, false), [conversationId]);
   const [isComposingIme, setIsComposingIme] = useState(false);
   const [topicsSheetOpen, setTopicsSheetOpen] = useState(false);
   const [remoteThreads, setRemoteThreads] = useState<
@@ -120,6 +141,14 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const listRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const autocompleteRef = useRef<HTMLDivElement | null>(null);
+  const visitRef = useRef<{
+    conversationId: string;
+    unreadCount: number;
+    settled: boolean;
+    seenIds: Set<string>;
+    newestCreatedAt: number;
+  } | null>(null);
   const lastTypingSentRef = useRef<number>(0);
   const pinnedConvRef = useRef<string>("");
   const nearBottomRef = useRef<boolean>(true);
@@ -127,6 +156,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
   const textValue = draft?.text || "";
   const replyToId = draft?.replyToMessageId;
+  const reducedMotion = useThemeStore((s) => s.reducedMotion);
 
   const directPeer = useMemo(() => {
     if (!conv || conv.kind !== "direct") return undefined;
@@ -146,32 +176,86 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   }, [conv, members, currentUser]);
 
   useEffect(() => {
-    nearBottomRef.current = true;
+    const state = useWorkspaceStore.getState();
+    // Preserve the pre-markRead snapshot across React Strict Mode's second setup.
+    const visit = visitRef.current?.conversationId === conversationId
+      ? visitRef.current
+      : {
+          conversationId,
+          unreadCount: state.highlightedMessageId ? 0 : state.conversations[conversationId]?.unreadCount || 0,
+          settled: false,
+          seenIds: new Set<string>(),
+          newestCreatedAt: 0,
+        };
+    visitRef.current = visit;
+    visit.settled = false;
+    nearBottomRef.current = !state.highlightedMessageId;
+    setConversationReading(conversationId, nearBottomRef.current && !document.hidden);
     setShowScrollBottom(false);
+    setUnreadNavigation(null);
+    setDismissedMentionText(null);
+    setSlashOpen(false);
     setHugePaste(null);
     let cancelled = false;
-    if (messages.length === 0) {
+    if ((state.messagesByConv[conversationId] || []).length === 0) {
       setLoadingInitial(true);
     }
-    void loadConversationMessages(conversationId).finally(() => {
-      if (!cancelled) setLoadingInitial(false);
-    });
-    markRead(conversationId);
+    void loadConversationMessages(conversationId)
+      .then((loaded) => {
+        if (cancelled || visitRef.current !== visit || !loaded) return;
+        const fresh = useWorkspaceStore.getState();
+        const freshMessages = fresh.messagesByConv[conversationId] || [];
+        visit.seenIds = new Set(freshMessages.map((message) => message.id));
+        visit.newestCreatedAt = Math.max(0, ...freshMessages.map((message) => Date.parse(message.createdAt) || 0));
+        visit.settled = true;
+        setUnreadNavigation(captureUnreadNavigation(freshMessages, visit.unreadCount, fresh.currentUser?.id));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingInitial(false);
+      });
+    if (!state.highlightedMessageId) markRead(conversationId);
+    const onVisibilityChange = () => {
+      const reading = !document.hidden && nearBottomRef.current;
+      setConversationReading(conversationId, reading);
+      if (reading) markRead(conversationId);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
+      setConversationReading(conversationId, false);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, loadConversationMessages, markRead]);
+  }, [conversationId, loadConversationMessages, markRead, setConversationReading, setHugePaste]);
+
+  useEffect(() => {
+    const visit = visitRef.current;
+    if (!visit?.settled || visit.conversationId !== conversationId) return;
+    const lastKnownIndex = messages.findLastIndex((message) => visit.seenIds.has(message.id));
+    const incoming = messages.filter((message, index) => !visit.seenIds.has(message.id) && index > lastKnownIndex &&
+      message.senderId !== currentUser?.id && message.kind !== "system" &&
+      (lastKnownIndex >= 0 || Date.parse(message.createdAt) >= visit.newestCreatedAt));
+    for (const message of messages) visit.seenIds.add(message.id);
+    visit.newestCreatedAt = Math.max(visit.newestCreatedAt, ...messages.map((message) => Date.parse(message.createdAt) || 0));
+    if (incoming.length > 0 && !nearBottomRef.current) {
+      setUnreadNavigation((previous) => ({
+        count: (previous?.count || 0) + incoming.length,
+        firstMessageId: previous?.firstMessageId || incoming[0].id,
+        availableCount: (previous?.availableCount || 0) + incoming.length,
+      }));
+    }
+  }, [conversationId, currentUser?.id, messages]);
 
   useEffect(() => {
     if (!isBotConversation) {
       setBotCommands([]);
       return;
     }
+    let cancelled = false;
     void mobileApi
       .listConversationBotCommands(conversationId)
-      .then((res) => setBotCommands(res.commands || []))
-      .catch(() => setBotCommands([]));
+      .then((res) => { if (!cancelled) setBotCommands(res.commands || []); })
+      .catch(() => { if (!cancelled) setBotCommands([]); });
+    return () => { cancelled = true; };
   }, [conversationId, isBotConversation]);
 
   // Synchronous pre-paint bottom pinning on conversation open & incoming/outgoing messages
@@ -188,6 +272,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     if (isInitialForConv || nearBottomRef.current || isOwnNewTail) {
       el.scrollTop = el.scrollHeight;
       nearBottomRef.current = true;
+      setConversationReading(conversationId, !document.hidden);
       setShowScrollBottom(false);
       if (messages.length > 0) {
         pinnedConvRef.current = conversationId;
@@ -202,6 +287,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     currentUser?.id,
     stickerOpen,
     highlightedMessageId,
+    setConversationReading,
   ]);
 
   // Keep bottom locked when images/stickers decode or IME keyboard / drawer resizes viewport
@@ -222,9 +308,12 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   // Scroll to highlighted message when jumping from search or pin
   useEffect(() => {
     if (!highlightedMessageId) return;
+    nearBottomRef.current = false;
+    pinnedConvRef.current = conversationId;
+    setConversationReading(conversationId, false);
     const target = document.getElementById(`msg-${highlightedMessageId}`);
     target?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [highlightedMessageId]);
+  }, [conversationId, highlightedMessageId, setConversationReading]);
 
   const msgById = useMemo(() => {
     const map = new Map<string, V1Message>();
@@ -268,18 +357,53 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   }, [mentionQuery, conv, members, currentUser]);
 
   const insertMention = (userId: string, displayName: string) => {
-    void userId;
-    const replaced =
-      mentionQuery !== null
-        ? textValue.replace(/@([^\s@]*)$/, `@${displayName} `)
-        : `${textValue}${textValue && !textValue.endsWith(" ") ? " " : ""}@${displayName} `;
-    setDraft(conversationId, replaced, replyToId);
-    textareaRef.current?.focus();
+    const next = insertComposerMention(textValue, draft?.mentions || [], userId, displayName, mentionQuery !== null);
+    setDraft(conversationId, next.text, replyToId, next.mentions);
+    setDismissedMentionText(null);
+    textareaRef.current?.focus({ preventScroll: true });
+  };
+
+  const visibleBotCommands = useMemo(() => {
+    const query = /^\/([^\s]*)$/u.exec(textValue)?.[1]?.toLowerCase() || "";
+    return botCommands.filter((command) => command.command.replace(/^\//u, "").toLowerCase().startsWith(query));
+  }, [botCommands, textValue]);
+  const mentionMenuVisible = mentionCandidates.length > 0 && dismissedMentionText !== textValue;
+  const slashMenuVisible = !mentionMenuVisible && slashOpen && isBotConversation && visibleBotCommands.length > 0;
+  const menuCount = mentionMenuVisible ? mentionCandidates.length : slashMenuVisible ? visibleBotCommands.length : 0;
+  const menuIds = mentionMenuVisible
+    ? mentionCandidates.map((candidate) => candidate.id).join(",")
+    : visibleBotCommands.map((command) => `${command.botId || ""}/${command.command}`).join(",");
+  const menuKey = `${conversationId}:${mentionMenuVisible ? "mention" : "slash"}:${textValue}:${menuIds}`;
+  const activeMenuIndex = menuSelection.key === menuKey ? Math.min(menuSelection.index, menuCount - 1) : 0;
+  const menuId = `chat-autocomplete-${conversationId}`;
+
+  useLayoutEffect(() => {
+    const list = autocompleteRef.current;
+    if (!list || menuCount <= 0) return;
+    const option = list.querySelector<HTMLElement>(`[data-autocomplete-index="${activeMenuIndex}"]`);
+    if (option) revealChatAutocompleteOption(list, option);
+  }, [activeMenuIndex, menuCount, menuKey]);
+
+  const insertBotCommand = (command: BotCommandSpec) => {
+    const token = command.command.startsWith("/") ? command.command : `/${command.command}`;
+    setDraft(conversationId, `${token} `, replyToId, []);
+    setSlashOpen(false);
+    textareaRef.current?.focus({ preventScroll: true });
+  };
+
+  const returnToLatest = () => {
+    nearBottomRef.current = true;
+    setConversationReading(conversationId, !document.hidden);
+    setShowScrollBottom(false);
+    setUnreadNavigation(null);
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+    markRead(conversationId);
   };
 
   const startReplyToMessage = (target: V1Message) => {
     setEditingMessageId(null);
     let nextDraft = textValue;
+    let nextMentions = draft?.mentions || [];
     if (
       conv?.kind === "group" &&
       replyAutoMention &&
@@ -291,17 +415,22 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         nextDraft = nextDraft
           ? `@${targetName} ${nextDraft.replace(/^\s+/, "")}`
           : `@${targetName} `;
+        nextMentions = [
+          ...reconcileComposerMentions(textValue, nextDraft, nextMentions),
+          { userId: target.senderId, label: targetName, start: 0, end: targetName.length + 1 },
+        ];
       }
     }
-    setDraft(conversationId, nextDraft, target.id);
+    setDraft(conversationId, nextDraft, target.id, nextMentions);
     setTimeout(() => textareaRef.current?.focus(), 40);
   };
 
   const handleTextChange = (val: string) => {
-    setDraft(conversationId, val, replyToId);
-    if (val.startsWith("/") && isBotConversation && botCommands.length > 0) {
+    setDraft(conversationId, val, replyToId, reconcileComposerMentions(textValue, val, draft?.mentions || []));
+    setDismissedMentionText(null);
+    if (/^\/[^\s]*$/u.test(val) && isBotConversation && botCommands.length > 0) {
       setSlashOpen(true);
-    } else if (slashOpen && !val.startsWith("/")) {
+    } else if (slashOpen) {
       setSlashOpen(false);
     }
     const now = Date.now();
@@ -325,9 +454,11 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
   const handleSendHugePasteAsTxt = async () => {
     if (!hugePaste || uploading) return;
+    const releaseWrite = beginMobileWrite();
     const payload = hugePaste;
     setHugePaste(null);
     setUploading(true);
+    returnToLatest();
     try {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const fileName = `pasted-${stamp}.txt`;
@@ -341,39 +472,51 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           url: att.url,
           downloadUrl: att.downloadUrl,
         },
-      ]);
+      ], buildSelectedMentionBlocks(textValue, draft?.mentions || []));
       showToast("长文本已转为 .txt 附件发送", "success");
     } catch (err) {
       setHugePaste(payload);
       showToast(err instanceof Error ? err.message : "上传文本附件失败", "danger");
     } finally {
       setUploading(false);
+      releaseWrite();
     }
   };
 
   const handleSend = async () => {
     const trimmed = textValue.trim();
     if (!trimmed || uploading) return;
+    const releaseWrite = beginMobileWrite();
     // Keep soft keyboard open continuously like native chat apps (prevent WebView blur)
     textareaRef.current?.focus({ preventScroll: true });
     nativeBridge.haptic("light");
-    if (editingMsg) {
-      setDraft(conversationId, "", "");
+    try {
+      returnToLatest();
+      if (editingMsg) {
+        setDraft(conversationId, "", "");
+        textareaRef.current?.focus({ preventScroll: true });
+        await editWorkspaceMessage(conversationId, editingMsg.id, trimmed);
+        return;
+      }
+      const sendPromise = sendWorkspaceMessage(
+        conversationId, trimmed, replyToId, undefined,
+        buildSelectedMentionBlocks(textValue, draft?.mentions || [])
+      );
       textareaRef.current?.focus({ preventScroll: true });
-      await editWorkspaceMessage(conversationId, editingMsg.id, trimmed);
-      return;
+      await sendPromise;
+    } finally {
+      releaseWrite();
     }
-    const sendPromise = sendWorkspaceMessage(conversationId, trimmed, replyToId);
-    textareaRef.current?.focus({ preventScroll: true });
-    await sendPromise;
   };
 
   const handleUploadPick = async (mode: "image" | "file") => {
     setAttachSheetOpen(false);
-    const picked = await nativeBridge.pickMedia(mode, true);
-    if (picked.length === 0) return;
-    setUploading(true);
+    const releaseWrite = beginMobileWrite();
     try {
+      const picked = await nativeBridge.pickMedia(mode, true);
+      if (picked.length === 0) return;
+      setUploading(true);
+      returnToLatest();
       const uploaded: V1MessageAttachment[] = [];
       for (const f of picked) {
         const att = await nativeBridge.uploadConversationFile(conversationId, f.id);
@@ -386,13 +529,39 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           downloadUrl: att.downloadUrl,
         });
       }
-      await sendWorkspaceMessage(conversationId, textValue, replyToId, uploaded);
+      await sendWorkspaceMessage(conversationId, textValue, replyToId, uploaded,
+        buildSelectedMentionBlocks(textValue, draft?.mentions || []));
     } catch (err) {
       showToast(err instanceof Error ? err.message : "上传文件失败", "danger");
     } finally {
       setUploading(false);
+      releaseWrite();
     }
   };
+
+  const jumpToUnread = () => {
+    if (!unreadNavigation || !listRef.current) return;
+    const list = listRef.current;
+    const target = document.getElementById(`msg-${unreadNavigation.firstMessageId}`);
+    if (!target || !list.contains(target)) {
+      showToast("这条消息已不在当前加载窗口，可通过搜索查找", "info");
+      setUnreadNavigation(null);
+      return;
+    }
+    nearBottomRef.current = false;
+    setConversationReading(conversationId, false);
+    const top = Math.max(0, list.scrollTop + target.getBoundingClientRect().top - list.getBoundingClientRect().top - 12);
+    const motionReduced = reducedMotion || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (typeof list.scrollTo === "function") list.scrollTo({ top, behavior: motionReduced ? "auto" : "smooth" });
+    else list.scrollTop = top;
+    setUnreadNavigation(null);
+  };
+
+  const visibleTypers = typers.filter((entry) => entry.expiresAt > Date.now());
+  const thinkingTypers = visibleTypers.filter((entry) => entry.state === "thinking");
+  const statusTypers = thinkingTypers.length > 0 ? thinkingTypers : visibleTypers;
+  const typingNames = statusTypers.slice(0, 2).map((entry) => entry.displayName).join("、");
+  const typingStatus = `${typingNames}${statusTypers.length > 2 ? `等 ${statusTypers.length} 人` : ""}${thinkingTypers.length > 0 ? "正在思考" : "正在输入"}`;
 
   if (!conv) return null;
 
@@ -469,13 +638,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                 )}
               </div>
               <div className="text-[11px] text-[var(--dl-text-muted)] truncate">
-                {typers.length > 0 ? (
-                  <span className="text-[var(--dl-accent)] font-medium animate-pulse">
-                    {typers[0].state === "thinking"
-                      ? `${typers[0].displayName} 正在思考处理中…`
-                      : `${typers[0].displayName} 正在输入…`}
-                  </span>
-                ) : conv.kind === "group" ? (
+                {conv.kind === "group" ? (
                   `${conv.memberIds.length} 位成员`
                 ) : conv.kind === "saved" ? (
                   "仅自己可见 · 跨端同步"
@@ -568,6 +731,32 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         )}
       </header>
 
+      {unreadNavigation && (
+        <div className="flex justify-center px-3 py-1 shrink-0">
+          <div className="inline-flex max-w-full items-center rounded-full bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]">
+            <button
+              type="button"
+              onClick={jumpToUnread}
+              className="min-h-9 px-3 flex items-center gap-1.5 text-[12px] font-semibold truncate"
+            >
+              <ArrowUp size={14} aria-hidden="true" className="shrink-0" />
+              <span className="truncate">
+                {unreadNavigation.count} 条新消息
+                {unreadNavigation.count > unreadNavigation.availableCount && ` · 当前可回看 ${unreadNavigation.availableCount} 条`}
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label="关闭新消息回看提示"
+              onClick={() => setUnreadNavigation(null)}
+              className="w-9 h-9 flex items-center justify-center shrink-0 rounded-full"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Message Stream */}
       <div
         ref={listRef}
@@ -579,7 +768,13 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         onScroll={(e) => {
           const el = e.currentTarget;
           const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+          const wasNearBottom = nearBottomRef.current;
           nearBottomRef.current = dist < 140;
+          setConversationReading(conversationId, nearBottomRef.current && !document.hidden);
+          if (!wasNearBottom && nearBottomRef.current) {
+            setUnreadNavigation(null);
+            markRead(conversationId);
+          }
           setShowScrollBottom(dist > 360);
         }}
         className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 py-2 overscroll-contain relative"
@@ -642,11 +837,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
       {showScrollBottom && (
         <button
           type="button"
-          onClick={() => {
-            nearBottomRef.current = true;
-            setShowScrollBottom(false);
-            if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-          }}
+          onClick={returnToLatest}
           aria-label="回到底部"
           className="absolute right-4 bottom-20 z-20 w-10 h-10 rounded-full bg-[var(--dl-surface)] border border-[var(--dl-border)] shadow-md flex items-center justify-center text-[var(--dl-text)] active:scale-95"
         >
@@ -655,20 +846,28 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
       )}
 
       {/* Floating @Mention Candidate Bar */}
-      {mentionCandidates.length > 0 && (
+      {mentionMenuVisible && (
         <div
+          ref={autocompleteRef}
+          id={menuId}
+          role="listbox"
+          aria-label="提及成员"
           data-testid="mention-candidate-bar"
           className="mx-3 mb-1.5 rounded-2xl bg-[var(--dl-surface)] border border-[var(--dl-border)] shadow-lg overflow-hidden divide-y divide-[var(--dl-border)]/50 max-h-48 overflow-y-auto z-20"
         >
-          {mentionCandidates.map((u) => (
+          {mentionCandidates.map((u, index) => (
             <button
               key={u.id}
+              id={`${menuId}-${index}`}
+              role="option"
+              aria-selected={activeMenuIndex === index}
+              data-autocomplete-index={index}
               type="button"
               tabIndex={-1}
               onPointerDown={(e) => e.preventDefault()}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => insertMention(u.id, u.displayName)}
-              className="w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left active:bg-[var(--dl-card)]"
+              className={`w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left active:bg-[var(--dl-card)] ${activeMenuIndex === index ? "bg-[var(--dl-accent-soft)]" : ""}`}
             >
               {u.isAll ? (
                 <div className="w-7 h-7 rounded-full bg-amber-500/18 text-amber-600 dark:text-amber-300 flex items-center justify-center shrink-0">
@@ -702,22 +901,27 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
       )}
 
       {/* Floating / Bot Command Picker (ONLY in bot conversations!) */}
-      {slashOpen && isBotConversation && botCommands.length > 0 && (
-        <div className="mx-3 mb-1.5 rounded-2xl bg-[var(--dl-surface)] border border-[var(--dl-border)] shadow-lg overflow-hidden divide-y divide-[var(--dl-border)]/50 max-h-52 overflow-y-auto z-20">
-          {botCommands.map((cmd) => (
+      {slashMenuVisible && (
+        <div
+          ref={autocompleteRef}
+          id={menuId}
+          role="listbox"
+          aria-label="机器人指令"
+          className="mx-3 mb-1.5 rounded-2xl bg-[var(--dl-surface)] border border-[var(--dl-border)] shadow-lg overflow-hidden divide-y divide-[var(--dl-border)]/50 max-h-52 overflow-y-auto z-20"
+        >
+          {visibleBotCommands.map((cmd, index) => (
             <button
               key={`${cmd.botId || "b"}_${cmd.command}`}
+              id={`${menuId}-${index}`}
+              role="option"
+              aria-selected={activeMenuIndex === index}
+              data-autocomplete-index={index}
               type="button"
               tabIndex={-1}
               onPointerDown={(e) => e.preventDefault()}
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                const token = cmd.command.startsWith("/") ? cmd.command : `/${cmd.command}`;
-                setDraft(conversationId, `${token} `, replyToId);
-                setSlashOpen(false);
-                textareaRef.current?.focus({ preventScroll: true });
-              }}
-              className="w-full px-3.5 py-2.5 flex items-center justify-between gap-3 text-left active:bg-[var(--dl-card)]"
+              onClick={() => insertBotCommand(cmd)}
+              className={`w-full px-3.5 py-2.5 flex items-center justify-between gap-3 text-left active:bg-[var(--dl-card)] ${activeMenuIndex === index ? "bg-[var(--dl-accent-soft)]" : ""}`}
             >
               <span className="font-mono text-[13px] font-semibold text-[var(--dl-accent)]">
                 {cmd.command.startsWith("/") ? cmd.command : `/${cmd.command}`}
@@ -754,7 +958,8 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
               onClick={() => {
                 const text = hugePaste.text;
                 setHugePaste(null);
-                setDraft(conversationId, textValue + text, replyToId);
+                setDraft(conversationId, textValue + text, replyToId,
+                  reconcileComposerMentions(textValue, textValue + text, draft?.mentions || []));
               }}
               className="px-2.5 py-1.5 rounded-xl bg-[var(--dl-card)] text-[11.5px] font-medium text-[var(--dl-text-muted)]"
             >
@@ -828,6 +1033,27 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         </div>
       )}
 
+      {statusTypers.length > 0 && (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          data-testid="composer-typing-status"
+          className="min-h-7 px-4 py-1 flex items-center gap-2 text-[12px] text-[var(--dl-accent)] shrink-0"
+        >
+          <span aria-hidden="true" className="inline-flex items-center gap-1 shrink-0">
+            {[0, 150, 300].map((delay) => (
+              <span
+                key={delay}
+                className={`w-1 h-1 rounded-full bg-current ${reducedMotion ? "" : "animate-bounce motion-reduce:animate-none"}`}
+                style={{ animationDelay: `${delay}ms` }}
+              />
+            ))}
+          </span>
+          <span className="truncate">{typingStatus}</span>
+        </div>
+      )}
+
       {/* Bottom Composer Bar */}
       <div
         className={`bg-[var(--dl-surface)] border-t border-[var(--dl-border)] px-2 py-2 flex items-end gap-1.5 shrink-0 ${
@@ -874,6 +1100,12 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             ref={textareaRef}
             rows={1}
             enterKeyHint="send"
+            role="combobox"
+            aria-label="消息输入框"
+            aria-autocomplete="list"
+            aria-expanded={menuCount > 0}
+            aria-controls={menuCount > 0 ? menuId : undefined}
+            aria-activedescendant={menuCount > 0 ? `${menuId}-${activeMenuIndex}` : undefined}
             value={textValue}
             onFocus={() => setStickerOpen(false)}
             onCompositionStart={() => setIsComposingIme(true)}
@@ -881,11 +1113,30 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             onPaste={handlePaste}
             onChange={(e) => handleTextChange(e.target.value)}
             onKeyDown={(e) => {
+              const composing = isComposingIme || e.nativeEvent.isComposing || e.keyCode === 229;
+              const action = chatAutocompleteKeyAction({
+                key: e.key, shiftKey: e.shiftKey, isComposing: composing, keyCode: e.keyCode,
+              }, menuCount);
+              if (action) {
+                e.preventDefault();
+                if (action === "next" || action === "previous") {
+                  setMenuSelection({ key: menuKey, index: (activeMenuIndex + (action === "next" ? 1 : -1) + menuCount) % menuCount });
+                } else if (action === "dismiss") {
+                  setDismissedMentionText(textValue);
+                  setSlashOpen(false);
+                } else if (mentionMenuVisible) {
+                  const selected = mentionCandidates[activeMenuIndex];
+                  if (selected) insertMention(selected.id, selected.displayName);
+                } else {
+                  const selected = visibleBotCommands[activeMenuIndex];
+                  if (selected) insertBotCommand(selected);
+                }
+                return;
+              }
               if (
                 e.key === "Enter" &&
                 !e.shiftKey &&
-                !e.nativeEvent.isComposing &&
-                e.keyCode !== 229
+                !composing
               ) {
                 e.preventDefault();
                 void handleSend();
@@ -931,7 +1182,8 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
       <StickerDrawer
         open={stickerOpen}
         conversationId={conversationId}
-        onInsertToken={(tok) => setDraft(conversationId, textValue + tok, replyToId)}
+        onInsertToken={(tok) => setDraft(conversationId, textValue + tok, replyToId,
+          reconcileComposerMentions(textValue, textValue + tok, draft?.mentions || []))}
         onSendBuiltInSticker={(tok) => {
           void sendWorkspaceMessage(conversationId, tok, replyToId);
         }}

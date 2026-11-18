@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUpCircle,
   Camera,
@@ -23,9 +23,9 @@ import {
 } from "lucide-react";
 import { Avatar, BOT_AVATAR_COLORS } from "@/components/Avatar";
 import { BottomSheet } from "@/components/BottomSheet";
+import { BotGroupRequests } from "@/components/BotGroupRequests";
 import { nativeBridge } from "@/native/bridge";
 import {
-  DEFAULT_BOT_PAIRING_SCOPES,
   mobileApi,
   type BotConnectionInfo,
   type BotSetupSession,
@@ -35,27 +35,17 @@ import {
   type MobileBotSummary,
 } from "@/shared/api";
 import { resolveAssetUrl } from "@/shared/emotes";
+import {
+  buildBotPairingPrompt as buildPairingPrompt,
+  parseBotAccessPolicy, privateAssistantGroupPolicy, validateBotAccessPolicy, withBotAccessPolicy,
+  type BotAccessPolicy, type BotPolicyAudience, type BotGroupAudience,
+} from "@/shared/bot-policy";
 import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
 
 type MobileBotSubView = "root" | "permissions" | "conversations" | "persona" | "credentials";
 type MobileGroupPreset = "disabled" | "owner_only" | "approval_required" | "open";
-
-function buildPairingPrompt(botName: string, origin: string, sessionId: string): string {
-  const cleanOrigin = origin.replace(/\/+$/, "") || "https://duallane.tsio.top";
-  const skillUrl = `${cleanOrigin}/integrations/duallane-channel.md`;
-  const runtimeUrl = `${cleanOrigin}/integrations/duallane-agent.mjs`;
-  const setupUrl = `${cleanOrigin}/workspace?setup=${encodeURIComponent(sessionId)}`;
-  return [
-    `请接入我的 DualLane 机器人「${botName}」：`,
-    `1. 先阅读接入规范：${skillUrl}`,
-    `2. 无需 npm，直接从当前实例下载零依赖单文件运行时（含 CLI / MCP / 空闲自动热更）：`,
-    `   mkdir -p ~/.duallane/bin && curl -fsSL "${runtimeUrl}" -o ~/.duallane/bin/duallane-agent.mjs && chmod +x ~/.duallane/bin/duallane-agent.mjs`,
-    `3. 使用一次性配对地址发起绑定（无需手动粘贴 Token）：${setupUrl}`,
-    `发起请求后提醒我点击「确认授权」；授权完成后请运行 node ~/.duallane/bin/duallane-agent.mjs daemon install --profile default --agent auto 注册常驻后台守护服务（支持断线自愈、空闲静默热更新与群聊安全隔离）。`,
-  ].join("\n");
-}
 
 function copyTextReliable(text: string): void {
   nativeBridge.copyText(text);
@@ -146,6 +136,7 @@ export function StickerAndBotSheets() {
   const deleteCollection = useEmoteStore((s) => s.deleteCollection);
 
   const members = useWorkspaceStore((s) => s.members);
+  const conversations = useWorkspaceStore((s) => s.conversations);
   const patchMemberLocal = useWorkspaceStore((s) => s.patchMemberLocal);
   const sendStickerPackShare = useWorkspaceStore((s) => s.sendStickerPackShare);
   const bootstrapWorkspace = useWorkspaceStore((s) => s.bootstrapWorkspace);
@@ -166,7 +157,11 @@ export function StickerAndBotSheets() {
   const [botTokens, setBotTokens] = useState<BotTokenRecord[]>([]);
   const [botConnection, setBotConnection] = useState<BotConnectionInfo | null>(null);
   const [botConversations, setBotConversations] = useState<MobileBotConversationItem[]>([]);
-  const [latestSdkVer, setLatestSdkVer] = useState("1.0.14");
+  const [latestSdkVer, setLatestSdkVer] = useState("");
+  const [accessPolicy, setAccessPolicy] = useState<BotAccessPolicy | null>(null);
+  const [policyError, setPolicyError] = useState("");
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const detailEpoch = useRef(0);
 
   // Selected Bot Settings state
   const [visPolicy, setVisPolicy] = useState<"private" | "specified_members" | "space_members">("private");
@@ -221,16 +216,25 @@ export function StickerAndBotSheets() {
   }, [botManageOpen, reloadBots]);
 
   const refreshSelectedBotDetail = useCallback(async (botId: string) => {
+    const requestEpoch = ++detailEpoch.current;
     const [tokRes, connRes, setRes, ovRes] = await Promise.all([
       mobileApi.listBotTokens(botId).catch(() => ({ tokens: [] })),
       mobileApi.getBotConnection(botId).catch(() => ({ connection: null })),
       mobileApi.getBotSettings(botId).catch(() => null),
       mobileApi.getBotOverview(botId).catch(() => null),
     ]);
+    if (requestEpoch !== detailEpoch.current) return;
+    setSettingsLoaded(Boolean(setRes?.settings));
+    setPolicyError(setRes?.settings ? "" : "暂时无法读取权限，请刷新后再修改");
     setBotTokens((tokRes.tokens || []).filter((t) => !t.revokedAt));
     setBotConnection(connRes.connection || null);
     if (setRes?.settings) {
       const s = setRes.settings;
+      try { setAccessPolicy(parseBotAccessPolicy(s.accessPolicy)); }
+      catch (error) {
+        setAccessPolicy(null);
+        setPolicyError(error instanceof Error ? error.message : "权限响应无效");
+      }
       const rawVis = String(s.visibilityPolicy || "private");
       setVisPolicy(normalizeVisibility(rawVis));
       setAllowedMemberIds(
@@ -251,6 +255,14 @@ export function StickerAndBotSheets() {
   }, []);
 
   useEffect(() => {
+    detailEpoch.current += 1;
+    setSettingsLoaded(false);
+    setPolicyError("");
+    setAccessPolicy(null);
+    setBotTokens([]);
+    setBotConnection(null);
+    setBotConversations([]);
+    setLatestSdkVer("");
     if (!selectedBot) {
       setBotTokens([]);
       setBotConnection(null);
@@ -297,10 +309,8 @@ export function StickerAndBotSheets() {
   }, [inlineSetupSession?.id, inlineSetupSession?.status, refreshSelectedBotDetail, showToast]);
 
   const completeBotApproveFlow = async (session: BotSetupSession) => {
-    const validScopes =
-      session.requestedScopes && session.requestedScopes.length > 0
-        ? session.requestedScopes
-        : [...DEFAULT_BOT_PAIRING_SCOPES];
+    const validScopes = session.requestedScopes || [];
+    if (validScopes.length === 0) throw new Error("未收到明确的权限申请，请让 Agent 重新发起配对请求");
     const res = await mobileApi.approveBotSetupSession(session.id, validScopes);
     const targetBotId = session.bot?.id || selectedBot?.id;
     const targetBotUserId =
@@ -308,19 +318,8 @@ export function StickerAndBotSheets() {
       bots.find((b) => b.id === targetBotId)?.botUserId ||
       selectedBot?.botUserId;
     if (targetBotId && targetBotUserId) {
-      await mobileApi.updateBotSettings(targetBotId, { allowDirect: true }).catch(() => {});
-      const dmRes = await mobileApi.createDirectConversation(targetBotUserId).catch(() => null);
-      const convObj = (dmRes?.conversation || dmRes) as Record<string, unknown> | null;
-      const dmConvId = convObj?.id ? String(convObj.id) : "";
-      if (dmConvId) {
-        await mobileApi
-          .updateBotContextGrant(targetBotId, dmConvId, {
-            allowTrigger: true,
-            allowContext: true,
-            maxMessages: 50,
-          })
-          .catch(() => {});
-      }
+      // Pairing approves the shown token scopes, not a new history/trigger grant.
+      await mobileApi.createDirectConversation(targetBotUserId).catch(() => null);
       void bootstrapWorkspace().catch(() => {});
     }
     if (targetBotId) {
@@ -411,18 +410,10 @@ export function StickerAndBotSheets() {
   const handleOpenBotDirectChat = async () => {
     if (!selectedBot?.botUserId) return;
     try {
-      await mobileApi.updateBotSettings(selectedBot.id, { allowDirect: true }).catch(() => {});
       const dmRes = await mobileApi.createDirectConversation(selectedBot.botUserId);
       const convObj = (dmRes?.conversation || dmRes) as Record<string, unknown>;
       const dmConvId = String(convObj?.id || "");
       if (dmConvId) {
-        await mobileApi
-          .updateBotContextGrant(selectedBot.id, dmConvId, {
-            allowTrigger: true,
-            allowContext: true,
-            maxMessages: 50,
-          })
-          .catch(() => {});
         await bootstrapWorkspace().catch(() => {});
         setBotManageOpen(false);
         setSelectedBot(null);
@@ -435,10 +426,19 @@ export function StickerAndBotSheets() {
 
   const connectedVer = extractSemver(botConnection?.adapterVersion);
   const updateAvailable = isOlderSemver(connectedVer, latestSdkVer);
-  const groupPreset = resolveGroupPreset(allowGroup, groupInviterPolicy, requireOwnerApproval);
+  const groupPreset = accessPolicy
+    ? allowGroup ? "owner_only" : "disabled"
+    : resolveGroupPreset(allowGroup, groupInviterPolicy, requireOwnerApproval);
+  const savePermissionSettings = async (patch: Record<string, unknown>) => {
+    if (!selectedBot || !settingsLoaded || policyError) throw new Error("请先重新加载机器人权限");
+    await mobileApi.updateBotSettings(selectedBot.id, withBotAccessPolicy(patch, accessPolicy));
+  };
 
   const visibilitySummaryLabel =
-    visPolicy === "space_members"
+    accessPolicy
+      ? accessPolicy.direct.audience === "owner_only" ? "仅创建者私聊"
+        : accessPolicy.direct.audience === "specified_members" ? "指定成员可私聊" : "空间成员可私聊"
+      : visPolicy === "space_members"
       ? "全员可用"
       : visPolicy === "specified_members"
       ? `指定 ${allowedMemberIds.length} 人`
@@ -1057,6 +1057,29 @@ export function StickerAndBotSheets() {
                 <span>创建者本人 1v1 私聊权限永久保留，不受下方范围影响</span>
               </div>
 
+              {!settingsLoaded || policyError ? (
+                <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2">
+                  <p role={policyError ? "alert" : "status"} className="text-[12px] text-[var(--dl-text-muted)]">
+                    {policyError || "正在读取机器人权限…"}
+                  </p>
+                  <button type="button" className="text-[13px] text-[var(--dl-accent)]"
+                    onClick={() => void refreshSelectedBotDetail(selectedBot.id)}>重新加载权限</button>
+                </div>
+              ) : (
+                <BotAccessPolicyEditor key={selectedBot.id} policy={accessPolicy}
+                  members={Object.values(members).filter((member) => member.role !== "bot")}
+                  botSources={bots.filter((bot) => bot.id !== selectedBot.id)}
+                  onSave={async (next) => {
+                    const requestEpoch = detailEpoch.current;
+                    await mobileApi.updateBotSettings(selectedBot.id, { accessPolicy: next });
+                    if (requestEpoch !== detailEpoch.current) return;
+                    setAccessPolicy(next);
+                    await refreshSelectedBotDetail(selectedBot.id);
+                    if (requestEpoch + 1 === detailEpoch.current) showToast("独立权限已保存", "success");
+                  }} />
+              )}
+
+              {settingsLoaded && !policyError && !accessPolicy && (
               <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2">
                 <div className="text-[12.5px] font-semibold text-[var(--dl-text)]">
                   1. 成员可用范围（谁可私聊）
@@ -1076,7 +1099,7 @@ export function StickerAndBotSheets() {
                       onClick={async () => {
                         setVisPolicy(opt.id);
                         try {
-                          await mobileApi.updateBotSettings(selectedBot.id, {
+                          await savePermissionSettings({
                             visibilityPolicy: opt.id,
                             allowDirect: true,
                           });
@@ -1113,9 +1136,12 @@ export function StickerAndBotSheets() {
                                 ? allowedMemberIds.filter((id) => id !== m.id)
                                 : [...allowedMemberIds, m.id];
                               setAllowedMemberIds(next);
-                              await mobileApi
-                                .updateBotSettings(selectedBot.id, { allowedMemberIds: next })
-                                .catch(() => {});
+                              try {
+                                await savePermissionSettings({ allowedMemberIds: next });
+                              } catch {
+                                await refreshSelectedBotDetail(selectedBot.id);
+                                showToast("保存失败，已重新读取权限", "warning");
+                              }
                             }}
                             className="w-full px-3 py-2 rounded-xl bg-[var(--dl-surface)] flex items-center justify-between text-[12.5px] text-[var(--dl-text)]"
                           >
@@ -1129,13 +1155,17 @@ export function StickerAndBotSheets() {
                   </div>
                 )}
               </div>
+              )}
 
               <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-2">
                 <div className="text-[12.5px] font-semibold text-[var(--dl-text)]">
-                  2. 群聊准入与唤醒规则
+                  群聊准入与唤醒规则
                 </div>
                 {(
-                  [
+                  accessPolicy ? [
+                    { id: "owner_only", label: "允许创建者申请入群 · 群管理员批准" },
+                    { id: "disabled", label: "禁止加入群聊" },
+                  ] as const : [
                     { id: "owner_only", label: "允许入群 · 仅创建者可拉入" },
                     { id: "approval_required", label: "允许入群 · 成员拉入需审批" },
                     { id: "open", label: "允许入群 · 获准成员可直接拉入" },
@@ -1147,16 +1177,18 @@ export function StickerAndBotSheets() {
                     <button
                       key={opt.id}
                       type="button"
+                      disabled={!settingsLoaded || Boolean(policyError)}
                       onClick={async () => {
                         const patch = buildGroupPresetPatch(opt.id);
                         setAllowGroup(Boolean(patch.allowGroup));
                         setGroupInviterPolicy(String(patch.groupInviterPolicy));
                         setRequireOwnerApproval(Boolean(patch.requireOwnerApproval));
                         try {
-                          await mobileApi.updateBotSettings(selectedBot.id, patch);
+                          await savePermissionSettings(patch);
                           void refreshSelectedBotDetail(selectedBot.id);
                           showToast("群聊准入策略已更新", "success");
                         } catch {
+                          await refreshSelectedBotDetail(selectedBot.id);
                           showToast("保存失败", "warning");
                         }
                       }}
@@ -1175,17 +1207,18 @@ export function StickerAndBotSheets() {
                 {allowGroup && (
                   <button
                     type="button"
+                    disabled={!settingsLoaded || Boolean(policyError)}
                     onClick={async () => {
                       const nextPrivacy = triggerPolicy === "all-messages";
                       const nextMode = nextPrivacy ? "mention-or-command" : "all-messages";
                       setTriggerPolicy(nextMode);
-                      await mobileApi
-                        .updateBotSettings(selectedBot.id, { triggerPolicy: nextMode })
-                        .catch(() => {});
-                      showToast(
-                        nextPrivacy ? "已设为仅 @提及/回复唤醒" : "已设为群聊全量消息响应",
-                        "success"
-                      );
+                      try {
+                        await savePermissionSettings({ triggerPolicy: nextMode });
+                        showToast(nextPrivacy ? "已设为仅 @提及/回复唤醒" : "已设为群聊全量消息响应", "success");
+                      } catch {
+                        await refreshSelectedBotDetail(selectedBot.id);
+                        showToast("保存失败，已重新读取权限", "warning");
+                      }
                     }}
                     className="w-full mt-1 px-3 py-2.5 rounded-xl bg-[var(--dl-surface)] flex items-center justify-between text-[12.5px]"
                   >
@@ -1207,6 +1240,9 @@ export function StickerAndBotSheets() {
               >
                 ← 返回机器人主页
               </button>
+
+              <BotGroupRequests key={selectedBot.id} botId={selectedBot.id}
+                conversations={Object.values(conversations).filter((group) => group.kind === "group")} />
 
               {botConversations.length === 0 ? (
                 <div className="p-4 rounded-2xl bg-[var(--dl-card)] text-center text-[12.5px] text-[var(--dl-text-muted)]">
@@ -1235,36 +1271,31 @@ export function StickerAndBotSheets() {
                     </div>
                     <button
                       type="button"
+                      disabled={conv.type === "group"}
                       onClick={async () => {
                         try {
                           const nextCtx = !conv.allowContext;
-                          if (conv.type === "group") {
-                            await mobileApi.updateBotGroupPolicy(selectedBot.id, conv.id, {
-                              status: "active",
-                              allowTrigger: true,
-                              allowContext: nextCtx,
-                              maxMessages: 50,
-                            });
-                          } else {
-                            await mobileApi.updateBotContextGrant(selectedBot.id, conv.id, {
-                              allowTrigger: true,
-                              allowContext: nextCtx,
-                              maxMessages: 50,
-                            });
-                          }
+                          // A group grant is a two-party request. Its generic
+                          // policy PATCH defaults to active, so it must never
+                          // be used as a history-only toggle.
+                          if (conv.type === "group") return;
+                          await mobileApi.updateBotContextGrant(selectedBot.id, conv.id, {
+                            allowContext: nextCtx,
+                            ...(nextCtx && conv.maxMessages <= 0 ? { maxMessages: 20 } : {}),
+                          });
                           await refreshSelectedBotDetail(selectedBot.id);
-                          showToast("会话授权已更新", "success");
+                          showToast("历史读取授权已更新，唤醒状态保持不变", "success");
                         } catch {
                           showToast("更新失败", "warning");
                         }
                       }}
-                      className="px-3 py-1.5 rounded-xl bg-[var(--dl-surface)] text-[12px] font-semibold text-[var(--dl-accent)] shrink-0"
+                      className="px-3 py-1.5 rounded-xl bg-[var(--dl-surface)] text-[12px] font-semibold text-[var(--dl-accent)] shrink-0 disabled:opacity-60"
                     >
-                      {conv.type === "group" && conv.groupPolicyStatus !== "active"
-                        ? "批准入群"
+                      {conv.type === "group"
+                        ? "历史范围请在上方重新申请"
                         : conv.allowContext
                         ? "关闭上下文"
-                        : "开启上下文"}
+                        : "开启上下文（最多" + (conv.maxMessages > 0 ? conv.maxMessages : 20) + "条）"}
                     </button>
                   </div>
                 ))
@@ -1639,5 +1670,149 @@ export function StickerAndBotSheets() {
         )}
       </BottomSheet>
     </>
+  );
+}
+
+/**
+ * Intent: let a Bot owner express who can discover, DM and invoke it in a group.
+ * Each audience leads its own compact card; existing DL surfaces, accent and
+ * body sizes keep this a settings editor rather than a new visual system.
+ */
+export function BotAccessPolicyEditor({ policy, members, botSources, onSave }: {
+  policy: BotAccessPolicy | null;
+  members: Array<{ id: string; displayName: string }>;
+  botSources: Array<{ id: string; name: string }>;
+  onSave: (policy: BotAccessPolicy) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(() => parseBotAccessPolicy(policy) || privateAssistantGroupPolicy());
+  const [editing, setEditing] = useState(policy !== null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    setDraft(parseBotAccessPolicy(policy) || privateAssistantGroupPolicy());
+    setEditing(policy !== null);
+    setError("");
+  }, [policy]);
+  const changeAudience = (key: "discovery" | "direct" | "groups", audience: BotPolicyAudience | BotGroupAudience) => {
+    setSaved(false);
+    setDraft((current) => key === "groups" ? {
+      ...current, groups: {
+        ...current.groups, audience: audience as BotGroupAudience,
+        memberIds: audience === "specified_members" ? current.groups.memberIds : [],
+      },
+    } : {
+      ...current, [key]: {
+        audience: audience as BotPolicyAudience,
+        memberIds: audience === "specified_members" ? current[key].memberIds : [],
+      },
+    });
+  };
+  const toggleMember = (key: "discovery" | "direct" | "groups", memberId: string) => {
+    setSaved(false);
+    setDraft((current) => ({
+      ...current, [key]: {
+        ...current[key],
+        memberIds: current[key].memberIds.includes(memberId)
+          ? current[key].memberIds.filter((id) => id !== memberId)
+          : [...current[key].memberIds, memberId],
+      },
+    }));
+  };
+  const axisOptions = [
+    { key: "discovery", title: "目录发现", owner: "仅创建者可发现", all: "空间成员可发现" },
+    { key: "direct", title: "发起私聊", owner: "仅创建者可私聊", all: "空间成员可私聊" },
+    { key: "groups", title: "已批准群内的使用者", owner: "仅创建者可在群内使用", all: "该群当前成员可使用" },
+  ] as const;
+  return (
+    <section aria-label="独立机器人权限" className="p-3.5 rounded-2xl bg-[var(--dl-card)] space-y-3">
+      <h4 className="text-[13px] font-semibold text-[var(--dl-text)]">独立权限</h4>
+      <p className="text-[12px] leading-5 text-[var(--dl-text-muted)]">
+        目录发现、发起私聊和群内使用分别控制。允许群友使用，不会开放他们的私聊权限。
+      </p>
+      {!policy && <p className="text-[12px] leading-5 text-[var(--dl-text-muted)]">
+        当前仍沿用旧规则。查看本页不会转换权限；启用前请核对下面的范围。
+      </p>}
+      {!editing ? <button type="button"
+        className="w-full p-3 rounded-xl bg-[var(--dl-accent-soft)] text-[var(--dl-accent)] text-[13px] font-semibold"
+        onClick={() => setEditing(true)}>设置“仅自己私聊，指定群共享”</button> : <>
+        {axisOptions.map((axis) => (
+          <div key={axis.key} className="space-y-2">
+            <label className="block text-[12px] font-medium text-[var(--dl-text)]">{axis.title}
+              <select aria-label={axis.title} disabled={busy} value={draft[axis.key].audience}
+                onChange={(event) => changeAudience(axis.key, event.target.value as BotPolicyAudience | BotGroupAudience)}
+                className="mt-1 w-full p-2.5 rounded-xl bg-[var(--dl-surface)] border border-[var(--dl-border)] text-[13px]">
+                <option value="owner_only">{axis.owner}</option>
+                <option value="specified_members">创建者与指定成员</option>
+                <option value={axis.key === "groups" ? "current_members" : "space_members"}>{axis.all}</option>
+              </select>
+            </label>
+            {draft[axis.key].audience === "specified_members" && (
+              <div className="max-h-36 overflow-y-auto space-y-2 rounded-xl bg-[var(--dl-surface)] p-3">
+                {members.length === 0 ? <p className="text-[12px] text-[var(--dl-text-muted)]">当前没有可选择的人类成员</p>
+                  : members.map((member) => (
+                    <label key={member.id} className="flex items-center gap-2 text-[12px] text-[var(--dl-text)]">
+                      <input type="checkbox" disabled={busy} aria-label={axis.title + "成员：" + member.displayName}
+                        checked={draft[axis.key].memberIds.includes(member.id)}
+                        onChange={() => toggleMember(axis.key, member.id)} />
+                      <span>{member.displayName}</span>
+                    </label>
+                  ))}
+              </div>
+            )}
+          </div>
+        ))}
+        <div className="space-y-2 rounded-xl bg-[var(--dl-surface)] p-3">
+          <label className="flex items-center gap-2 text-[12px] font-medium text-[var(--dl-text)]">
+            <input type="checkbox" disabled={busy} checked={draft.groups.allowBotTriggers}
+              onChange={(event) => {
+                const checked = event.target.checked;
+                setSaved(false);
+                setDraft((current) => ({ ...current, groups: {
+                  ...current.groups, allowBotTriggers: checked,
+                  allowedBotIds: checked ? current.groups.allowedBotIds : [],
+                } }));
+              }} />允许指定机器人触发
+          </label>
+          <p className="text-[11px] leading-5 text-[var(--dl-text-muted)]">
+            默认关闭。开启后仍需逐个指定来源，并遵守服务端轮数、因果链和停止控制。
+          </p>
+          {draft.groups.allowBotTriggers && <>
+            {botSources.map((source) => (
+              <label key={source.id} className="flex items-center gap-2 text-[12px] text-[var(--dl-text)]">
+                <input type="checkbox" disabled={busy} aria-label={source.name + "可触发此机器人"}
+                  checked={draft.groups.allowedBotIds.includes(source.id)}
+                  onChange={() => {
+                    setSaved(false);
+                    setDraft((current) => ({ ...current, groups: { ...current.groups,
+                      allowedBotIds: current.groups.allowedBotIds.includes(source.id)
+                        ? current.groups.allowedBotIds.filter((id) => id !== source.id)
+                        : [...current.groups.allowedBotIds, source.id],
+                    } }));
+                  }} />{source.name}
+              </label>
+            ))}
+            {botSources.length === 0 && <p className="text-[12px] text-[var(--dl-text-muted)]">没有可选择的其他机器人，不会自动允许未来新增的机器人。</p>}
+            {draft.groups.allowedBotIds.some((id) => !botSources.some((source) => source.id === id)) &&
+              <p className="text-[11px] text-[var(--dl-text-muted)]">另有已保存的来源当前不可查看，其授权会保留；关闭机器人触发可清空全部来源。</p>}
+          </>}
+        </div>
+        {error && <p role="alert" className="text-[12px] text-[var(--dl-danger,#dc2626)]">{error}</p>}
+        {saved && <p role="status" className="text-[12px] text-[var(--dl-text)]">独立权限已保存</p>}
+        <button type="button" disabled={busy}
+          className="w-full p-3 rounded-xl bg-[var(--dl-accent)] text-white text-[13px] font-semibold disabled:opacity-50"
+          onClick={async () => {
+            if (busy) return;
+            setError(""); setSaved(false);
+            try {
+              validateBotAccessPolicy(draft);
+              setBusy(true);
+              await onSave(draft);
+              setSaved(true);
+            } catch (cause) { setError(cause instanceof Error ? cause.message : "权限保存失败"); }
+            finally { setBusy(false); }
+          }}>{busy ? "正在保存…" : policy ? "保存独立权限" : "启用并保存独立权限"}</button>
+      </>}
+    </section>
   );
 }

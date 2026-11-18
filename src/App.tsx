@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { MessageCircle, User, Users } from "lucide-react";
 import { AnnouncementModal } from "./components/AnnouncementModal";
 import { BrandLogo } from "./components/BrandLogo";
+import { RequiredNativeUpdate } from "./components/RequiredNativeUpdate";
 import { MediaLightbox } from "./components/MediaLightbox";
 import { nativeBridge } from "./native/bridge";
 import { ChatRoomScreen } from "./screens/ChatRoomScreen";
@@ -35,18 +36,31 @@ export function App() {
   const popBack = useNavStore((s) => s.popBack);
   const hasUpdate = useUpdateStore((s) => s.hasUpdate);
   const recommendedMode = useUpdateStore((s) => s.recommendedMode);
+  const requiredNativeUpdate = useUpdateStore((s) => s.requiredNativeUpdate);
+  const wasRequired = useRef(false);
+
+  useEffect(() => {
+    if (wasRequired.current && !requiredNativeUpdate) void bootstrapWorkspace();
+    wasRequired.current = requiredNativeUpdate;
+  }, [requiredNativeUpdate, bootstrapWorkspace]);
 
   useEffect(() => {
     nativeBridge.markBundleHealthy();
-    void bootstrapWorkspace();
+    if (nativeBridge.isNativeAndroid()) {
+      void useUpdateStore.getState().checkForUpdates(true).finally(() => {
+        if (!useUpdateStore.getState().requiredNativeUpdate) void bootstrapWorkspace();
+      });
+    } else {
+      void bootstrapWorkspace();
+    }
   }, [bootstrapWorkspace]);
 
   // Auto-check & auto-apply OTA hot-updates when returning to foreground (throttled to 45s)
   useEffect(() => {
-    let lastCheckMs = Date.now();
+    let lastCheckMs = 0;
     const triggerSilentUpdateCheck = () => {
       const now = Date.now();
-      if (now - lastCheckMs < 45_000) return;
+      if (!useUpdateStore.getState().requiredNativeUpdate && now - lastCheckMs < 45_000) return;
       lastCheckMs = now;
       void useUpdateStore.getState().checkForUpdates(true);
     };
@@ -55,9 +69,9 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    nativeBridge.setBackPressHandler(() => popBack());
+    nativeBridge.setBackPressHandler(() => requiredNativeUpdate || popBack());
     return () => nativeBridge.setBackPressHandler(null);
-  }, [popBack]);
+  }, [popBack, requiredNativeUpdate]);
 
   useEffect(() => {
     const off = nativeBridge.onDeepLink((url) => {
@@ -92,6 +106,8 @@ export function App() {
       </div>
     );
   };
+
+  if (requiredNativeUpdate) return <RequiredNativeUpdate />;
 
   if (authStatus === "checking") {
     return (

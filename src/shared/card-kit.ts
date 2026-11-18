@@ -11,6 +11,7 @@ export interface CardHeaderBlock {
 export interface CardMarkdownBlock {
   type: "markdown";
   content: string;
+  plainText?: boolean;
 }
 
 export interface CardFieldItem {

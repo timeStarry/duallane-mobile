@@ -76,6 +76,7 @@ class RealtimeHub private constructor(private val appContext: Context) {
     private var workspaceReady: Boolean = false
     private var workspaceSyncRequired: Boolean = false
     private var workspaceExplicitlyStopped: Boolean = false
+    private var workspaceUpgradeRequired: Boolean = false
     private var reconnectAttempt: Int = 0
     private var reconnectFuture: ScheduledFuture<*>? = null
     private var activeJsSocketId: String? = null
@@ -151,6 +152,7 @@ class RealtimeHub private constructor(private val appContext: Context) {
 
     fun ensureWorkspaceConnected() {
         synchronized(workspaceLock) {
+            if (workspaceUpgradeRequired) return
             if (!tokenVault.isAuthenticated()) return
             workspaceExplicitlyStopped = false
             if (workspaceOpen || workspaceConnecting) return
@@ -169,6 +171,7 @@ class RealtimeHub private constructor(private val appContext: Context) {
             synchronized(workspaceLock) {
                 activeJsSocketId = socketId
                 workspaceExplicitlyStopped = false
+                workspaceUpgradeRequired = false
                 alreadyOpen = workspaceOpen && workspaceSocket != null
             }
             if (alreadyOpen) {
@@ -367,6 +370,7 @@ class RealtimeHub private constructor(private val appContext: Context) {
                 .url("$wsOrigin/ws/workspace")
                 .header("Origin", origin)
                 .header("Authorization", "Bearer $token")
+                .header("X-DualLane-Native-Version-Code", tokenVault.bundledConfig.versionCode.toString())
                 .build()
 
             val newWs = wsClient.newWebSocket(request, object : WebSocketListener() {
@@ -553,9 +557,11 @@ class RealtimeHub private constructor(private val appContext: Context) {
             jsSid = activeJsSocketId
             activeJsSocketId = null
             shouldReconnect =
+                httpCode != 426 &&
                 !workspaceExplicitlyStopped &&
                     tokenVault.isAuthenticated() &&
                     (isUiForeground || tokenVault.isKeepAliveEnabled())
+            if (httpCode == 426) workspaceUpgradeRequired = true
         }
 
         if (httpCode == 401) {
@@ -565,7 +571,9 @@ class RealtimeHub private constructor(private val appContext: Context) {
         }
 
         if (jsSid != null) {
-            if (!errorMsg.isNullOrBlank()) {
+            if (httpCode == 426) {
+                uiEmitter?.invoke(jsSid!!, "error", "mobile.native_upgrade_required")
+            } else if (!errorMsg.isNullOrBlank()) {
                 uiEmitter?.invoke(jsSid!!, "error", errorMsg)
             }
             uiEmitter?.invoke(jsSid!!, "close", reason)
@@ -578,7 +586,7 @@ class RealtimeHub private constructor(private val appContext: Context) {
 
     private fun scheduleWorkspaceReconnect(immediate: Boolean) {
         synchronized(workspaceLock) {
-            if (workspaceExplicitlyStopped || !tokenVault.isAuthenticated()) return
+            if (workspaceExplicitlyStopped || workspaceUpgradeRequired || !tokenVault.isAuthenticated()) return
             if (!isUiForeground && !tokenVault.isKeepAliveEnabled()) return
             if (workspaceOpen || workspaceConnecting) return
 

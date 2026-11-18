@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { DualLaneCardKitDocument } from "@/shared/card-kit";
 import { useWorkspaceStore } from "@/store/workspace-store";
+import { ChatMarkdown } from "@/shared/markdown";
 
 const TONE_STYLES: Record<string, string> = {
   shared: "bg-sky-500/12 text-sky-600 dark:text-sky-300 border-sky-500/20",
@@ -11,17 +12,29 @@ const TONE_STYLES: Record<string, string> = {
   neutral: "bg-[var(--dl-card)] text-[var(--dl-text)] border-[var(--dl-border)]",
 };
 
-export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
+export function CardKitView({ card, onAction, locked = false }: {
+  card: DualLaneCardKitDocument;
+  onAction?: (actionId: string) => Promise<void>;
+  locked?: boolean;
+}) {
   const triggerCardAction = useWorkspaceStore((s) => s.triggerCardAction);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
-  const disabledAll = card.status !== "active";
+  const busy = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const disabledAll = card.status !== "active" || locked;
 
   const handleAction = async (actionId: string, payload?: Record<string, unknown>) => {
-    if (disabledAll || busyActionId) return;
+    if (disabledAll || busy.current) return;
+    busy.current = true;
+    setError(null);
     setBusyActionId(actionId);
     try {
-      await triggerCardAction(card.cardId, actionId, payload, card.revision);
+      if (onAction) await onAction(actionId);
+      else await triggerCardAction(card.cardId, actionId, payload, card.revision);
+    } catch {
+      setError("操作未完成，请核对卡片状态后再试");
     } finally {
+      busy.current = false;
       setBusyActionId(null);
     }
   };
@@ -58,7 +71,7 @@ export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
               key={idx}
               className="px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0"
             >
-              {block.content}
+              {block.plainText ? block.content : <ChatMarkdown text={block.content} />}
             </div>
           );
         }
@@ -136,7 +149,7 @@ export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
                     <button
                       key={el.actionId}
                       type="button"
-                      disabled={disabledAll || el.disabled || isBusy}
+                      disabled={disabledAll || el.disabled || Boolean(busyActionId)}
                       onClick={() => void handleAction(el.actionId, el.payload)}
                       className={`px-3 py-1.5 rounded-xl text-[12px] font-medium active:scale-[0.98] transition disabled:opacity-50 ${btnStyle}`}
                     >
@@ -147,7 +160,7 @@ export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
                 return (
                   <select
                     key={el.actionId}
-                    disabled={disabledAll || el.disabled}
+                    disabled={disabledAll || el.disabled || Boolean(busyActionId)}
                     value={el.value || ""}
                     onChange={(e) => void handleAction(el.actionId, { value: e.target.value })}
                     className="px-2.5 py-1.5 rounded-xl text-[12px] bg-[var(--dl-card)] border border-[var(--dl-border)] text-[var(--dl-text)]"
@@ -167,6 +180,7 @@ export function CardKitView({ card }: { card: DualLaneCardKitDocument }) {
 
         return null;
       })}
+      {error && <div role="alert" className="px-3.5 py-2 text-[12px] text-[var(--dl-text-muted)]">{error}</div>}
       {card.status !== "active" && (
         <div className="px-3.5 py-1.5 text-[11px] text-[var(--dl-text-muted)] bg-[var(--dl-card)] border-t border-[var(--dl-border)]">
           {card.status === "expired" ? "卡片已过期" : "卡片已失效"}
