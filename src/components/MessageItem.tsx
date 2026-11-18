@@ -35,6 +35,7 @@ import {
 } from "@/store/workspace-store";
 import { Avatar } from "./Avatar";
 import { CardKitView } from "./CardKitView";
+import { WorkspaceCardView } from "./WorkspaceCardView";
 
 export function isLongChatMessageText(text: string): boolean {
   if (!text) return false;
@@ -802,6 +803,8 @@ export function MessageItem({
 
               {/* Interactive CardKit v1 */}
               {msg.card && <CardKitView card={msg.card} />}
+              {!msg.recalledAt && msg.cardReferences?.map((reference) =>
+                <WorkspaceCardView key={reference.cardId} reference={reference} />)}
 
               {!hasCaptionText && msg.editedAt && (
                 <div className="mt-0.5 text-[11px] opacity-65 text-right select-none">(已编辑)</div>

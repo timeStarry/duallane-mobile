@@ -1,4 +1,5 @@
 import { nativeBridge } from "@/native/bridge";
+import { beginMobileWrite } from "./activity";
 import type {
   DualLaneCardKitDocument,
   SyncDeltaResponse,
@@ -22,6 +23,14 @@ export class ApiClientError extends Error {
 }
 
 async function requestJSON<T>(
+  path: string,
+  init?: { method?: string; headers?: Record<string, string>; body?: string }
+): Promise<T> {
+  const release = ["GET", "HEAD", "OPTIONS"].includes((init?.method || "GET").toUpperCase()) ? () => {} : beginMobileWrite();
+  try { return await requestJSONImpl<T>(path, init); } finally { release(); }
+}
+
+async function requestJSONImpl<T>(
   path: string,
   init?: { method?: string; headers?: Record<string, string>; body?: string }
 ): Promise<T> {
@@ -496,11 +505,15 @@ export const mobileApi = {
       body: JSON.stringify({ plainText, alsoSendToChannel, threadTitle }),
     }),
 
+  resolveCard: (cardId: string) =>
+    requestJSON<{ card: unknown }>(`/api/workspace/cards/${encodeURIComponent(cardId)}`),
+
   invokeCardAction: (
     cardId: string,
     actionId: string,
     input?: Record<string, unknown>,
-    expectedRevision = 1
+    expectedRevision = 1,
+    clientActionId = `act_${crypto.randomUUID()}`
   ) =>
     requestJSON<Record<string, unknown>>(
       `/api/workspace/cards/${encodeURIComponent(cardId)}/actions`,
@@ -508,7 +521,7 @@ export const mobileApi = {
         method: "POST",
         body: JSON.stringify({
           actionId,
-          clientActionId: `act_${crypto.randomUUID()}`,
+          clientActionId,
           expectedRevision,
           input: input || {},
         }),

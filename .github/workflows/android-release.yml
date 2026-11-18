@@ -126,6 +126,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            test "$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)" = true || {
+              echo 'Refusing to replace assets of a published Android release'; exit 1;
+            }
             gh release upload "${GITHUB_REF_NAME}" \
               artifacts/android-release/app-release.apk \
               artifacts/android-release/app-release.aab \
@@ -139,5 +142,5 @@ jobs:
               artifacts/android-release/build-provenance.json \
               artifacts/android-release/SHA256SUMS \
               --draft --verify-tag --generate-notes
-            gh release edit "${GITHUB_REF_NAME}" --draft=false --latest --verify-tag
           fi
+          echo 'Signed release remains a draft until package and upgrade acceptance completes.'

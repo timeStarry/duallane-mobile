@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MessageCircle, User, Users } from "lucide-react";
 import { AnnouncementModal } from "./components/AnnouncementModal";
 import { BrandLogo } from "./components/BrandLogo";
+import { RequiredNativeUpdate } from "./components/RequiredNativeUpdate";
 import { MediaLightbox } from "./components/MediaLightbox";
 import { nativeBridge } from "./native/bridge";
 import { ChatRoomScreen } from "./screens/ChatRoomScreen";
@@ -35,18 +36,36 @@ export function App() {
   const popBack = useNavStore((s) => s.popBack);
   const hasUpdate = useUpdateStore((s) => s.hasUpdate);
   const recommendedMode = useUpdateStore((s) => s.recommendedMode);
+  const requiredNativeUpdate = useUpdateStore((s) => s.requiredNativeUpdate);
+  const [nativePolicyReady, setNativePolicyReady] = useState(() => !nativeBridge.isNativeAndroid());
+  const wasRequired = useRef(false);
 
   useEffect(() => {
+    if (wasRequired.current && !requiredNativeUpdate) void bootstrapWorkspace();
+    wasRequired.current = requiredNativeUpdate;
+  }, [requiredNativeUpdate, bootstrapWorkspace]);
+
+  useEffect(() => {
+    let cancelled = false;
     nativeBridge.markBundleHealthy();
-    void bootstrapWorkspace();
+    if (nativeBridge.isNativeAndroid()) {
+      void useUpdateStore.getState().checkForUpdates(true).finally(() => {
+        if (cancelled) return;
+        setNativePolicyReady(true);
+        if (!useUpdateStore.getState().requiredNativeUpdate) void bootstrapWorkspace();
+      });
+    } else {
+      void bootstrapWorkspace();
+    }
+    return () => { cancelled = true; };
   }, [bootstrapWorkspace]);
 
   // Auto-check & auto-apply OTA hot-updates when returning to foreground (throttled to 45s)
   useEffect(() => {
-    let lastCheckMs = Date.now();
+    let lastCheckMs = 0;
     const triggerSilentUpdateCheck = () => {
       const now = Date.now();
-      if (now - lastCheckMs < 45_000) return;
+      if (!useUpdateStore.getState().requiredNativeUpdate && now - lastCheckMs < 45_000) return;
       lastCheckMs = now;
       void useUpdateStore.getState().checkForUpdates(true);
     };
@@ -55,9 +74,9 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    nativeBridge.setBackPressHandler(() => popBack());
+    nativeBridge.setBackPressHandler(() => requiredNativeUpdate || popBack());
     return () => nativeBridge.setBackPressHandler(null);
-  }, [popBack]);
+  }, [popBack, requiredNativeUpdate]);
 
   useEffect(() => {
     const off = nativeBridge.onDeepLink((url) => {
@@ -93,7 +112,9 @@ export function App() {
     );
   };
 
-  if (authStatus === "checking") {
+  if (requiredNativeUpdate) return <RequiredNativeUpdate />;
+
+  if (authStatus === "checking" || !nativePolicyReady) {
     return (
       <div className="h-full w-full flex flex-col items-center justify-center bg-[var(--dl-bg)] gap-3">
         <BrandLogo size={56} withTile />

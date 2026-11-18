@@ -1018,7 +1018,7 @@ export function MeTab() {
         open={updateSheetOpen}
         onClose={() => setUpdateSheetOpen(false)}
         title="检查版本更新"
-        subtitle={`v${snap.appVersion} (${snap.versionCode}) · ${snap.apiOrigin.replace(
+        subtitle={`界面 v${snap.appVersion} · Android v${snap.nativeVersion || snap.appVersion} (${snap.versionCode}) · ${snap.apiOrigin.replace(
           /^https?:\/\//,
           ""
         )}${snap.otaActive ? " · 热更生效中" : ""}`}

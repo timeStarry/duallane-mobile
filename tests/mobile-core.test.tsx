@@ -237,7 +237,7 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     });
 
     vi.spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace").mockResolvedValue();
-    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue(true);
     vi.spyOn(useWorkspaceStore.getState(), "markRead").mockImplementation(() => {});
 
     useWorkspaceStore.setState({
@@ -660,7 +660,7 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     expect(parsed.conversations["conv_grp"].lastMessageText).not.toContain("__duallane_");
 
     vi.spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace").mockResolvedValue();
-    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue(true);
     vi.spyOn(useWorkspaceStore.getState(), "markRead").mockImplementation(() => {});
 
     useWorkspaceStore.setState({
@@ -779,7 +779,7 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
       .spyOn(nativeBridge, "syncNotificationContext")
       .mockImplementation(() => {});
     vi.spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace").mockResolvedValue();
-    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue(true);
     vi.spyOn(useWorkspaceStore.getState(), "markRead").mockImplementation(() => {});
 
     const parsed = parseBootstrapPayload({
@@ -930,7 +930,7 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
       .spyOn(mobileApi, "sendMessage")
       .mockResolvedValue({ message: { id: "m_sent_txt", createdAt: "2026-11-16T12:00:00Z" } });
     vi.spyOn(useWorkspaceStore.getState(), "bootstrapWorkspace").mockResolvedValue();
-    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue();
+    vi.spyOn(useWorkspaceStore.getState(), "loadConversationMessages").mockResolvedValue(true);
     vi.spyOn(useWorkspaceStore.getState(), "markRead").mockImplementation(() => {});
 
     const parsed = parseBootstrapPayload({

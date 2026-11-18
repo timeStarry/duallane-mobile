@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { BottomSheet } from "@/components/BottomSheet";
+import { BotGroupRequests } from "@/components/BotGroupRequests";
 import { CardKitView } from "@/components/CardKitView";
 import { nativeBridge } from "@/native/bridge";
 import { mobileApi, type SearchFileHit } from "@/shared/api";
@@ -492,6 +493,8 @@ export function ThreadAndDetailSheets() {
                       </button>
                     </div>
 
+                    <BotGroupRequests key={activeConv.id} conversationId={activeConv.id} />
+
                     {/* Group Members */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
@@ -503,14 +506,17 @@ export function ThreadAndDetailSheets() {
                           onClick={() => setAddingMemberOpen((v) => !v)}
                           className="text-[12px] font-semibold text-[var(--dl-accent)] flex items-center gap-1"
                         >
-                          <UserPlus size={14} /> 邀请成员/机器人
+                          <UserPlus size={14} /> 邀请成员
                         </button>
                       </div>
 
                       {addingMemberOpen && (
                         <div className="mb-3 p-2.5 rounded-2xl bg-[var(--dl-card)] space-y-1 max-h-44 overflow-y-auto">
+                          <p className="px-2.5 py-1 text-[11px] leading-5 text-[var(--dl-text-muted)]">
+                            机器人由其创建者在“已接入会话”中发起入群请求，群管理员在本页批准。
+                          </p>
                           {Object.values(members)
-                            .filter((u) => !activeConv.memberIds.includes(u.id))
+                            .filter((u) => u.role !== "bot" && !activeConv.memberIds.includes(u.id))
                             .map((u) => (
                               <button
                                 key={u.id}
@@ -523,7 +529,7 @@ export function ThreadAndDetailSheets() {
                                 className="w-full px-2.5 py-2 rounded-xl flex items-center justify-between text-left active:bg-[var(--dl-surface)]"
                               >
                                 <span className="text-[13px] font-medium text-[var(--dl-text)]">
-                                  {u.displayName} {u.role === "bot" ? "(BOT)" : ""}
+                                  {u.displayName}
                                 </span>
                                 <span className="text-[12px] text-[var(--dl-accent)]">添加</span>
                               </button>
