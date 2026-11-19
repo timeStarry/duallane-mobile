@@ -99,10 +99,12 @@ describe("mobile conversation navigation", () => {
     let resolveLoad!: (result: { messages: typeof rawMessages }) => void;
     vi.mocked(mobileApi.listMessages).mockReturnValue(new Promise((resolve) => { resolveLoad = resolve; }));
     render(<StrictMode><ChatRoomScreen conversationId="chat" /></StrictMode>);
-    expect(useWorkspaceStore.getState().conversations.chat.unreadCount).toBe(0);
+    expect(useWorkspaceStore.getState().conversations.chat.unreadCount).toBe(2);
+    expect(mobileApi.markConversationRead).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "2 条新消息" })).not.toBeInTheDocument();
     await act(async () => { resolveLoad({ messages: rawMessages }); });
     const prompt = await screen.findByRole("button", { name: "2 条新消息" });
+    await waitFor(() => expect(mobileApi.markConversationRead).toHaveBeenCalledWith("chat", "new-2"));
     const list = screen.getByTestId("chat-message-scroll");
     expect(list.scrollTop).toBe(1200);
     vi.spyOn(list, "getBoundingClientRect").mockReturnValue({ top: 100 } as DOMRect);
@@ -119,6 +121,8 @@ describe("mobile conversation navigation", () => {
     render(<ChatRoomScreen conversationId="chat" />);
     await act(async () => { await Promise.resolve(); });
     expect(screen.getByText("旧缓存")).toBeInTheDocument();
+    expect(mobileApi.markConversationRead).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().conversations.chat.unreadCount).toBe(2);
     expect(screen.queryByRole("button", { name: /条新消息/u })).not.toBeInTheDocument();
   });
 
@@ -144,8 +148,22 @@ describe("mobile conversation navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "回到底部" }));
     expect(list.scrollTop).toBe(1200);
     expect(useWorkspaceStore.getState().readingConversationId).toBe("chat");
-    expect(useWorkspaceStore.getState().conversations.chat.unreadCount).toBe(0);
+    await waitFor(() => expect(useWorkspaceStore.getState().conversations.chat.unreadCount).toBe(0));
     expect(mobileApi.markConversationRead).toHaveBeenCalledOnce();
+  });
+
+  it("does not read a freshly loaded conversation while the document is hidden", async () => {
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    render(<ChatRoomScreen conversationId="chat" />);
+    await screen.findByRole("button", { name: "2 条新消息" });
+    expect(mobileApi.markConversationRead).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().readingConversationId).toBeNull();
+    expect(useWorkspaceStore.getState().conversations.chat.unreadCount).toBe(2);
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(mobileApi.markConversationRead).toHaveBeenCalledWith("chat", "new-2");
   });
 
   it("states the loaded-window boundary when the unread count exceeds available incoming messages", async () => {

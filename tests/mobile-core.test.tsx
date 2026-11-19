@@ -680,7 +680,7 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     // Favorited built-in sticker sends built-in token directly instead of custom:<uuid>
     const builtInSent: string[] = [];
     useEmoteStore.setState({
-      emotes: [
+      favoriteEmotes: [
         {
           id: "fav_builtin_1",
           kind: "image",

@@ -46,6 +46,7 @@ import { useThemeStore } from "@/shared/theme-store";
 import { useEmoteStore } from "@/store/emote-store";
 import { useNavStore } from "@/store/nav-store";
 import {
+  latestReadAnchorId,
   useWorkspaceStore,
   type TypingIndicatorEntry,
   type V1Message,
@@ -102,6 +103,13 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const setChatDetailOpen = useNavStore((s) => s.setChatDetailOpen);
   const setForwardingMessageIds = useNavStore((s) => s.setForwardingMessageIds);
   const showToast = useNavStore((s) => s.showToast);
+  const obscured = useNavStore((s) => s.searchOpen || s.directOverlayOpen || Boolean(s.lightboxMedia) ||
+    s.chatDetailOpen || Boolean(s.threadRootId) || s.serverConfigOpen || s.botManageOpen || s.updateSheetOpen || Boolean(s.pendingExternalUrl));
+  const obscuredRef = useRef(obscured);
+  obscuredRef.current = obscured;
+  const latestRenderedMessageId = latestReadAnchorId(messages);
+  const latestRenderedMessageIdRef = useRef(latestRenderedMessageId);
+  latestRenderedMessageIdRef.current = latestRenderedMessageId;
 
   const [stickerOpen, setStickerOpen] = useState(false);
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
@@ -190,16 +198,14 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     visitRef.current = visit;
     visit.settled = false;
     nearBottomRef.current = !state.highlightedMessageId;
-    setConversationReading(conversationId, nearBottomRef.current && !document.hidden);
+    setConversationReading(conversationId, false);
     setShowScrollBottom(false);
     setUnreadNavigation(null);
     setDismissedMentionText(null);
     setSlashOpen(false);
     setHugePaste(null);
     let cancelled = false;
-    if ((state.messagesByConv[conversationId] || []).length === 0) {
-      setLoadingInitial(true);
-    }
+    setLoadingInitial(true);
     void loadConversationMessages(conversationId)
       .then((loaded) => {
         if (cancelled || visitRef.current !== visit || !loaded) return;
@@ -213,11 +219,10 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
       .finally(() => {
         if (!cancelled) setLoadingInitial(false);
       });
-    if (!state.highlightedMessageId) markRead(conversationId);
     const onVisibilityChange = () => {
-      const reading = !document.hidden && nearBottomRef.current;
+      const reading = !document.hidden && !obscuredRef.current && visit.settled && nearBottomRef.current;
       setConversationReading(conversationId, reading);
-      if (reading) markRead(conversationId);
+      if (reading && latestRenderedMessageIdRef.current) markRead(conversationId, { messageId: latestRenderedMessageIdRef.current });
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
@@ -272,7 +277,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     if (isInitialForConv || nearBottomRef.current || isOwnNewTail) {
       el.scrollTop = el.scrollHeight;
       nearBottomRef.current = true;
-      setConversationReading(conversationId, !document.hidden);
+      setConversationReading(conversationId, Boolean(visitRef.current?.settled) && !document.hidden && !obscuredRef.current);
       setShowScrollBottom(false);
       if (messages.length > 0) {
         pinnedConvRef.current = conversationId;
@@ -289,6 +294,15 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     highlightedMessageId,
     setConversationReading,
   ]);
+
+  // Rendering a successfully loaded latest page is the only automatic read
+  // boundary. Prefetching, cached shells and merely receiving WS frames are not.
+  useEffect(() => {
+    const reading = !loadingInitial && visitRef.current?.settled === true && nearBottomRef.current &&
+      !document.hidden && !obscured && !highlightedMessageId;
+    setConversationReading(conversationId, reading);
+    if (reading && latestRenderedMessageId) markRead(conversationId, { messageId: latestRenderedMessageId });
+  }, [conversationId, loadingInitial, latestRenderedMessageId, obscured, highlightedMessageId, markRead, setConversationReading]);
 
   // Keep bottom locked when images/stickers decode or IME keyboard / drawer resizes viewport
   useEffect(() => {
@@ -393,11 +407,11 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
   const returnToLatest = () => {
     nearBottomRef.current = true;
-    setConversationReading(conversationId, !document.hidden);
+    setConversationReading(conversationId, Boolean(visitRef.current?.settled) && !document.hidden && !obscured);
     setShowScrollBottom(false);
     setUnreadNavigation(null);
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-    markRead(conversationId);
+    if (visitRef.current?.settled && latestRenderedMessageId) markRead(conversationId, { messageId: latestRenderedMessageId });
   };
 
   const startReplyToMessage = (target: V1Message) => {
@@ -769,11 +783,11 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           const el = e.currentTarget;
           const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
           const wasNearBottom = nearBottomRef.current;
-          nearBottomRef.current = dist < 140;
-          setConversationReading(conversationId, nearBottomRef.current && !document.hidden);
+          nearBottomRef.current = dist <= 8;
+          setConversationReading(conversationId, nearBottomRef.current && Boolean(visitRef.current?.settled) && !document.hidden && !obscured);
           if (!wasNearBottom && nearBottomRef.current) {
             setUnreadNavigation(null);
-            markRead(conversationId);
+            if (visitRef.current?.settled && latestRenderedMessageId) markRead(conversationId, { messageId: latestRenderedMessageId });
           }
           setShowScrollBottom(dist > 360);
         }}

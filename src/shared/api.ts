@@ -235,12 +235,14 @@ export interface EmoteCollectionDTO {
 }
 
 export interface EmoteLibraryDTO {
+  /** Ordered library entries include the individual favorites and packs. */
   entries: Array<{
     id: string;
     type: "emote" | "collection" | string;
     emote?: CustomEmoteDTO;
     collection?: EmoteCollectionDTO;
   }>;
+  /** Effective emote index, including items available only through packs. */
   emotes: CustomEmoteDTO[];
   collections: EmoteCollectionDTO[];
   usage: {
@@ -577,10 +579,10 @@ export const mobileApi = {
       { method: "POST" }
     ),
 
-  markConversationRead: (conversationId: string) =>
+  markConversationRead: (conversationId: string, messageId?: string) =>
     requestJSON<Record<string, unknown>>(
       `/api/v1/conversations/${encodeURIComponent(conversationId)}/read`,
-      { method: "POST" }
+      { method: "POST", ...(messageId ? { body: JSON.stringify({ messageId }) } : {}) }
     ),
 
   updateConversationNotification: (

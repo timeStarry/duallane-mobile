@@ -1,6 +1,7 @@
 import React from "react";
 import rawPacks from "./emote-packs.json";
 import { nativeBridge } from "@/native/bridge";
+import type { CustomEmoteDTO } from "@/shared/api";
 
 export interface EmoteItem {
   id: string;
@@ -105,6 +106,13 @@ for (const pack of emotePacks) {
 
 export function getBuiltInEmote(key: string): EmoteItem | undefined {
   return emoteByKey.get(key);
+}
+
+export function resolveLibraryStickerSrc(emote: Pick<CustomEmoteDTO, "id" | "src" | "emoteKey">): string {
+  const builtInSrc = emote.emoteKey ? getBuiltInEmote(emote.emoteKey)?.src : undefined;
+  return resolveAssetUrl(
+    emote.src || builtInSrc || `/api/workspace/emotes/${encodeURIComponent(emote.id)}/content`
+  );
 }
 
 export function normalizeReactionEmoteKey(input: string): string {

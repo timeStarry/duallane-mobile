@@ -537,7 +537,7 @@ export function ChatsTab() {
                 <button
                   type="button"
                   onClick={() => {
-                    markRead(contextConv.id);
+                    markRead(contextConv.id, { explicit: true });
                     setContextConvId(null);
                   }}
                   className="w-full px-4 py-3 rounded-2xl flex items-center gap-3 text-[15px] font-medium text-[var(--dl-text)] active:bg-[var(--dl-card)]"
