@@ -95,7 +95,7 @@ export function EntryScreen() {
       setChallengeId(res.challengeId);
       setCooldown(Math.max(30, Number(res.cooldownSec || 60)));
       nativeBridge.haptic("light");
-      showToast(`验证码已发送至 ${res.maskedEmail || cleanEmail}`, "success");
+      showToast("若该邮箱可用于登录，请查收验证码");
     } catch (err) {
       showToast(err instanceof Error ? err.message : "发送验证码失败", "danger");
     } finally {
@@ -206,7 +206,7 @@ export function EntryScreen() {
               }`}
             >
               <Mail size={13.5} />
-              <span>已绑定邮箱</span>
+              <span>邮箱验证码</span>
             </button>
           </div>
 
@@ -270,7 +270,7 @@ export function EntryScreen() {
                     setEmailInput(e.target.value);
                     setChallengeId("");
                   }}
-                  placeholder="输入已绑定的邮箱地址"
+                  placeholder="输入登录邮箱"
                   className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[var(--dl-card)] border border-[var(--dl-border)] text-[14px] text-[var(--dl-text)] outline-none focus:border-[var(--dl-accent)]"
                 />
               </div>
@@ -308,7 +308,7 @@ export function EntryScreen() {
               </button>
 
               <div className="pt-0.5 text-center text-[11.5px] text-[var(--dl-text-muted)]">
-                仅限已在个人设置绑定邮箱的成员登录
+                使用已绑定的邮箱，未绑定时使用 GitHub 已验证的主邮箱。邮箱尚未同步时，可先用 GitHub 登录。
               </div>
             </div>
           )}

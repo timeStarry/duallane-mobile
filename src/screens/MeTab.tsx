@@ -502,7 +502,7 @@ export function MeTab() {
               登录邮箱
             </span>
             <span className="text-[12px] text-[var(--dl-text-muted)] truncate max-w-[150px]">
-              {boundEmail || "未绑定"}
+              {boundEmail || "未自定义"}
             </span>
             <ChevronRight size={17} className="text-[var(--dl-text-muted)] shrink-0" />
           </button>
@@ -858,7 +858,7 @@ export function MeTab() {
         open={meSubSheet === "email"}
         onClose={() => setMeSubSheet(null)}
         title="登录邮箱"
-        subtitle="绑定后可使用邮箱验证码快捷登录"
+        subtitle="未绑定时使用 GitHub 已验证的主邮箱"
       >
         <div className="p-4 space-y-4">
           {boundEmail && !changingEmail ? (
