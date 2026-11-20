@@ -181,14 +181,6 @@ export function ContactsTab() {
                       )}
                     </div>
                   </button>
-                  <button
-                    type="button"
-                    aria-label={`设置 ${b.displayName} 备注`}
-                    onClick={() => openRemarkSheet(b)}
-                    className="p-1.5 rounded-lg text-[var(--dl-text-muted)] active:bg-[var(--dl-card)]"
-                  >
-                    <Edit3 size={14} />
-                  </button>
                   <ChevronRight size={16} className="text-[var(--dl-text-muted)]" />
                 </div>
               ))

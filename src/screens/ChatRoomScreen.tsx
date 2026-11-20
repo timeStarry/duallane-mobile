@@ -82,10 +82,16 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const messageCollapseOverrides = useWorkspaceStore((s) => s.messageCollapseOverrides);
 
   const loadConversationMessages = useWorkspaceStore((s) => s.loadConversationMessages);
+  const loadOlderMessages = useWorkspaceStore((s) => s.loadOlderMessages);
+  const loadMessagesAround = useWorkspaceStore((s) => s.loadMessagesAround);
+  const hasMoreBefore = useWorkspaceStore((s) => s.hasMoreBeforeByConv[conversationId]);
+  const loadingOlder = useWorkspaceStore((s) => s.loadingOlderByConv[conversationId]);
   const markRead = useWorkspaceStore((s) => s.markRead);
   const setConversationReading = useWorkspaceStore((s) => s.setConversationReading);
   const setDraft = useWorkspaceStore((s) => s.setDraft);
   const setEditingMessageId = useWorkspaceStore((s) => s.setEditingMessageId);
+  const jumpToMessage = useWorkspaceStore((s) => s.jumpToMessage);
+  const clearHighlightedMessage = useWorkspaceStore((s) => s.clearHighlightedMessage);
   const setLocalMessageCollapsed = useWorkspaceStore((s) => s.setLocalMessageCollapsed);
   const sendWorkspaceMessage = useWorkspaceStore((s) => s.sendWorkspaceMessage);
   const editWorkspaceMessage = useWorkspaceStore((s) => s.editWorkspaceMessage);
@@ -103,8 +109,26 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const setChatDetailOpen = useNavStore((s) => s.setChatDetailOpen);
   const setForwardingMessageIds = useNavStore((s) => s.setForwardingMessageIds);
   const showToast = useNavStore((s) => s.showToast);
-  const obscured = useNavStore((s) => s.searchOpen || s.directOverlayOpen || Boolean(s.lightboxMedia) ||
-    s.chatDetailOpen || Boolean(s.threadRootId) || s.serverConfigOpen || s.botManageOpen || s.updateSheetOpen || Boolean(s.pendingExternalUrl));
+  const [topicsSheetOpen, setTopicsSheetOpen] = useState(false);
+  const navObscured = useNavStore(
+    (s) =>
+      s.searchOpen ||
+      s.directOverlayOpen ||
+      Boolean(s.lightboxMedia) ||
+      s.chatDetailOpen ||
+      Boolean(s.threadRootId) ||
+      s.serverConfigOpen ||
+      s.botManageOpen ||
+      s.updateSheetOpen ||
+      Boolean(s.pendingExternalUrl) ||
+      Boolean(s.actionMessageId) ||
+      Boolean(s.forwardingMessageIds) ||
+      Boolean(s.sharedPackId) ||
+      Boolean(s.botSetupSessionId) ||
+      s.stickerStudioOpen ||
+      Boolean(s.createChatMode)
+  );
+  const obscured = navObscured || topicsSheetOpen;
   const obscuredRef = useRef(obscured);
   obscuredRef.current = obscured;
   const latestRenderedMessageId = latestReadAnchorId(messages);
@@ -116,11 +140,13 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const [uploading, setUploading] = useState(false);
   const [loadingInitial, setLoadingInitial] = useState(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [liveBelowCount, setLiveBelowCount] = useState(0);
   const [botCommands, setBotCommands] = useState<BotCommandSpec[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
   const [dismissedMentionText, setDismissedMentionText] = useState<string | null>(null);
   const [menuSelection, setMenuSelection] = useState({ key: "", index: 0 });
   const [unreadNavigation, setUnreadNavigation] = useState<UnreadNavigation | null>(null);
+  const programmaticScrollLockUntilRef = useRef(0);
   const [hugePaste, setHugePasteState] = useState<{
     text: string;
     charCount: number;
@@ -132,7 +158,6 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   }, [conversationId]);
   useEffect(() => () => setMobileDraftActivity(`large-paste:${conversationId}`, false), [conversationId]);
   const [isComposingIme, setIsComposingIme] = useState(false);
-  const [topicsSheetOpen, setTopicsSheetOpen] = useState(false);
   const [remoteThreads, setRemoteThreads] = useState<
     Array<{
       rootMessageId: string;
@@ -153,6 +178,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const visitRef = useRef<{
     conversationId: string;
     unreadCount: number;
+    firstUnreadMessageId?: string;
     settled: boolean;
     seenIds: Set<string>;
     newestCreatedAt: number;
@@ -191,6 +217,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
       : {
           conversationId,
           unreadCount: state.highlightedMessageId ? 0 : state.conversations[conversationId]?.unreadCount || 0,
+          firstUnreadMessageId: state.highlightedMessageId ? undefined : state.conversations[conversationId]?.firstUnreadMessageId,
           settled: false,
           seenIds: new Set<string>(),
           newestCreatedAt: 0,
@@ -200,6 +227,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     nearBottomRef.current = !state.highlightedMessageId;
     setConversationReading(conversationId, false);
     setShowScrollBottom(false);
+    setLiveBelowCount(0);
     setUnreadNavigation(null);
     setDismissedMentionText(null);
     setSlashOpen(false);
@@ -214,7 +242,14 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         visit.seenIds = new Set(freshMessages.map((message) => message.id));
         visit.newestCreatedAt = Math.max(0, ...freshMessages.map((message) => Date.parse(message.createdAt) || 0));
         visit.settled = true;
-        setUnreadNavigation(captureUnreadNavigation(freshMessages, visit.unreadCount, fresh.currentUser?.id));
+        setUnreadNavigation(
+          captureUnreadNavigation(
+            freshMessages,
+            visit.unreadCount,
+            fresh.currentUser?.id,
+            visit.firstUnreadMessageId
+          )
+        );
       })
       .finally(() => {
         if (!cancelled) setLoadingInitial(false);
@@ -242,11 +277,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     for (const message of messages) visit.seenIds.add(message.id);
     visit.newestCreatedAt = Math.max(visit.newestCreatedAt, ...messages.map((message) => Date.parse(message.createdAt) || 0));
     if (incoming.length > 0 && !nearBottomRef.current) {
-      setUnreadNavigation((previous) => ({
-        count: (previous?.count || 0) + incoming.length,
-        firstMessageId: previous?.firstMessageId || incoming[0].id,
-        availableCount: (previous?.availableCount || 0) + incoming.length,
-      }));
+      setLiveBelowCount((prev) => prev + incoming.length);
     }
   }, [conversationId, currentUser?.id, messages]);
 
@@ -319,15 +350,22 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
     return () => observer.disconnect();
   }, [conversationId, highlightedMessageId]);
 
-  // Scroll to highlighted message when jumping from search or pin
+  // Scroll to highlighted message when jumping from search, pin, quote, or unread banner
   useEffect(() => {
     if (!highlightedMessageId) return;
     nearBottomRef.current = false;
     pinnedConvRef.current = conversationId;
     setConversationReading(conversationId, false);
     const target = document.getElementById(`msg-${highlightedMessageId}`);
-    target?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [conversationId, highlightedMessageId, setConversationReading]);
+    if (target) {
+      programmaticScrollLockUntilRef.current = Date.now() + 800;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      const timer = window.setTimeout(() => {
+        clearHighlightedMessage();
+      }, 2400);
+      return () => window.clearTimeout(timer);
+    }
+  }, [conversationId, highlightedMessageId, messages, setConversationReading, clearHighlightedMessage]);
 
   const msgById = useMemo(() => {
     const map = new Map<string, V1Message>();
@@ -556,14 +594,22 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const jumpToUnread = () => {
     if (!unreadNavigation || !listRef.current) return;
     const list = listRef.current;
-    const target = document.getElementById(`msg-${unreadNavigation.firstMessageId}`);
+    const targetId = unreadNavigation.firstMessageId;
+    const target = document.getElementById(`msg-${targetId}`);
     if (!target || !list.contains(target)) {
-      showToast("这条消息已不在当前加载窗口，可通过搜索查找", "info");
       setUnreadNavigation(null);
+      void loadMessagesAround(conversationId, targetId).then((found) => {
+        if (found) {
+          jumpToMessage(conversationId, targetId);
+        } else {
+          showToast("这条消息已不在当前历史窗口，可通过搜索查找", "info");
+        }
+      });
       return;
     }
     nearBottomRef.current = false;
     setConversationReading(conversationId, false);
+    programmaticScrollLockUntilRef.current = Date.now() + 750;
     const top = Math.max(0, list.scrollTop + target.getBoundingClientRect().top - list.getBoundingClientRect().top - 12);
     const motionReduced = reducedMotion || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (typeof list.scrollTo === "function") list.scrollTo({ top, behavior: motionReduced ? "auto" : "smooth" });
@@ -783,13 +829,31 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           const el = e.currentTarget;
           const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
           const wasNearBottom = nearBottomRef.current;
-          nearBottomRef.current = dist <= 8;
-          setConversationReading(conversationId, nearBottomRef.current && Boolean(visitRef.current?.settled) && !document.hidden && !obscured);
-          if (!wasNearBottom && nearBottomRef.current) {
-            setUnreadNavigation(null);
-            if (visitRef.current?.settled && latestRenderedMessageId) markRead(conversationId, { messageId: latestRenderedMessageId });
+          const isBottom = dist <= 48;
+          if (Date.now() >= programmaticScrollLockUntilRef.current || !isBottom) {
+            nearBottomRef.current = isBottom;
+            setConversationReading(conversationId, isBottom && Boolean(visitRef.current?.settled) && !document.hidden && !obscured);
+            if (!wasNearBottom && isBottom) {
+              setLiveBelowCount(0);
+              if (visitRef.current?.settled && latestRenderedMessageId) markRead(conversationId, { messageId: latestRenderedMessageId });
+            }
           }
-          setShowScrollBottom(dist > 360);
+          setShowScrollBottom(dist > 300);
+          if (
+            el.scrollTop < 120 &&
+            hasMoreBefore !== false &&
+            !loadingOlder &&
+            messages.length >= 20
+          ) {
+            const prevHeight = el.scrollHeight;
+            const prevTop = el.scrollTop;
+            void loadOlderMessages(conversationId).then((added) => {
+              if (added > 0 && listRef.current) {
+                const delta = listRef.current.scrollHeight - prevHeight;
+                if (delta > 0) listRef.current.scrollTop = prevTop + delta;
+              }
+            });
+          }
         }}
         className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 py-2 overscroll-contain relative"
       >
@@ -836,8 +900,7 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                     onQuickReply={startReplyToMessage}
                     onMentionSender={insertMention}
                     onJumpToMessage={(targetId) => {
-                      const el = document.getElementById(`msg-${targetId}`);
-                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      jumpToMessage(conversationId, targetId);
                     }}
                   />
                 </React.Fragment>
@@ -847,14 +910,22 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         </div>
       </div>
 
-      {/* Floating Scroll-to-Bottom Button */}
-      {showScrollBottom && (
+      {/* Floating Scroll-to-Bottom Button (with live unread-below badge) */}
+      {(showScrollBottom || liveBelowCount > 0) && (
         <button
           type="button"
-          onClick={returnToLatest}
-          aria-label="回到底部"
-          className="absolute right-4 bottom-20 z-20 w-10 h-10 rounded-full bg-[var(--dl-surface)] border border-[var(--dl-border)] shadow-md flex items-center justify-center text-[var(--dl-text)] active:scale-95"
+          onClick={() => {
+            setLiveBelowCount(0);
+            returnToLatest();
+          }}
+          aria-label={liveBelowCount > 0 ? `回到底部，查看 ${liveBelowCount} 条新消息` : "回到底部"}
+          className="absolute right-4 bottom-20 z-20 min-w-10 h-10 px-3 rounded-full bg-[var(--dl-surface)] border border-[var(--dl-border)] shadow-md flex items-center justify-center gap-1.5 text-[var(--dl-text)] active:scale-95"
         >
+          {liveBelowCount > 0 && (
+            <span className="text-[12px] font-semibold text-[var(--dl-accent)] tabular-nums">
+              {liveBelowCount > 99 ? "99+" : liveBelowCount}
+            </span>
+          )}
           <ArrowDown size={18} />
         </button>
       )}

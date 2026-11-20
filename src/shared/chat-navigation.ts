@@ -98,16 +98,37 @@ interface NavigationMessage {
   id: string;
   senderId: string;
   kind?: string;
+  recalledAt?: string;
+  hiddenByCurrentUser?: boolean;
+  threadRootId?: string;
+  alsoSendToChannel?: boolean;
 }
 
 export function captureUnreadNavigation(
   messages: readonly NavigationMessage[],
   unreadCount: number,
-  currentUserId?: string
+  currentUserId?: string,
+  firstUnreadMessageId?: string
 ): UnreadNavigation | null {
-  const incoming = messages.filter((message) => message.senderId !== currentUserId && message.kind !== "system");
+  const incoming = messages.filter(
+    (message) =>
+      message.senderId !== currentUserId &&
+      message.kind !== "system" &&
+      !message.recalledAt &&
+      !message.hiddenByCurrentUser &&
+      (!message.threadRootId || message.alsoSendToChannel)
+  );
   const count = Math.max(0, Math.trunc(unreadCount));
-  if (count === 0 || incoming.length === 0) return null;
+  if (count === 0) return null;
+  if (firstUnreadMessageId) {
+    const idx = incoming.findIndex((m) => m.id === firstUnreadMessageId);
+    return {
+      count,
+      firstMessageId: firstUnreadMessageId,
+      availableCount: idx >= 0 ? Math.min(count, incoming.length - idx) : Math.min(count, incoming.length),
+    };
+  }
+  if (incoming.length === 0) return null;
   return {
     count,
     firstMessageId: incoming[Math.max(0, incoming.length - count)].id,

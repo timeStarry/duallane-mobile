@@ -396,10 +396,22 @@ export const mobileApi = {
   ensureSavedConversation: () =>
     requestJSON<{ conversationId: string }>("/api/v1/conversations/saved", { method: "POST" }),
 
-  listMessages: (conversationId: string, limit = 80) =>
-    requestJSON<{ messages?: Array<Record<string, unknown>> }>(
-      `/api/workspace/conversations/${encodeURIComponent(conversationId)}/messages?limit=${limit}`
-    ),
+  listMessages: (
+    conversationId: string,
+    limitOrOpts:
+      | number
+      | { limit?: number; before?: string; after?: string; around?: string } = 80
+  ) => {
+    const opts = typeof limitOrOpts === "number" ? { limit: limitOrOpts } : limitOrOpts;
+    const params = new URLSearchParams();
+    params.set("limit", String(opts.limit ?? 80));
+    if (opts.before) params.set("before", opts.before);
+    if (opts.after) params.set("after", opts.after);
+    if (opts.around) params.set("around", opts.around);
+    return requestJSON<{ messages?: Array<Record<string, unknown>> }>(
+      `/api/workspace/conversations/${encodeURIComponent(conversationId)}/messages?${params.toString()}`
+    );
+  },
 
   sendMessage: (
     conversationId: string,

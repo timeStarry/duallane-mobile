@@ -198,9 +198,17 @@ class MainActivity : ComponentActivity() {
                     view: WebView,
                     request: WebResourceRequest,
                 ): WebResourceResponse? {
-                    val assetResp = assetLoader.shouldInterceptRequest(request.url)
+                    val uri = request.url
+                    val path = uri?.path.orEmpty()
+                    if (
+                        uri?.host == "appassets.androidplatform.net" &&
+                        (path == "/assets/beacon-avatar.png" || path == "/assets/echo-avatar.svg")
+                    ) {
+                        return networkGateway.interceptWebViewRequest(uri)
+                    }
+                    val assetResp = assetLoader.shouldInterceptRequest(uri)
                     if (assetResp != null) return assetResp
-                    return networkGateway.interceptWebViewRequest(request.url)
+                    return networkGateway.interceptWebViewRequest(uri)
                 }
 
                 override fun shouldOverrideUrlLoading(
