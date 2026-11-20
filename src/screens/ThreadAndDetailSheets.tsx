@@ -549,8 +549,8 @@ export function ThreadAndDetailSheets() {
                             >
                               <button
                                 type="button"
-                                disabled={isSelf || !u}
-                                onClick={() => u && !isSelf && openRemarkEditor(u)}
+                                disabled={isSelf || !u || u.role === "bot"}
+                                onClick={() => u && !isSelf && u.role !== "bot" && openRemarkEditor(u)}
                                 className="flex items-center gap-2.5 min-w-0 flex-1 text-left active:opacity-75 disabled:opacity-100"
                               >
                                 <Avatar

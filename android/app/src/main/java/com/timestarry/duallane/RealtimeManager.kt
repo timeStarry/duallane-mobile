@@ -204,7 +204,7 @@ class RealtimeHub private constructor(private val appContext: Context) {
             if (socketId == activeJsSocketId) {
                 activeJsSocketId = null
                 val keepBackground = tokenVault.isAuthenticated() && tokenVault.isKeepAliveEnabled()
-                if (!keepBackground && !isUiForeground) {
+                if (isUiForeground || !keepBackground) {
                     toCloseWs = detachWorkspaceSocketLocked()
                 }
                 toCloseWs?.let { runCatching { it.close(1000, "client_closed") } }
@@ -690,7 +690,13 @@ class RealtimeHub private constructor(private val appContext: Context) {
         if (evType == "conversation.read") {
             val readerId = payload.optString("userId").ifBlank { eventObj.optString("actorId") }
             val convId = payload.optString("conversationId").ifBlank { eventObj.optString("conversationId") }
-            if (convId.isNotBlank() && ctx.currentUserId.isNotBlank() && readerId == ctx.currentUserId) {
+            val remainingUnread = if (payload.has("unreadCount")) payload.optInt("unreadCount", 0) else 0
+            if (
+                convId.isNotBlank() &&
+                ctx.currentUserId.isNotBlank() &&
+                readerId == ctx.currentUserId &&
+                remainingUnread <= 0
+            ) {
                 clearConversationNotification(convId)
             }
             return

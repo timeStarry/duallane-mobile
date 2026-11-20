@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Bookmark, Bot, Users } from "lucide-react";
 import { resolveAssetUrl } from "@/shared/emotes";
 
@@ -128,6 +128,17 @@ export function Avatar({
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const resolvedSrc = src ? resolveAssetUrl(src) : "";
   const showImg = Boolean(resolvedSrc && failedSrc !== resolvedSrc);
+
+  useEffect(() => {
+    if (!failedSrc || typeof window === "undefined") return;
+    const reset = () => setFailedSrc(null);
+    window.addEventListener("online", reset);
+    const timer = window.setTimeout(reset, 15_000);
+    return () => {
+      window.removeEventListener("online", reset);
+      window.clearTimeout(timer);
+    };
+  }, [failedSrc]);
   const radius =
     kind === "group" || kind === "saved" || kind === "bot"
       ? Math.max(8, Math.round(size * 0.28))

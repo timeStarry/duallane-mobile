@@ -463,10 +463,10 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     snapSpy.mockRestore();
   });
 
-  it("supports bound email verification code login on EntryScreen", async () => {
+  it("accepts verification code login without a manually bound email", async () => {
     const sendSpy = vi.spyOn(mobileApi, "sendLoginEmailCode").mockResolvedValue({
       challengeId: "chal_mob_1",
-      maskedEmail: "t***@tsio.top",
+      maskedEmail: "o***@example.test",
       expiresAt: "2026-11-15T16:00:00Z",
       cooldownSec: 60,
     });
@@ -476,16 +476,17 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
       .mockResolvedValue();
 
     render(<EntryScreen />);
-    fireEvent.click(screen.getByText("已绑定邮箱"));
-    expect(screen.getByText("仅限已在个人设置绑定邮箱的成员登录")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "邮箱验证码" }));
+    expect(screen.getByText(/未绑定时使用 GitHub 已验证的主邮箱/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("登录邮箱"), {
-      target: { value: "team@tsio.top" },
+      target: { value: "octocat@example.test" },
     });
     await act(async () => {
       fireEvent.click(screen.getByText("获取验证码"));
     });
-    expect(sendSpy).toHaveBeenCalledWith("team@tsio.top");
+    expect(sendSpy).toHaveBeenCalledWith("octocat@example.test");
+    expect(useNavStore.getState().toast?.message).toBe("若该邮箱可用于登录，请查收验证码");
 
     fireEvent.change(screen.getByLabelText("邮箱验证码"), {
       target: { value: "839201" },
@@ -493,8 +494,9 @@ describe("DualLane Mobile Clean-Room v1.0.9 Core", () => {
     await act(async () => {
       fireEvent.click(screen.getByText("验证并进入空间"));
     });
-    expect(verifySpy).toHaveBeenCalledWith("team@tsio.top", "chal_mob_1", "839201");
+    expect(verifySpy).toHaveBeenCalledWith("octocat@example.test", "chal_mob_1", "839201");
     expect(bootSpy).toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().boundEmail).toBe("");
 
     sendSpy.mockRestore();
     verifySpy.mockRestore();
