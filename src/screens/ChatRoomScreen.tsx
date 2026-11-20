@@ -5,6 +5,7 @@ import {
   ArrowUp,
   AtSign,
   BellOff,
+  CheckSquare,
   Copy,
   Edit3,
   Eye,
@@ -16,12 +17,15 @@ import {
   MoreHorizontal,
   Paperclip,
   Pin,
+  Plus,
   Reply,
   RotateCcw,
+  Search,
   Send,
   Slash,
   Smile,
   Star,
+  Type,
   X,
 } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
@@ -54,6 +58,10 @@ import {
 } from "@/store/workspace-store";
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "🔥", "👀"];
+const EXTENDED_REACTIONS = [
+  "👏", "🙏", "🤔", "😮", "😢", "😡", "💯", "✨",
+  "🚀", "👌", "🤝", "💡", "✅", "❌", "🫡", "🥳",
+];
 const EMPTY_MESSAGES: V1Message[] = [];
 const EMPTY_TYPERS: TypingIndicatorEntry[] = [];
 const HUGE_PASTE_CHAR_THRESHOLD = 6000;
@@ -108,8 +116,16 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const setThreadRootId = useNavStore((s) => s.setThreadRootId);
   const setChatDetailOpen = useNavStore((s) => s.setChatDetailOpen);
   const setForwardingMessageIds = useNavStore((s) => s.setForwardingMessageIds);
+  const openSearchInConversation = useNavStore((s) => s.openSearchInConversation);
   const showToast = useNavStore((s) => s.showToast);
   const [topicsSheetOpen, setTopicsSheetOpen] = useState(false);
+  const [pinIndex, setPinIndex] = useState(0);
+  const [pinBannerHidden, setPinBannerHidden] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
+  const [freeSelectText, setFreeSelectText] = useState<string | null>(null);
+  const [reactionPickerExpanded, setReactionPickerExpanded] = useState(false);
+  const [reactionInspector, setReactionInspector] = useState<{ emoji: string; users: string[] } | null>(null);
   const navObscured = useNavStore(
     (s) =>
       s.searchOpen ||
@@ -376,8 +392,13 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
   const actionMsg = actionMessageId ? msgById.get(actionMessageId) || null : null;
   const editingMsg = editingMessageId ? msgById.get(editingMessageId) || null : null;
   const replyTarget = replyToId ? msgById.get(replyToId) : undefined;
-  const latestPinnedId = conv?.pinnedMessageIds?.[0];
-  const latestPinnedMsg = latestPinnedId ? msgById.get(latestPinnedId) : undefined;
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
+  }, [textValue]);
 
   // @Mention Candidate Detection (including @所有人 at top of group chats!)
   const mentionQuery = useMemo(() => {
@@ -752,6 +773,15 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
 
           <button
             type="button"
+            onClick={() => openSearchInConversation(conversationId)}
+            aria-label="搜索本会话聊天记录"
+            className="w-9 h-9 rounded-full flex items-center justify-center text-[var(--dl-text)] active:bg-[var(--dl-card)] shrink-0"
+          >
+            <Search size={18} />
+          </button>
+
+          <button
+            type="button"
             onClick={() => setChatDetailOpen(true)}
             aria-label="打开会话详情"
             className="w-9 h-9 rounded-full flex items-center justify-center text-[var(--dl-text)] active:bg-[var(--dl-card)] shrink-0"
@@ -760,35 +790,47 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
           </button>
         </div>
 
-        {/* Pinned Message Banner */}
-        {latestPinnedMsg && (
-          <div className="px-3.5 py-2 border-t border-[var(--dl-border)] bg-[var(--dl-card)]/65 flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                const el = document.getElementById(`msg-${latestPinnedMsg.id}`);
-                el?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-              className="min-w-0 flex-1 flex items-center gap-2 text-left"
-            >
-              <Pin size={13} className="text-[var(--dl-accent)] shrink-0" />
-              <div className="min-w-0">
-                <div className="text-[10px] font-semibold text-[var(--dl-accent)]">置顶消息</div>
-                <div className="text-[12px] text-[var(--dl-text)] truncate">
-                  {latestPinnedMsg.plainText}
+        {/* Pinned Message Banner (multi-pin cycling + jumpToMessage + safe local dismiss) */}
+        {(() => {
+          const pinnedIds = conv.pinnedMessageIds || [];
+          if (pinnedIds.length === 0 || pinBannerHidden) return null;
+          const activePinIdx = pinIndex % pinnedIds.length;
+          const activePinId = pinnedIds[activePinIdx];
+          const activePinMsg = msgById.get(activePinId);
+          return (
+            <div className="px-3.5 py-2 border-t border-[var(--dl-border)] bg-[var(--dl-card)]/65 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  void jumpToMessage(conversationId, activePinId);
+                  if (pinnedIds.length > 1) {
+                    setPinIndex((i) => (i + 1) % pinnedIds.length);
+                  }
+                }}
+                className="min-w-0 flex-1 flex items-center gap-2 text-left"
+              >
+                <Pin size={13} className="text-[var(--dl-accent)] shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[10px] font-semibold text-[var(--dl-accent)]">
+                    置顶消息
+                    {pinnedIds.length > 1 ? ` ${activePinIdx + 1}/${pinnedIds.length} · 点击切换` : ""}
+                  </div>
+                  <div className="text-[12px] text-[var(--dl-text)] truncate">
+                    {activePinMsg?.plainText || "点击定位历史置顶消息"}
+                  </div>
                 </div>
-              </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => void togglePinMessage(conversationId, latestPinnedMsg.id)}
-              aria-label="取消置顶"
-              className="p-1 text-[var(--dl-text-muted)]"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPinBannerHidden(true)}
+                aria-label="暂时收起置顶横幅"
+                className="p-1 text-[var(--dl-text-muted)]"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          );
+        })()}
       </header>
 
       {unreadNavigation && (
@@ -902,6 +944,14 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                     onJumpToMessage={(targetId) => {
                       jumpToMessage(conversationId, targetId);
                     }}
+                    selectMode={selectMode}
+                    selected={selectedMsgIds.includes(msg.id)}
+                    onToggleSelect={(id) =>
+                      setSelectedMsgIds((prev) =>
+                        prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+                      )
+                    }
+                    onInspectReaction={(emoji, users) => setReactionInspector({ emoji, users })}
                   />
                 </React.Fragment>
               );
@@ -1300,28 +1350,105 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
         </div>
       </BottomSheet>
 
+      {/* Multi-Select Bottom Bar */}
+      {selectMode && (
+        <div className="px-3.5 py-2.5 bg-[var(--dl-surface)] border-t border-[var(--dl-border)] flex items-center justify-between gap-2 shrink-0">
+          <span className="text-[13px] font-medium text-[var(--dl-text)] tabular-nums">
+            已选 {selectedMsgIds.length} 条
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setSelectMode(false);
+                setSelectedMsgIds([]);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-[var(--dl-card)] text-[13px] text-[var(--dl-text-muted)]"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={selectedMsgIds.length === 0}
+              onClick={() => {
+                setForwardingMessageIds(selectedMsgIds);
+                setSelectMode(false);
+                setSelectedMsgIds([]);
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-[var(--dl-accent)] text-white text-[13px] font-semibold disabled:opacity-45"
+            >
+              转发 ({selectedMsgIds.length})
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Telegram / Feishu Message Bottom Action Sheet */}
       <BottomSheet
         open={Boolean(actionMsg)}
-        onClose={() => setActionMessageId(null)}
+        onClose={() => {
+          setActionMessageId(null);
+          setReactionPickerExpanded(false);
+        }}
       >
         {actionMsg && (
           <div className="p-3 space-y-2">
-            {/* Quick Emoji Reactions Bar */}
-            <div className="px-2 py-2 rounded-2xl bg-[var(--dl-card)] flex items-center justify-around">
-              {QUICK_REACTIONS.map((em) => (
+            {/* Quick Emoji Reactions Bar + Expanded Picker */}
+            <div className="px-2 py-2 rounded-2xl bg-[var(--dl-card)] space-y-2">
+              <div className="flex items-center justify-around">
+                {QUICK_REACTIONS.map((em) => {
+                  const reacted = Boolean(actionMsg.reactions?.[em]?.reactedByMe);
+                  return (
+                    <button
+                      key={em}
+                      type="button"
+                      onClick={() => {
+                        void toggleReaction(conversationId, actionMsg.id, em);
+                        setActionMessageId(null);
+                        setReactionPickerExpanded(false);
+                      }}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center text-[22px] active:scale-125 transition ${
+                        reacted ? "bg-[var(--dl-accent-soft)] ring-1 ring-[var(--dl-accent)]" : ""
+                      }`}
+                    >
+                      {em}
+                    </button>
+                  );
+                })}
                 <button
-                  key={em}
                   type="button"
-                  onClick={() => {
-                    void toggleReaction(conversationId, actionMsg.id, em);
-                    setActionMessageId(null);
-                  }}
-                  className="text-[24px] active:scale-125 transition"
+                  onClick={() => setReactionPickerExpanded((v) => !v)}
+                  aria-label="更多表情回应"
+                  className={`w-9 h-9 rounded-full flex items-center justify-center text-[var(--dl-text-muted)] ${
+                    reactionPickerExpanded ? "bg-[var(--dl-accent-soft)] text-[var(--dl-accent)]" : ""
+                  }`}
                 >
-                  {em}
+                  <Plus size={18} />
                 </button>
-              ))}
+              </div>
+              {reactionPickerExpanded && (
+                <div className="grid grid-cols-8 gap-1 pt-1.5 border-t border-[var(--dl-border)]/60">
+                  {EXTENDED_REACTIONS.map((em) => {
+                    const reacted = Boolean(actionMsg.reactions?.[em]?.reactedByMe);
+                    return (
+                      <button
+                        key={em}
+                        type="button"
+                        onClick={() => {
+                          void toggleReaction(conversationId, actionMsg.id, em);
+                          setActionMessageId(null);
+                          setReactionPickerExpanded(false);
+                        }}
+                        className={`h-9 rounded-xl flex items-center justify-center text-[20px] active:scale-110 transition ${
+                          reacted ? "bg-[var(--dl-accent-soft)]" : ""
+                        }`}
+                      >
+                        {em}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-4 gap-2 pt-1">
@@ -1367,6 +1494,33 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
                 <Forward size={18} />
                 <span>转发</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectMode(true);
+                  setSelectedMsgIds([actionMsg.id]);
+                  setActionMessageId(null);
+                }}
+                className="p-3 rounded-2xl bg-[var(--dl-card)] flex flex-col items-center gap-1.5 text-[12px] font-medium text-[var(--dl-text)]"
+              >
+                <CheckSquare size={18} />
+                <span>多选</span>
+              </button>
+
+              {actionMsg.plainText && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFreeSelectText(actionMsg.plainText);
+                    setActionMessageId(null);
+                  }}
+                  className="p-3 rounded-2xl bg-[var(--dl-card)] flex flex-col items-center gap-1.5 text-[12px] font-medium text-[var(--dl-text)]"
+                >
+                  <Type size={18} />
+                  <span>选词复制</span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -1528,6 +1682,69 @@ export function ChatRoomScreen({ conversationId }: { conversationId: string }) {
             </div>
           );
         })()}
+      </BottomSheet>
+
+      {/* Free Text Selection Sheet */}
+      <BottomSheet
+        open={Boolean(freeSelectText)}
+        onClose={() => setFreeSelectText(null)}
+        title="自由选择文本"
+        subtitle="长按下方文字可自由拖拽选取部分内容复制"
+      >
+        <div className="p-4 space-y-3">
+          <div className="p-3.5 rounded-2xl bg-[var(--dl-card)] text-[14px] leading-relaxed text-[var(--dl-text)] whitespace-pre-wrap break-words select-text">
+            {freeSelectText}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (freeSelectText) {
+                nativeBridge.copyText(freeSelectText);
+                showToast("已复制全文", "success");
+              }
+              setFreeSelectText(null);
+            }}
+            className="w-full py-2.5 rounded-2xl bg-[var(--dl-accent)] text-white text-[14px] font-semibold"
+          >
+            复制全文
+          </button>
+        </div>
+      </BottomSheet>
+
+      {/* Reaction Reactor List Sheet */}
+      <BottomSheet
+        open={Boolean(reactionInspector)}
+        onClose={() => setReactionInspector(null)}
+        title={reactionInspector ? `回应详情 · ${reactionInspector.emoji}` : "回应详情"}
+      >
+        <div className="p-4 space-y-2">
+          {(reactionInspector?.users || []).map((uid) => {
+            const u = members[uid];
+            const name = u?.displayName || (uid === currentUser?.id ? "我" : uid);
+            return (
+              <button
+                key={uid}
+                type="button"
+                onClick={() => {
+                  setReactionInspector(null);
+                  useNavStore.getState().setProfileSheetUserId(uid);
+                }}
+                className="w-full px-3 py-2.5 rounded-2xl bg-[var(--dl-card)] flex items-center gap-3 text-left active:opacity-80"
+              >
+                <Avatar
+                  name={name}
+                  src={u?.avatarUrl}
+                  color={u?.avatarColor}
+                  kind={u?.role === "bot" ? "bot" : "user"}
+                  size={34}
+                />
+                <span className="text-[14px] font-medium text-[var(--dl-text)] truncate">
+                  {name}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </BottomSheet>
     </div>
   );

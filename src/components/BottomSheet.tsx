@@ -26,7 +26,7 @@ export function BottomSheet({
       />
       <div
         style={{ maxHeight }}
-        className="relative w-full rounded-t-[22px] bg-[var(--dl-surface)] border-t border-[var(--dl-border)] shadow-2xl flex flex-col overflow-hidden pb-[var(--safe-bottom)] animate-[dlSheetUp_180ms_cubic-bezier(0.16,1,0.3,1)]"
+        className="relative w-full rounded-t-[22px] bg-[var(--dl-surface)] border-t border-[var(--dl-border)] shadow-2xl flex flex-col overflow-hidden pb-[calc(var(--safe-bottom)+var(--ime-height,0px))] animate-[dlSheetUp_180ms_cubic-bezier(0.16,1,0.3,1)]"
       >
         <div className="flex justify-center pt-2.5 pb-1 shrink-0">
           <div className="w-9 h-1 rounded-full bg-[var(--dl-text-muted)]/30" />

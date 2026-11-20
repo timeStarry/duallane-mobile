@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
   Bell,
@@ -60,6 +60,13 @@ export function ChatsTab() {
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [contextConvId, setContextConvId] = useState<string | null>(null);
   const [showSyncPill, setShowSyncPill] = useState(false);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
 
   // Debounce brief <350ms background delta syncs so warm app resumes feel seamless with zero flicker
   useEffect(() => {
@@ -307,24 +314,20 @@ export function ChatsTab() {
                 ? "bot"
                 : "user";
 
-            let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-
             return (
               <div
                 key={conv.id}
                 onClick={() => openChat(conv.id)}
                 onTouchStart={() => {
-                  longPressTimer = setTimeout(() => {
+                  clearLongPress();
+                  longPressTimerRef.current = setTimeout(() => {
                     nativeBridge.haptic("medium");
                     setContextConvId(conv.id);
                   }, 450);
                 }}
-                onTouchEnd={() => {
-                  if (longPressTimer) clearTimeout(longPressTimer);
-                }}
-                onTouchMove={() => {
-                  if (longPressTimer) clearTimeout(longPressTimer);
-                }}
+                onTouchEnd={clearLongPress}
+                onTouchMove={clearLongPress}
+                onTouchCancel={clearLongPress}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   setContextConvId(conv.id);
@@ -458,6 +461,17 @@ export function ChatsTab() {
               <span>打开我的收藏</span>
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              setPlusMenuOpen(false);
+              useNavStore.getState().setDirectOverlayOpen(true);
+            }}
+            className="w-full px-4 py-3 rounded-2xl flex items-center gap-3 text-[15px] font-medium text-[var(--dl-text)] active:bg-[var(--dl-card)]"
+          >
+            <Lock size={19} className="text-emerald-500" />
+            <span>私密直连（端到端加密 P2P）</span>
+          </button>
           <button
             type="button"
             onClick={() => {

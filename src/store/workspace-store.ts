@@ -39,6 +39,9 @@ export interface V1User {
   avatarUrl?: string;
   avatarColor?: string;
   description?: string;
+  bio?: string;
+  statusText?: string;
+  online?: boolean;
   botOnline?: boolean;
 }
 
@@ -106,7 +109,7 @@ export interface V1Message {
   recalledAt?: string;
   createdAt: string;
   status?: "sending" | "sent" | "read" | "failed";
-  reactions: Record<string, { count: number; reactedByMe: boolean }>;
+  reactions: Record<string, { count: number; reactedByMe: boolean; users?: string[] }>;
   attachments?: V1MessageAttachment[];
   card?: DualLaneCardKitDocument;
   cardReferences?: WorkspaceCardReference[];
@@ -142,6 +145,13 @@ export interface V1Conversation {
   lastMessageRecalled?: boolean;
   notificationLevel?: ConversationNotificationLevel;
   peerLastReadAt?: string;
+  myGroupRole?: string;
+  capabilities?: {
+    canEditGroup: boolean;
+    canInviteMembers: boolean;
+    canRemoveMembers: boolean;
+    canPin: boolean;
+  };
 }
 
 function nonnegativeInteger(value: unknown): number | undefined {
@@ -705,17 +715,21 @@ function mapRawBlocks(
   return out.length > 0 ? out : undefined;
 }
 
-function mapRawReactions(raw: unknown): Record<string, { count: number; reactedByMe: boolean }> {
-  const out: Record<string, { count: number; reactedByMe: boolean }> = {};
+function mapRawReactions(raw: unknown): Record<string, { count: number; reactedByMe: boolean; users?: string[] }> {
+  const out: Record<string, { count: number; reactedByMe: boolean; users?: string[] }> = {};
   if (!Array.isArray(raw)) return out;
   for (const item of raw as Array<Record<string, unknown>>) {
     const key = String(item.emoteKey || item.emoji || item.key || "");
     if (!key) continue;
     const count = Number(item.count || 0);
     if (count > 0) {
+      const users = Array.isArray(item.users)
+        ? item.users.map(String).filter(Boolean)
+        : undefined;
       out[key] = {
         count,
         reactedByMe: Boolean(item.reactedByCurrentUser ?? item.reactedByMe),
+        ...(users && users.length > 0 ? { users } : {}),
       };
     }
   }
@@ -805,6 +819,16 @@ function upsertRawMemberRecord(
     typeof m.description === "string" ? m.description.trim() || undefined : prev?.description;
   const nextBotOnline =
     typeof m.botOnline === "boolean" ? m.botOnline : prev?.botOnline;
+  const nextOnline =
+    role === "bot"
+      ? undefined
+      : typeof m.online === "boolean"
+      ? m.online
+      : prev?.online;
+  const nextBio =
+    typeof m.bio === "string" ? m.bio.trim() || undefined : prev?.bio;
+  const nextStatusText =
+    typeof m.statusText === "string" ? m.statusText.trim() || undefined : prev?.statusText;
   target[id] = {
     id,
     displayName: resolvedName,
@@ -815,6 +839,9 @@ function upsertRawMemberRecord(
     avatarUrl: nextAvatarUrl,
     avatarColor: nextAvatarColor,
     description: nextDescription,
+    ...(nextBio ? { bio: nextBio } : {}),
+    ...(nextStatusText ? { statusText: nextStatusText } : {}),
+    ...(typeof nextOnline === "boolean" ? { online: nextOnline } : {}),
     ...(nextBotOnline !== undefined ? { botOnline: nextBotOnline } : {}),
   };
   return id;
@@ -1139,6 +1166,17 @@ export function parseBootstrapPayload(raw: Record<string, unknown>) {
       lastMessageRecalled: resolvedRecalled,
       notificationLevel: normalizeNotificationLevel(rawNotificationLevel),
       peerLastReadAt,
+      ...(typeof c.myGroupRole === "string" && c.myGroupRole ? { myGroupRole: c.myGroupRole } : {}),
+      ...(c.capabilities && typeof c.capabilities === "object"
+        ? {
+            capabilities: {
+              canEditGroup: Boolean((c.capabilities as Record<string, unknown>).canEditGroup),
+              canInviteMembers: Boolean((c.capabilities as Record<string, unknown>).canInviteMembers),
+              canRemoveMembers: Boolean((c.capabilities as Record<string, unknown>).canRemoveMembers),
+              canPin: Boolean((c.capabilities as Record<string, unknown>).canPin),
+            },
+          }
+        : {}),
     };
   }
 
@@ -2310,6 +2348,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       const key = normalizeReactionEmoteKey(emoji);
       if (!key) return;
       nativeBridge.haptic("light");
+      const myUserId = get().currentUser?.id;
+      const targetMsg = (get().messagesByConv[conversationId] || []).find((m) => m.id === messageId);
+      const prevReactions = targetMsg ? { ...targetMsg.reactions } : null;
+
       set((s) => ({
         messagesByConv: {
           ...s.messagesByConv,
@@ -2317,17 +2359,43 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
             if (m.id !== messageId) return m;
             const cur = m.reactions[key];
             const nextReactions = { ...m.reactions };
+            const prevUsers = Array.isArray(cur?.users) ? cur.users : [];
             if (cur?.reactedByMe) {
+              const nextUsers = myUserId ? prevUsers.filter((id) => id !== myUserId) : prevUsers;
               if (cur.count <= 1) delete nextReactions[key];
-              else nextReactions[key] = { count: cur.count - 1, reactedByMe: false };
+              else
+                nextReactions[key] = {
+                  count: cur.count - 1,
+                  reactedByMe: false,
+                  ...(nextUsers.length > 0 ? { users: nextUsers } : {}),
+                };
             } else {
-              nextReactions[key] = { count: (cur?.count || 0) + 1, reactedByMe: true };
+              const nextUsers =
+                myUserId && !prevUsers.includes(myUserId) ? [...prevUsers, myUserId] : prevUsers;
+              nextReactions[key] = {
+                count: (cur?.count || 0) + 1,
+                reactedByMe: true,
+                ...(nextUsers.length > 0 ? { users: nextUsers } : {}),
+              };
             }
             return { ...m, reactions: nextReactions };
           }),
         },
       }));
-      await mobileApi.reactToMessage(messageId, key).catch(() => {});
+      try {
+        await mobileApi.reactToMessage(messageId, key);
+      } catch {
+        if (prevReactions) {
+          set((s) => ({
+            messagesByConv: {
+              ...s.messagesByConv,
+              [conversationId]: (s.messagesByConv[conversationId] || []).map((m) =>
+                m.id === messageId ? { ...m, reactions: prevReactions } : m
+              ),
+            },
+          }));
+        }
+      }
     },
 
     togglePinMessage: async (conversationId, messageId) => {

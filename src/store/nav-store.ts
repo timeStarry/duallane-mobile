@@ -34,6 +34,8 @@ interface NavState {
   activeTab: MobileTabId;
   activeChatId: string | null;
   searchOpen: boolean;
+  searchConversationId: string | null;
+  profileSheetUserId: string | null;
   directOverlayOpen: boolean;
   updateSheetOpen: boolean;
   meSubSheet: MeSubSheetId;
@@ -59,6 +61,8 @@ interface NavState {
   openChat: (conversationId: string) => void;
   closeChat: () => void;
   setSearchOpen: (open: boolean) => void;
+  openSearchInConversation: (conversationId: string | null) => void;
+  setProfileSheetUserId: (userId: string | null) => void;
   setDirectOverlayOpen: (open: boolean) => void;
   setUpdateSheetOpen: (open: boolean) => void;
   setMeSubSheet: (sheet: MeSubSheetId) => void;
@@ -92,6 +96,8 @@ export const useNavStore = create<NavState>((set, get) => ({
   activeTab: "chats",
   activeChatId: null,
   searchOpen: false,
+  searchConversationId: null,
+  profileSheetUserId: null,
   directOverlayOpen: false,
   updateSheetOpen: false,
   meSubSheet: null,
@@ -152,7 +158,23 @@ export const useNavStore = create<NavState>((set, get) => ({
   },
 
   setSearchOpen: (searchOpen) => {
-    set({ searchOpen });
+    set((s) => ({
+      searchOpen,
+      searchConversationId: searchOpen ? s.searchConversationId : null,
+    }));
+    syncHardwareBack(get());
+  },
+
+  openSearchInConversation: (conversationId) => {
+    set({
+      searchOpen: true,
+      searchConversationId: conversationId,
+    });
+    syncHardwareBack(get());
+  },
+
+  setProfileSheetUserId: (profileSheetUserId) => {
+    set({ profileSheetUserId });
     syncHardwareBack(get());
   },
 
@@ -252,6 +274,7 @@ export const useNavStore = create<NavState>((set, get) => ({
         s.serverConfigOpen ||
         s.updateSheetOpen ||
         s.meSubSheet ||
+        s.profileSheetUserId ||
         s.actionMessageId ||
         s.forwardingMessageIds ||
         s.sharedPackId ||
@@ -293,6 +316,11 @@ export const useNavStore = create<NavState>((set, get) => ({
     }
     if (s.meSubSheet) {
       set({ meSubSheet: null });
+      syncHardwareBack(get());
+      return true;
+    }
+    if (s.profileSheetUserId) {
+      set({ profileSheetUserId: null });
       syncHardwareBack(get());
       return true;
     }

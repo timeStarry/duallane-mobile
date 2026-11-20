@@ -75,7 +75,10 @@ export function ThreadAndDetailSheets() {
   const [addingMemberOpen, setAddingMemberOpen] = useState(false);
   const [detailSegment, setDetailSegment] = useState<"info" | "media">("info");
   const [remoteFiles, setRemoteFiles] = useState<SearchFileHit[]>([]);
+  const [hasMoreMedia, setHasMoreMedia] = useState(false);
   const [loadingMedia, setLoadingMedia] = useState(false);
+  const [confirmRemoveUid, setConfirmRemoveUid] = useState<string | null>(null);
+  const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
 
   const [remarkTargetId, setRemarkTargetId] = useState<string | null>(null);
   const [remarkDraft, setRemarkDraft] = useState("");
@@ -112,22 +115,26 @@ export function ThreadAndDetailSheets() {
     if (!chatDetailOpen) {
       setDetailSegment("info");
       setAddingMemberOpen(false);
+      setConfirmRemoveUid(null);
+      setConfirmLeaveOpen(false);
       return;
     }
     if (detailSegment === "media" && activeConv?.id) {
       let cancelled = false;
       setLoadingMedia(true);
       void mobileApi
-        .search("", "files")
+        .listConversationMedia(activeConv.id, "all", 40, 0)
         .then((res) => {
           if (!cancelled) {
-            setRemoteFiles(
-              (res.files || []).filter((f) => f.conversationId === activeConv.id)
-            );
+            setRemoteFiles(res.items || []);
+            setHasMoreMedia(Boolean(res.hasMore));
           }
         })
         .catch(() => {
-          if (!cancelled) setRemoteFiles([]);
+          if (!cancelled) {
+            setRemoteFiles([]);
+            setHasMoreMedia(false);
+          }
         })
         .finally(() => {
           if (!cancelled) setLoadingMedia(false);
@@ -137,6 +144,21 @@ export function ThreadAndDetailSheets() {
       };
     }
   }, [chatDetailOpen, detailSegment, activeConv?.id]);
+
+  const handleLoadMoreMedia = async () => {
+    if (!activeConv?.id || loadingMedia || !hasMoreMedia) return;
+    setLoadingMedia(true);
+    try {
+      const res = await mobileApi.listConversationMedia(activeConv.id, "all", 40, remoteFiles.length);
+      setRemoteFiles((prev) => {
+        const seen = new Set(prev.map((f) => f.id));
+        return [...prev, ...(res.items || []).filter((f) => !seen.has(f.id))];
+      });
+      setHasMoreMedia(Boolean(res.hasMore));
+    } finally {
+      setLoadingMedia(false);
+    }
+  };
 
   const { mediaImages, mediaFiles } = useMemo(() => {
     if (!activeConv) return { mediaImages: [], mediaFiles: [] };
@@ -542,6 +564,14 @@ export function ThreadAndDetailSheets() {
                           const u = members[uid];
                           const name = u?.displayName || uid;
                           const isSelf = uid === currentUser?.id;
+                          const canRemove =
+                            !isSelf &&
+                            !uid.startsWith("usr_system_") &&
+                            (u?.role === "bot" ||
+                              Boolean(activeConv.capabilities?.canRemoveMembers) ||
+                              currentUser?.role === "owner" ||
+                              currentUser?.role === "admin");
+                          const confirmingThis = confirmRemoveUid === uid;
                           return (
                             <div
                               key={uid}
@@ -549,9 +579,11 @@ export function ThreadAndDetailSheets() {
                             >
                               <button
                                 type="button"
-                                disabled={isSelf || !u || u.role === "bot"}
-                                onClick={() => u && !isSelf && u.role !== "bot" && openRemarkEditor(u)}
-                                className="flex items-center gap-2.5 min-w-0 flex-1 text-left active:opacity-75 disabled:opacity-100"
+                                onClick={() => {
+                                  setChatDetailOpen(false);
+                                  useNavStore.getState().setProfileSheetUserId(uid);
+                                }}
+                                className="flex items-center gap-2.5 min-w-0 flex-1 text-left active:opacity-75"
                               >
                                 <Avatar
                                   name={name}
@@ -583,33 +615,79 @@ export function ThreadAndDetailSheets() {
                                   )}
                                 </div>
                               </button>
-                              {!isSelf && (
-                                <button
-                                  type="button"
-                                  onClick={() => void removeGroupMember(activeConv.id, uid)}
-                                  className="p-1.5 text-rose-500 shrink-0"
-                                  aria-label={`移除 ${name}`}
-                                >
-                                  <UserMinus size={15} />
-                                </button>
-                              )}
+                              {canRemove &&
+                                (confirmingThis ? (
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setConfirmRemoveUid(null);
+                                        void removeGroupMember(activeConv.id, uid);
+                                      }}
+                                      className="px-2 py-1 rounded-lg bg-rose-500 text-white text-[11px] font-semibold"
+                                    >
+                                      确认移除
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmRemoveUid(null)}
+                                      className="px-2 py-1 rounded-lg bg-[var(--dl-surface)] text-[var(--dl-text-muted)] text-[11px]"
+                                    >
+                                      取消
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmRemoveUid(uid)}
+                                    className="p-1.5 text-rose-500 shrink-0"
+                                    aria-label={`移除 ${name}`}
+                                  >
+                                    <UserMinus size={15} />
+                                  </button>
+                                ))}
                             </div>
                           );
                         })}
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setChatDetailOpen(false);
-                        void leaveGroup(activeConv.id);
-                      }}
-                      className="w-full py-3 rounded-2xl bg-rose-500/12 text-rose-500 font-semibold text-[14px] flex items-center justify-center gap-2"
-                    >
-                      <LogOut size={16} />
-                      <span>退出群聊</span>
-                    </button>
+                    {confirmLeaveOpen ? (
+                      <div className="rounded-2xl border border-rose-500/35 bg-rose-500/10 p-3 space-y-2.5">
+                        <div className="text-[12px] text-rose-500 font-medium">
+                          确定要退出群聊「{activeConv.title}」吗？若你是群主，群主将自动移交给其他成员。
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setConfirmLeaveOpen(false)}
+                            className="flex-1 py-2 rounded-xl bg-[var(--dl-card)] text-[var(--dl-text)] text-[13px] font-medium"
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirmLeaveOpen(false);
+                              setChatDetailOpen(false);
+                              void leaveGroup(activeConv.id);
+                            }}
+                            className="flex-1 py-2 rounded-xl bg-rose-500 text-white text-[13px] font-semibold"
+                          >
+                            确认退出
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmLeaveOpen(true)}
+                        className="w-full py-3 rounded-2xl bg-rose-500/12 text-rose-500 font-semibold text-[14px] flex items-center justify-center gap-2"
+                      >
+                        <LogOut size={16} />
+                        <span>退出群聊</span>
+                      </button>
+                    )}
                   </>
                 )}
               </>
@@ -696,6 +774,17 @@ export function ThreadAndDetailSheets() {
                           ))}
                         </div>
                       </div>
+                    )}
+
+                    {hasMoreMedia && (
+                      <button
+                        type="button"
+                        disabled={loadingMedia}
+                        onClick={() => void handleLoadMoreMedia()}
+                        className="w-full py-2.5 rounded-2xl bg-[var(--dl-card)] text-[var(--dl-accent)] text-[13px] font-medium active:opacity-75 disabled:opacity-50"
+                      >
+                        {loadingMedia ? "正在加载更多…" : "加载更多历史图片与文件"}
+                      </button>
                     )}
                   </>
                 )}

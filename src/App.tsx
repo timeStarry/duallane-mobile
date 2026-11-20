@@ -4,6 +4,7 @@ import { AnnouncementModal } from "./components/AnnouncementModal";
 import { BrandLogo } from "./components/BrandLogo";
 import { RequiredNativeUpdate } from "./components/RequiredNativeUpdate";
 import { MediaLightbox } from "./components/MediaLightbox";
+import { MemberProfileSheet } from "./components/MemberProfileSheet";
 import { nativeBridge } from "./native/bridge";
 import { ChatRoomScreen } from "./screens/ChatRoomScreen";
 import { ChatsTab } from "./screens/ChatsTab";
@@ -128,6 +129,7 @@ export function App() {
       <>
         <EntryScreen />
         <MediaLightbox />
+      <MemberProfileSheet />
         <ExternalLinkGuardSheet />
         {renderToast()}
       </>
@@ -227,6 +229,7 @@ export function App() {
       <StickerAndBotSheets />
       <AnnouncementModal />
       <MediaLightbox />
+      <MemberProfileSheet />
       <ExternalLinkGuardSheet />
       {renderToast()}
     </div>

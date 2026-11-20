@@ -110,6 +110,10 @@ export function MessageItem({
   onQuickReply,
   onMentionSender,
   onJumpToMessage,
+  selectMode = false,
+  selected = false,
+  onToggleSelect,
+  onInspectReaction,
 }: {
   msg: V1Message;
   isOwn: boolean;
@@ -122,6 +126,10 @@ export function MessageItem({
   onQuickReply: (msg: V1Message) => void;
   onMentionSender: (userId: string, displayName: string) => void;
   onJumpToMessage?: (messageId: string) => void;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (messageId: string) => void;
+  onInspectReaction?: (emoji: string, users: string[]) => void;
 }) {
   const customSrcMap = useEmoteStore((s) => s.customSrcMap);
   const members = useWorkspaceStore((s) => s.members);
@@ -385,12 +393,34 @@ export function MessageItem({
         </div>
       )}
 
+      {/* Multi-select checkbox */}
+      {selectMode && !msg.recalledAt && (
+        <button
+          type="button"
+          onClick={() => onToggleSelect?.(msg.id)}
+          aria-label={selected ? "取消选择此消息" : "选择此消息"}
+          className={`self-center shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center mr-1 ${
+            selected
+              ? "bg-[var(--dl-accent)] border-[var(--dl-accent)] text-white"
+              : "border-[var(--dl-text-muted)]/50 bg-transparent"
+          }`}
+        >
+          {selected && <Check size={12} strokeWidth={3} />}
+        </button>
+      )}
+
       {/* Feishu-style Peer Avatar on first message of burst, or timestamp gutter on follow-ups */}
       {!isOwn &&
         (!groupedWithPrev ? (
           <button
             type="button"
-            onClick={() => isGroup && onMentionSender(msg.senderId, msg.senderName)}
+            onClick={() => {
+              if (selectMode) {
+                onToggleSelect?.(msg.id);
+              } else if (msg.senderId) {
+                useNavStore.getState().setProfileSheetUserId(msg.senderId);
+              }
+            }}
             className="self-start mt-0.5 shrink-0"
           >
             <Avatar
@@ -836,6 +866,12 @@ export function MessageItem({
                 key={key}
                 type="button"
                 onClick={() => void toggleReaction(msg.conversationId, msg.id, key)}
+                onContextMenu={(e) => {
+                  if (onInspectReaction && info.users?.length) {
+                    e.preventDefault();
+                    onInspectReaction(key, info.users);
+                  }
+                }}
                 className={`px-2 py-0.5 rounded-full text-[11px] flex items-center gap-1 border transition-transform duration-150 active:scale-95 tabular-nums ${
                   info.reactedByMe
                     ? "bg-[var(--dl-accent-soft)] border-[var(--dl-accent)] text-[var(--dl-accent)] font-semibold"
